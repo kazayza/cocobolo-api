@@ -5,7 +5,8 @@ require('dotenv').config();
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // إعدادات الاتصال
 const config = {
@@ -45,12 +46,45 @@ async function connectDB() {
 connectDB();
 
 // ==========================
-// 🔐 تسجيل الدخول
+// 🏠 الصفحة الرئيسية - للتأكد إن السيرفر شغال
+// ==========================
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'COCOBOLO API شغال بنجاح! 🚀', 
+    time: new Date().toISOString() 
+  });
+});
+
+// ==========================
+// ✅ اختبار الاتصال
+// ==========================
+app.get('/api/test', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request().query('SELECT 1 as test');
+    res.json({ 
+      success: true, 
+      message: 'الاتصال بقاعدة البيانات ناجح',
+      data: result.recordset 
+    });
+  } catch (err) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'فشل الاتصال بقاعدة البيانات',
+      error: err.message 
+    });
+  }
+});
+
+// ==========================
+// 🔐 تسجيل الدخول مع الصلاحيات (مرة واحدة فقط!)
 // ==========================
 app.post('/api/login', async (req, res) => {
   try {
     const pool = await connectDB();
-    const result = await pool.request()
+    
+    // 1️⃣ التحقق من المستخدم
+    const userResult = await pool.request()
       .input('username', sql.NVarChar, req.body.username)
       .input('password', sql.NVarChar, req.body.password)
       .query(`
@@ -61,11 +95,54 @@ app.post('/api/login', async (req, res) => {
           AND IsActive = 1
       `);
 
-    if (result.recordset.length > 0) {
-      res.json({ success: true, user: result.recordset[0] });
-    } else {
-      res.json({ success: false, message: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
+    if (userResult.recordset.length === 0) {
+      return res.json({ 
+        success: false, 
+        message: 'اسم المستخدم أو كلمة المرور غير صحيحة' 
+      });
     }
+
+    const user = userResult.recordset[0];
+
+    // 2️⃣ جلب صلاحيات المستخدم
+    const permissionsResult = await pool.request()
+      .input('userId', sql.Int, user.UserID)
+      .query(`
+        SELECT 
+          p.PermissionID,
+          p.PermissionName,
+          p.FormName,
+          p.Category,
+          up.CanView,
+          up.CanAdd,
+          up.CanEdit,
+          up.CanDelete
+        FROM UserPermissions up
+        INNER JOIN Permissions p ON up.PermissionID = p.PermissionID
+        WHERE up.UserID = @userId
+      `);
+
+    // 3️⃣ تحويل الصلاحيات لـ Object
+    const permissions = {};
+    permissionsResult.recordset.forEach(perm => {
+      permissions[perm.FormName] = {
+        permissionId: perm.PermissionID,
+        permissionName: perm.PermissionName,
+        category: perm.Category,
+        canView: perm.CanView,
+        canAdd: perm.CanAdd,
+        canEdit: perm.CanEdit,
+        canDelete: perm.CanDelete
+      };
+    });
+
+    // 4️⃣ إرسال البيانات
+    res.json({ 
+      success: true, 
+      user: user,
+      permissions: permissions
+    });
+
   } catch (err) {
     console.error('خطأ في تسجيل الدخول:', err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر' });
@@ -146,8 +223,6 @@ app.get('/api/customers-list', async (req, res) => {
 // ==========================
 // 🔔 الإشعارات
 // ==========================
-
-// ✅ جلب الإشعارات غير المقروءة (لازم يكون قبل /:id)
 app.get('/api/notifications/unread', async (req, res) => {
   try {
     const { username } = req.query;
@@ -182,7 +257,6 @@ app.get('/api/notifications/unread', async (req, res) => {
   }
 });
 
-// ✅ تحديد كل الإشعارات كمقروءة (لازم يكون قبل /:id)
 app.put('/api/notifications/read-all', async (req, res) => {
   try {
     const { username } = req.body;
@@ -203,7 +277,6 @@ app.put('/api/notifications/read-all', async (req, res) => {
   }
 });
 
-// ✅ جلب كل الإشعارات للمستخدم
 app.get('/api/notifications', async (req, res) => {
   try {
     const { username } = req.query;
@@ -235,7 +308,6 @@ app.get('/api/notifications', async (req, res) => {
   }
 });
 
-// ✅ تحديد إشعار كمقروء
 app.put('/api/notifications/:id/read', async (req, res) => {
   try {
     const pool = await connectDB();
@@ -255,7 +327,6 @@ app.put('/api/notifications/:id/read', async (req, res) => {
   }
 });
 
-// ✅ إرسال إشعار جديد
 app.post('/api/notifications', async (req, res) => {
   try {
     const {
@@ -782,88 +853,9 @@ app.delete('/api/expenses/:id', async (req, res) => {
   }
 });
 
-// تسجيل الدخول مع جلب الصلاحيات
-app.post('/api/login', async (req, res) => {
-  try {
-    const pool = await connectDB();
-    
-    // 1️⃣ التحقق من المستخدم
-    const userResult = await pool.request()
-      .input('username', sql.NVarChar, req.body.username)
-      .input('password', sql.NVarChar, req.body.password)
-      .query(`
-        SELECT UserID, Username, FullName, Email, employeeID 
-        FROM Users 
-        WHERE Username = @username 
-          AND Password = @password 
-          AND IsActive = 1
-      `);
-
-    if (userResult.recordset.length === 0) {
-      return res.json({ 
-        success: false, 
-        message: 'اسم المستخدم أو كلمة المرور غير صحيحة' 
-      });
-    }
-
-    const user = userResult.recordset[0];
-
-    // 2️⃣ جلب صلاحيات المستخدم
-    const permissionsResult = await pool.request()
-      .input('userId', sql.Int, user.UserID)
-      .query(`
-        SELECT 
-          p.PermissionID,
-          p.PermissionName,
-          p.FormName,
-          p.Category,
-          up.CanView,
-          up.CanAdd,
-          up.CanEdit,
-          up.CanDelete
-        FROM UserPermissions up
-        INNER JOIN Permissions p ON up.PermissionID = p.PermissionID
-        WHERE up.UserID = @userId
-      `);
-
-    // 3️⃣ تحويل الصلاحيات لـ Object سهل الاستخدام
-    const permissions = {};
-    permissionsResult.recordset.forEach(perm => {
-      permissions[perm.FormName] = {
-        permissionId: perm.PermissionID,
-        permissionName: perm.PermissionName,
-        category: perm.Category,
-        canView: perm.CanView,
-        canAdd: perm.CanAdd,
-        canEdit: perm.CanEdit,
-        canDelete: perm.CanDelete
-      };
-    });
-
-    // 4️⃣ إرسال البيانات
-    res.json({ 
-      success: true, 
-      user: user,
-      permissions: permissions
-    });
-
-  } catch (err) {
-    console.error('خطأ في تسجيل الدخول:', err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر' });
-  }
-});
-
-
 // ==========================
-// 🏠 الصفحة الرئيسية
+// 🚀 تشغيل السيرفر
 // ==========================
-app.get('/', (req, res) => {
-  res.json({ 
-    message: 'COCOBOLO API شغال بنجاح! 🚀', 
-    time: new Date().toISOString() 
-  });
-});
-
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 السيرفر شغال على البورت: ${PORT}`);
