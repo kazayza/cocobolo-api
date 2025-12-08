@@ -104,31 +104,26 @@ app.get('/api/clients', async (req, res) => {
   }
 });
 
-// لوحة التحكم + الإشعارات
+// لوحة التحكم + عدد الإشعارات الجديدة
 app.get('/api/dashboard', async (req, res) => {
   try {
     const userId = req.query.userId;
     const pool = await connectDB();
 
-    const summary = await pool.request().query(`
+    const result = await pool.request().query(`
       SELECT 
         (SELECT COUNT(*) FROM Parties WHERE CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE)) as newClientsToday,
-        (SELECT COUNT(*) FROM SalesOpportunities WHERE StageID != 6 AND StageID != 7) as openOpportunities,
+        (SELECT COUNT(*) FROM SalesOpportunities WHERE StageID NOT IN (6,7)) as openOpportunities,
         (SELECT COUNT(*) FROM CRM_Tasks WHERE CAST(DueDate AS DATE) = CAST(GETDATE() AS DATE) AND Status != 'Completed') as tasksToday,
-        (SELECT ISNULL(SUM(GrandTotal), 0) FROM Transactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) AND TransactionType = 'Sale') as salesToday
-    `);
-
-    const notifs = await pool.request()
-      .input('userId', sql.Int, userId)
-      .query(`
-        SELECT TOP 10 * FROM Notifications 
-        WHERE RecipientUser = (SELECT Username FROM Users WHERE UserID = @userId)
-        ORDER BY CreatedAt DESC
-      `);
+        (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) AND TransactionType = 'Sale') as salesToday,
+        (SELECT COUNT(*) FROM Notifications 
+         WHERE RecipientUser = (SELECT Username FROM Users WHERE UserID = @userId)
+         AND IsRead = 0) as unreadCount
+    `).input('userId', sql.Int, userId);
 
     res.json({
-      summary: summary.recordset[0],
-      notifications: notifs.recordset
+      summary: result.recordset[0],
+      unreadCount: result.recordset[0].unreadCount || 0
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
