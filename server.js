@@ -26,22 +26,22 @@ const config = {
   }
 };
 
-// اتصال واحد مرة واحدة فقط (أفضل أداء)
+// اتصال واحد مرة واحدة فقط
 let pool;
 async function connectDB() {
   try {
     if (!pool) {
       pool = await sql.connect(config);
-      console.log('متصل بقاعدة البيانات بنجاح');
+      console.log('✅ متصل بقاعدة البيانات بنجاح');
     }
     return pool;
   } catch (err) {
-    console.error('خطأ في الاتصال بقاعدة البيانات:', err.message);
+    console.error('❌ خطأ في الاتصال بقاعدة البيانات:', err.message);
     throw err;
   }
 }
 
-// تشغيل الاتصال من أول ما السيرفر يشتغل
+// تشغيل الاتصال
 connectDB();
 
 // ==========================
@@ -74,7 +74,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// جلب العملاء (المهم جدًا للشاشة الجاية)
+// جلب العملاء
 app.get('/api/clients', async (req, res) => {
   try {
     const pool = await connectDB();
@@ -104,40 +104,94 @@ app.get('/api/clients', async (req, res) => {
   }
 });
 
-// لوحة التحكم + عدد الإشعارات الجديدة
+// ✅ لوحة التحكم - مصححة
 app.get('/api/dashboard', async (req, res) => {
   try {
     const userId = req.query.userId;
     const pool = await connectDB();
 
-    const result = await pool.request().query(`
-      SELECT 
-        (SELECT COUNT(*) FROM Parties WHERE CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE)) as newClientsToday,
-        (SELECT COUNT(*) FROM SalesOpportunities WHERE StageID NOT IN (6,7)) as openOpportunities,
-        (SELECT COUNT(*) FROM CRM_Tasks WHERE CAST(DueDate AS DATE) = CAST(GETDATE() AS DATE) AND Status != 'Completed') as tasksToday,
-        (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) AND TransactionType = 'Sale') as salesToday,
-        (SELECT COUNT(*) FROM Notifications 
-         WHERE RecipientUser = (SELECT Username FROM Users WHERE UserID = @userId)
-         AND IsRead = 0) as unreadCount
-    `).input('userId', sql.Int, userId);
+    // ✅ الـ input قبل الـ query
+    const result = await pool.request()
+      .input('userId', sql.Int, userId)
+      .query(`
+        SELECT 
+          (SELECT COUNT(*) FROM Parties WHERE CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE)) as newClientsToday,
+          (SELECT COUNT(*) FROM SalesOpportunities WHERE StageID NOT IN (6,7)) as openOpportunities,
+          (SELECT COUNT(*) FROM CRM_Tasks WHERE CAST(DueDate AS DATE) = CAST(GETDATE() AS DATE) AND Status != 'Completed') as tasksToday,
+          (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) AND TransactionType = 'Sale') as salesToday,
+          (SELECT COUNT(*) FROM Notifications 
+           WHERE RecipientUser = (SELECT Username FROM Users WHERE UserID = @userId)
+           AND IsRead = 0) as unreadCount
+      `);
 
     res.json({
       summary: result.recordset[0],
-      unreadCount: result.recordset[0].unreadCount || 0
+      unreadCount: result.recordset[0]?.unreadCount || 0
     });
   } catch (err) {
+    console.error('خطأ في الداشبورد:', err);
     res.status(500).json({ message: err.message });
   }
 });
 
+// ✅ جلب الإشعارات - أضف هذا الـ endpoint
+app.get('/api/notifications', async (req, res) => {
+  try {
+    const userId = req.query.userId;
+    const pool = await connectDB();
+
+    const result = await pool.request()
+      .input('userId', sql.Int, userId)
+      .query(`
+        SELECT 
+          NotificationID as id,
+          Title as title,
+          Message as message,
+          NotificationType as type,
+          IsRead as is_read,
+          FORMAT(CreatedAt, 'yyyy-MM-dd hh:mm tt') as created_at
+        FROM Notifications 
+        WHERE RecipientUser = (SELECT Username FROM Users WHERE UserID = @userId)
+        ORDER BY CreatedAt DESC
+      `);
+
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب الإشعارات:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ✅ تحديث إشعار كمقروء
+app.put('/api/notifications/:id/read', async (req, res) => {
+  try {
+    const notificationId = req.params.id;
+    const pool = await connectDB();
+
+    await pool.request()
+      .input('id', sql.Int, notificationId)
+      .query(`
+        UPDATE Notifications 
+        SET IsRead = 1, ReadAt = GETDATE() 
+        WHERE NotificationID = @id
+      `);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('خطأ في تحديث الإشعار:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
 
 // اختبار سريع للسيرفر
 app.get('/', (req, res) => {
-  res.json({ message: 'COCOBOLO API شغال بنجاح!', time: new Date().toISOString() });
+  res.json({ 
+    message: 'COCOBOLO API شغال بنجاح! 🚀', 
+    time: new Date().toISOString() 
+  });
 });
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`السيرفر شغال على الرابط: https://cocobolo-api-production.up.railway.app`);
-  console.log(`بورت: ${PORT}`);
+  console.log(`🚀 السيرفر شغال على البورت: ${PORT}`);
 });
