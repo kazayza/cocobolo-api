@@ -520,6 +520,105 @@ app.get('/api/customers-list', async (req, res) => {
   }
 });
 
+// إضافة مصروف جديد (مع حركة الخزينة)
+app.post('/api/expenses', async (req, res) => {
+  const transaction = new sql.Transaction(await connectDB());
+  
+  try {
+    await transaction.begin();
+    
+    const {
+      expenseName,
+      expenseGroupId,
+      cashBoxId,
+      amount,
+      expenseDate,
+      notes,
+      toRecipient,
+      isAdvance,
+      advanceMonths,
+      createdBy
+    } = req.body;
+    
+    // 1️⃣ إضافة المصروف
+    const expenseResult = await transaction.request()
+      .input('expenseName', sql.NVarChar(100), expenseName)
+      .input('expenseGroupId', sql.Int, expenseGroupId)
+      .input('cashBoxId', sql.Int, cashBoxId)
+      .input('amount', sql.Decimal(18, 2), amount)
+      .input('expenseDate', sql.DateTime, expenseDate || new Date())
+      .input('notes', sql.NVarChar(255), notes || null)
+      .input('toRecipient', sql.NVarChar(100), toRecipient || null)
+      .input('isAdvance', sql.Bit, isAdvance || false)
+      .input('advanceMonths', sql.Int, advanceMonths || null)
+      .input('createdBy', sql.NVarChar(50), createdBy)
+      .query(`
+        INSERT INTO Expenses (
+          ExpenseName, ExpenseGroupID, CashBoxID, Amount,
+          ExpenseDate, Notes, Torecipient, IsAdvance, AdvanceMonths,
+          CreatedBy, CreatedAt
+        )
+        OUTPUT INSERTED.ExpenseID
+        VALUES (
+          @expenseName, @expenseGroupId, @cashBoxId, @amount,
+          @expenseDate, @notes, @toRecipient, @isAdvance, @advanceMonths,
+          @createdBy, GETDATE()
+        )
+      `);
+    
+    const expenseId = expenseResult.recordset[0].ExpenseID;
+    
+    // 2️⃣ إضافة حركة الخزينة
+    await transaction.request()
+      .input('cashBoxId', sql.Int, cashBoxId)
+      .input('referenceId', sql.Int, expenseId)
+      .input('amount', sql.Decimal(18, 2), amount)
+      .input('notes', sql.NVarChar(sql.MAX), notes || null)
+      .input('createdBy', sql.NVarChar(50), createdBy)
+      .query(`
+        INSERT INTO CashboxTransactions (
+          CashBoxID, 
+          PaymentID,
+          ReferenceID, 
+          ReferenceType, 
+          TransactionType,
+          Amount, 
+          TransactionDate, 
+          Notes, 
+          CreatedBy, 
+          CreatedAt
+        )
+        VALUES (
+          @cashBoxId, 
+          NULL,
+          @referenceId, 
+          'Expense', 
+          N'صرف',
+          @amount, 
+          GETDATE(), 
+          @notes, 
+          @createdBy, 
+          GETDATE()
+        )
+      `);
+    
+    await transaction.commit();
+    
+    res.json({ 
+      success: true, 
+      expenseId: expenseId,
+      message: 'تم إضافة المصروف بنجاح'
+    });
+    
+  } catch (err) {
+    await transaction.rollback();
+    console.error('خطأ في إضافة المصروف:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+
+
 // اختبار سريع للسيرفر
 app.get('/', (req, res) => {
   res.json({ 
