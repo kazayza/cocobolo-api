@@ -520,6 +520,147 @@ app.get('/api/customers-list', async (req, res) => {
   }
 });
 
+// ==========================================
+// 💰 المصروفات - Expenses APIs
+// ==========================================
+
+// جلب مجموعات المصروفات
+app.get('/api/expense-groups', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .query(`
+        SELECT 
+          ExpenseGroupID,
+          ExpenseGroupName,
+          ParentGroupID
+        FROM ExpenseGroups 
+        ORDER BY ExpenseGroupName
+      `);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب مجموعات المصروفات:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// جلب الخزائن
+app.get('/api/cashboxes', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .query(`
+        SELECT CashBoxID, CashBoxName, Description
+        FROM CashBoxes 
+        ORDER BY CashBoxName
+      `);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب الخزائن:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// جلب المصروفات مع البحث والفلتر
+app.get('/api/expenses', async (req, res) => {
+  try {
+    const { search, groupId, startDate, endDate } = req.query;
+    const pool = await connectDB();
+    
+    let query = `
+      SELECT 
+        e.ExpenseID,
+        e.ExpenseName,
+        e.ExpenseDate,
+        e.Amount,
+        e.Notes,
+        e.Torecipient,
+        e.IsAdvance,
+        e.AdvanceMonths,
+        e.CreatedBy,
+        e.CreatedAt,
+        eg.ExpenseGroupID,
+        eg.ExpenseGroupName,
+        cb.CashBoxID,
+        cb.CashBoxName
+      FROM Expenses e
+      INNER JOIN ExpenseGroups eg ON e.ExpenseGroupID = eg.ExpenseGroupID
+      INNER JOIN CashBoxes cb ON e.CashBoxID = cb.CashBoxID
+      WHERE 1=1
+    `;
+    
+    const request = pool.request();
+    
+    // فلتر البحث
+    if (search && search.trim() !== '') {
+      query += ` AND (e.ExpenseName LIKE @search OR e.Torecipient LIKE @search)`;
+      request.input('search', sql.NVarChar, `%${search}%`);
+    }
+    
+    // فلتر المجموعة
+    if (groupId && groupId !== '' && groupId !== '0') {
+      query += ` AND e.ExpenseGroupID = @groupId`;
+      request.input('groupId', sql.Int, groupId);
+    }
+    
+    // فلتر التاريخ
+    if (startDate) {
+      query += ` AND CAST(e.ExpenseDate AS DATE) >= @startDate`;
+      request.input('startDate', sql.Date, startDate);
+    }
+    
+    if (endDate) {
+      query += ` AND CAST(e.ExpenseDate AS DATE) <= @endDate`;
+      request.input('endDate', sql.Date, endDate);
+    }
+    
+    query += ` ORDER BY e.ExpenseDate DESC, e.ExpenseID DESC`;
+    
+    const result = await request.query(query);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب المصروفات:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// جلب إجمالي المصروفات
+app.get('/api/expenses/summary', async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    const pool = await connectDB();
+    
+    let query = `
+      SELECT 
+        COUNT(*) as totalCount,
+        ISNULL(SUM(Amount), 0) as totalAmount,
+        (SELECT COUNT(*) FROM Expenses WHERE CAST(ExpenseDate AS DATE) = CAST(GETDATE() AS DATE)) as todayCount,
+        (SELECT ISNULL(SUM(Amount), 0) FROM Expenses WHERE CAST(ExpenseDate AS DATE) = CAST(GETDATE() AS DATE)) as todayAmount
+      FROM Expenses
+      WHERE 1=1
+    `;
+    
+    const request = pool.request();
+    
+    if (startDate) {
+      query += ` AND CAST(ExpenseDate AS DATE) >= @startDate`;
+      request.input('startDate', sql.Date, startDate);
+    }
+    
+    if (endDate) {
+      query += ` AND CAST(ExpenseDate AS DATE) <= @endDate`;
+      request.input('endDate', sql.Date, endDate);
+    }
+    
+    const result = await request.query(query);
+    res.json(result.recordset[0]);
+  } catch (err) {
+    console.error('خطأ في جلب ملخص المصروفات:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// إضافة مصروف جديد (مع حركة الخزينة)
 // إضافة مصروف جديد (مع حركة الخزينة)
 app.post('/api/expenses', async (req, res) => {
   const transaction = new sql.Transaction(await connectDB());
@@ -617,6 +758,92 @@ app.post('/api/expenses', async (req, res) => {
   }
 });
 
+// تعديل مصروف
+app.put('/api/expenses/:id', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const {
+      expenseName,
+      expenseGroupId,
+      amount,
+      expenseDate,
+      notes,
+      toRecipient,
+      isAdvance,
+      advanceMonths
+    } = req.body;
+    
+    await pool.request()
+      .input('id', sql.Int, req.params.id)
+      .input('expenseName', sql.NVarChar(100), expenseName)
+      .input('expenseGroupId', sql.Int, expenseGroupId)
+      .input('amount', sql.Decimal(18, 2), amount)
+      .input('expenseDate', sql.DateTime, expenseDate)
+      .input('notes', sql.NVarChar(255), notes || null)
+      .input('toRecipient', sql.NVarChar(100), toRecipient || null)
+      .input('isAdvance', sql.Bit, isAdvance || false)
+      .input('advanceMonths', sql.Int, advanceMonths || null)
+      .query(`
+        UPDATE Expenses SET
+          ExpenseName = @expenseName,
+          ExpenseGroupID = @expenseGroupId,
+          Amount = @amount,
+          ExpenseDate = @expenseDate,
+          Notes = @notes,
+          Torecipient = @toRecipient,
+          IsAdvance = @isAdvance,
+          AdvanceMonths = @advanceMonths
+        WHERE ExpenseID = @id
+      `);
+    
+    // تحديث حركة الخزينة المرتبطة
+    await pool.request()
+      .input('referenceId', sql.Int, req.params.id)
+      .input('amount', sql.Decimal(18, 2), amount)
+      .input('notes', sql.NVarChar(sql.MAX), `مصروف: ${expenseName}`)
+      .query(`
+        UPDATE CashboxTransactions SET
+          Amount = @amount,
+          Notes = @notes
+        WHERE ReferenceID = @referenceId AND ReferenceType = 'Expense'
+      `);
+    
+    res.json({ success: true, message: 'تم تعديل المصروف بنجاح' });
+  } catch (err) {
+    console.error('خطأ في تعديل المصروف:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// حذف مصروف
+app.delete('/api/expenses/:id', async (req, res) => {
+  const transaction = new sql.Transaction(await connectDB());
+  
+  try {
+    await transaction.begin();
+    
+    // حذف حركة الخزينة أولاً
+    await transaction.request()
+      .input('referenceId', sql.Int, req.params.id)
+      .query(`
+        DELETE FROM CashboxTransactions 
+        WHERE ReferenceID = @referenceId AND ReferenceType = 'Expense'
+      `);
+    
+    // حذف المصروف
+    await transaction.request()
+      .input('id', sql.Int, req.params.id)
+      .query('DELETE FROM Expenses WHERE ExpenseID = @id');
+    
+    await transaction.commit();
+    
+    res.json({ success: true, message: 'تم حذف المصروف بنجاح' });
+  } catch (err) {
+    await transaction.rollback();
+    console.error('خطأ في حذف المصروف:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 
 // اختبار سريع للسيرفر
