@@ -782,6 +782,78 @@ app.delete('/api/expenses/:id', async (req, res) => {
   }
 });
 
+// تسجيل الدخول مع جلب الصلاحيات
+app.post('/api/login', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    
+    // 1️⃣ التحقق من المستخدم
+    const userResult = await pool.request()
+      .input('username', sql.NVarChar, req.body.username)
+      .input('password', sql.NVarChar, req.body.password)
+      .query(`
+        SELECT UserID, Username, FullName, Email, employeeID 
+        FROM Users 
+        WHERE Username = @username 
+          AND Password = @password 
+          AND IsActive = 1
+      `);
+
+    if (userResult.recordset.length === 0) {
+      return res.json({ 
+        success: false, 
+        message: 'اسم المستخدم أو كلمة المرور غير صحيحة' 
+      });
+    }
+
+    const user = userResult.recordset[0];
+
+    // 2️⃣ جلب صلاحيات المستخدم
+    const permissionsResult = await pool.request()
+      .input('userId', sql.Int, user.UserID)
+      .query(`
+        SELECT 
+          p.PermissionID,
+          p.PermissionName,
+          p.FormName,
+          p.Category,
+          up.CanView,
+          up.CanAdd,
+          up.CanEdit,
+          up.CanDelete
+        FROM UserPermissions up
+        INNER JOIN Permissions p ON up.PermissionID = p.PermissionID
+        WHERE up.UserID = @userId
+      `);
+
+    // 3️⃣ تحويل الصلاحيات لـ Object سهل الاستخدام
+    const permissions = {};
+    permissionsResult.recordset.forEach(perm => {
+      permissions[perm.FormName] = {
+        permissionId: perm.PermissionID,
+        permissionName: perm.PermissionName,
+        category: perm.Category,
+        canView: perm.CanView,
+        canAdd: perm.CanAdd,
+        canEdit: perm.CanEdit,
+        canDelete: perm.CanDelete
+      };
+    });
+
+    // 4️⃣ إرسال البيانات
+    res.json({ 
+      success: true, 
+      user: user,
+      permissions: permissions
+    });
+
+  } catch (err) {
+    console.error('خطأ في تسجيل الدخول:', err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر' });
+  }
+});
+
+
 // ==========================
 // 🏠 الصفحة الرئيسية
 // ==========================
