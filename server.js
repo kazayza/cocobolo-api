@@ -1174,15 +1174,81 @@ app.get('/health', (req, res) => {
   });
 });
 
-// ===== آخر النشاطات =====
+
+// ===== 🔧 تشخيص جداول النشاطات =====
+app.get('/api/activities/debug', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const results = {};
+    
+    // اختبار جدول Parties
+    try {
+      const parties = await pool.request().query(`
+        SELECT TOP 1 PartyName, CreatedAt FROM Parties WHERE PartyType = 1
+      `);
+      results.parties = { 
+        success: true, 
+        count: parties.recordset.length,
+        sample: parties.recordset[0] || null
+      };
+    } catch (e) {
+      results.parties = { success: false, error: e.message };
+    }
+    
+    // اختبار جدول Expenses
+    try {
+      const expenses = await pool.request().query(`
+        SELECT TOP 1 ExpenseName, Amount, CreatedAt FROM Expenses
+      `);
+      results.expenses = { 
+        success: true, 
+        count: expenses.recordset.length,
+        sample: expenses.recordset[0] || null
+      };
+    } catch (e) {
+      results.expenses = { success: false, error: e.message };
+    }
+    
+    // اختبار جدول SalesOpportunities
+    try {
+      const opportunities = await pool.request().query(`
+        SELECT TOP 1 OpportunityName, ExpectedValue, CreatedAt FROM SalesOpportunities
+      `);
+      results.salesOpportunities = { 
+        success: true, 
+        count: opportunities.recordset.length,
+        sample: opportunities.recordset[0] || null
+      };
+    } catch (e) {
+      results.salesOpportunities = { success: false, error: e.message };
+    }
+    
+    res.json({
+      success: true,
+      message: 'نتائج التشخيص',
+      results
+    });
+    
+  } catch (err) {
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
+  }
+});
+
+// ===== آخر النشاطات (نسخة محسنة) =====
 app.get('/api/activities/recent', async (req, res) => {
   try {
-    const pool = await connectDB(); // ← دي اللي ناقصة!
+    const pool = await connectDB();
     
-    const result = await pool.request().query(`
-      SELECT TOP 10 * FROM (
-        -- العملاء الجدد
-        SELECT 
+    // نجيب كل نوع لوحده عشان نعرف مين فيهم فيه مشكلة
+    let allActivities = [];
+    
+    // 1️⃣ العملاء الجدد
+    try {
+      const clients = await pool.request().query(`
+        SELECT TOP 5
           'client' as type,
           N'عميل جديد' as title,
           PartyName as description,
@@ -1191,37 +1257,56 @@ app.get('/api/activities/recent', async (req, res) => {
           '#4CAF50' as color
         FROM Parties 
         WHERE PartyType = 1 AND IsActive = 1
-        
-        UNION ALL
-        
-        -- المصروفات
-        SELECT 
+        ORDER BY CreatedAt DESC
+      `);
+      allActivities = [...allActivities, ...clients.recordset];
+    } catch (e) {
+      console.error('خطأ في جلب العملاء:', e.message);
+    }
+    
+    // 2️⃣ المصروفات
+    try {
+      const expenses = await pool.request().query(`
+        SELECT TOP 5
           'expense' as type,
           N'مصروف' as title,
-          CONCAT(ExpenseName, N' - ', FORMAT(Amount, 'N2'), N' ج.م') as description,
+          ExpenseName + N' - ' + CAST(Amount AS NVARCHAR) + N' ج.م' as description,
           CreatedAt as createdAt,
           'money_off' as icon,
           '#F44336' as color
         FROM Expenses
-        
-        UNION ALL
-        
-        -- الفرص
-        SELECT 
+        ORDER BY CreatedAt DESC
+      `);
+      allActivities = [...allActivities, ...expenses.recordset];
+    } catch (e) {
+      console.error('خطأ في جلب المصروفات:', e.message);
+    }
+    
+    // 3️⃣ الفرص (لو الجدول موجود)
+    try {
+      const opportunities = await pool.request().query(`
+        SELECT TOP 5
           'opportunity' as type,
           N'فرصة جديدة' as title,
-          CONCAT(OpportunityName, N' - ', FORMAT(ExpectedValue, 'N2'), N' ج.م') as description,
+          OpportunityName + N' - ' + CAST(ExpectedValue AS NVARCHAR) + N' ج.م' as description,
           CreatedAt as createdAt,
           'lightbulb' as icon,
           '#FF9800' as color
         FROM SalesOpportunities
-        
-      ) AS AllActivities
-      ORDER BY createdAt DESC
-    `);
+        ORDER BY CreatedAt DESC
+      `);
+      allActivities = [...allActivities, ...opportunities.recordset];
+    } catch (e) {
+      console.error('خطأ في جلب الفرص:', e.message);
+      // مش مشكلة لو الجدول مش موجود
+    }
+    
+    // ترتيب حسب التاريخ وأخذ آخر 10
+    allActivities.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    allActivities = allActivities.slice(0, 10);
     
     // حساب الوقت المنقضي
-    const activities = result.recordset.map(activity => {
+    const activities = allActivities.map(activity => {
       const now = new Date();
       const created = new Date(activity.createdAt);
       const diffMs = now - created;
@@ -1246,13 +1331,18 @@ app.get('/api/activities/recent', async (req, res) => {
       };
     });
     
-    res.json(activities);
+    res.json({
+      success: true,
+      count: activities.length,
+      activities
+    });
+    
   } catch (err) {
     console.error('Error fetching activities:', err);
     res.status(500).json({ 
       success: false,
       error: 'فشل في جلب النشاطات',
-      message: err.message 
+      details: err.message  // ← ده المهم عشان نعرف المشكلة
     });
   }
 });
