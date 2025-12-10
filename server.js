@@ -234,6 +234,220 @@ app.get('/api/customers-list', async (req, res) => {
 });
 
 // ==========================
+// 👥 العملاء - APIs إضافية
+// ==========================
+
+// ✅ جلب تفاصيل عميل واحد
+app.get('/api/clients/:id', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .input('id', sql.Int, req.params.id)
+      .query(`
+        SELECT 
+          p.PartyID, p.PartyName, p.PartyType, p.ContactPerson,
+          p.Phone, p.Phone2, p.Email, p.Address, p.TaxNumber,
+          p.OpeningBalance, p.BalanceType, p.Notes, p.IsActive,
+          p.NationalID, p.FloorNumber, p.CreatedBy, p.CreatedAt,
+          p.ReferralSourceID, p.ReferralSourceClient,
+          rs.SourceName AS ReferralSourceName
+        FROM Parties p
+        LEFT JOIN ReferralSources rs ON p.ReferralSourceID = rs.ReferralSourceID
+        WHERE p.PartyID = @id
+      `);
+    
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ success: false, message: 'العميل غير موجود' });
+    }
+    
+    res.json(result.recordset[0]);
+  } catch (err) {
+    console.error('خطأ في جلب تفاصيل العميل:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ✅ إضافة عميل جديد
+app.post('/api/clients', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const {
+      partyName, contactPerson, phone, phone2, email, address,
+      taxNumber, openingBalance, balanceType, notes, nationalId,
+      floorNumber, referralSourceId, referralSourceClient, createdBy
+    } = req.body;
+    
+    // التحقق من عدم تكرار الاسم
+    const checkResult = await pool.request()
+      .input('partyName', sql.NVarChar(200), partyName)
+      .query('SELECT PartyID FROM Parties WHERE PartyName = @partyName AND IsActive = 1');
+    
+    if (checkResult.recordset.length > 0) {
+      return res.json({ success: false, message: 'اسم العميل موجود مسبقاً' });
+    }
+    
+    const result = await pool.request()
+      .input('partyName', sql.NVarChar(200), partyName)
+      .input('partyType', sql.Int, 1) // عميل
+      .input('contactPerson', sql.NVarChar(100), contactPerson || null)
+      .input('phone', sql.NVarChar(50), phone || null)
+      .input('phone2', sql.NVarChar(50), phone2 || null)
+      .input('email', sql.NVarChar(100), email || null)
+      .input('address', sql.NVarChar(250), address || null)
+      .input('taxNumber', sql.NVarChar(50), taxNumber || null)
+      .input('openingBalance', sql.Decimal(18, 2), openingBalance || 0)
+      .input('balanceType', sql.Char(1), balanceType || 'D')
+      .input('notes', sql.NVarChar(255), notes || null)
+      .input('nationalId', sql.NVarChar(14), nationalId || null)
+      .input('floorNumber', sql.NVarChar(50), floorNumber || null)
+      .input('referralSourceId', sql.Int, referralSourceId || null)
+      .input('referralSourceClient', sql.Int, referralSourceClient || null)
+      .input('createdBy', sql.NVarChar(100), createdBy)
+      .query(`
+        INSERT INTO Parties (
+          PartyName, PartyType, ContactPerson, Phone, Phone2, Email,
+          Address, TaxNumber, OpeningBalance, BalanceType, Notes,
+          NationalID, FloorNumber, ReferralSourceID, ReferralSourceClient,
+          IsActive, CreatedBy, CreatedAt
+        )
+        OUTPUT INSERTED.PartyID
+        VALUES (
+          @partyName, @partyType, @contactPerson, @phone, @phone2, @email,
+          @address, @taxNumber, @openingBalance, @balanceType, @notes,
+          @nationalId, @floorNumber, @referralSourceId, @referralSourceClient,
+          1, @createdBy, GETDATE()
+        )
+      `);
+    
+    res.json({ 
+      success: true, 
+      partyId: result.recordset[0].PartyID,
+      message: 'تم إضافة العميل بنجاح' 
+    });
+  } catch (err) {
+    console.error('خطأ في إضافة العميل:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ✅ تعديل عميل
+app.put('/api/clients/:id', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const {
+      partyName, contactPerson, phone, phone2, email, address,
+      taxNumber, openingBalance, balanceType, notes, nationalId,
+      floorNumber, referralSourceId, referralSourceClient
+    } = req.body;
+    
+    // التحقق من عدم تكرار الاسم (ما عدا نفس العميل)
+    const checkResult = await pool.request()
+      .input('partyName', sql.NVarChar(200), partyName)
+      .input('id', sql.Int, req.params.id)
+      .query('SELECT PartyID FROM Parties WHERE PartyName = @partyName AND PartyID != @id AND IsActive = 1');
+    
+    if (checkResult.recordset.length > 0) {
+      return res.json({ success: false, message: 'اسم العميل موجود مسبقاً' });
+    }
+    
+    await pool.request()
+      .input('id', sql.Int, req.params.id)
+      .input('partyName', sql.NVarChar(200), partyName)
+      .input('contactPerson', sql.NVarChar(100), contactPerson || null)
+      .input('phone', sql.NVarChar(50), phone || null)
+      .input('phone2', sql.NVarChar(50), phone2 || null)
+      .input('email', sql.NVarChar(100), email || null)
+      .input('address', sql.NVarChar(250), address || null)
+      .input('taxNumber', sql.NVarChar(50), taxNumber || null)
+      .input('openingBalance', sql.Decimal(18, 2), openingBalance || 0)
+      .input('balanceType', sql.Char(1), balanceType || 'D')
+      .input('notes', sql.NVarChar(255), notes || null)
+      .input('nationalId', sql.NVarChar(14), nationalId || null)
+      .input('floorNumber', sql.NVarChar(50), floorNumber || null)
+      .input('referralSourceId', sql.Int, referralSourceId || null)
+      .input('referralSourceClient', sql.Int, referralSourceClient || null)
+      .query(`
+        UPDATE Parties SET
+          PartyName = @partyName, ContactPerson = @contactPerson,
+          Phone = @phone, Phone2 = @phone2, Email = @email,
+          Address = @address, TaxNumber = @taxNumber,
+          OpeningBalance = @openingBalance, BalanceType = @balanceType,
+          Notes = @notes, NationalID = @nationalId, FloorNumber = @floorNumber,
+          ReferralSourceID = @referralSourceId, ReferralSourceClient = @referralSourceClient
+        WHERE PartyID = @id
+      `);
+    
+    res.json({ success: true, message: 'تم تعديل العميل بنجاح' });
+  } catch (err) {
+    console.error('خطأ في تعديل العميل:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ✅ حذف عميل (Soft Delete)
+app.delete('/api/clients/:id', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    
+    // التحقق من عدم وجود معاملات مرتبطة
+    const checkResult = await pool.request()
+      .input('id', sql.Int, req.params.id)
+      .query('SELECT COUNT(*) as count FROM Transactions WHERE PartyID = @id');
+    
+    if (checkResult.recordset[0].count > 0) {
+      return res.json({ 
+        success: false, 
+        message: 'لا يمكن حذف العميل لوجود معاملات مرتبطة به' 
+      });
+    }
+    
+    await pool.request()
+      .input('id', sql.Int, req.params.id)
+      .query('UPDATE Parties SET IsActive = 0 WHERE PartyID = @id');
+    
+    res.json({ success: true, message: 'تم حذف العميل بنجاح' });
+  } catch (err) {
+    console.error('خطأ في حذف العميل:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ✅ جلب مصادر الإحالة
+app.get('/api/referral-sources', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .query('SELECT ReferralSourceID, SourceName FROM ReferralSources WHERE IsActive = 1 ORDER BY SourceName');
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب مصادر الإحالة:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ✅ ملخص العملاء
+app.get('/api/clients/summary', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .query(`
+        SELECT 
+          (SELECT COUNT(*) FROM Parties WHERE PartyType = 1 AND IsActive = 1) as totalClients,
+          (SELECT COUNT(*) FROM Parties WHERE PartyType = 1 AND IsActive = 1 
+           AND CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE)) as newToday,
+          (SELECT COUNT(*) FROM Parties WHERE PartyType = 1 AND IsActive = 1 
+           AND MONTH(CreatedAt) = MONTH(GETDATE()) AND YEAR(CreatedAt) = YEAR(GETDATE())) as newThisMonth
+      `);
+    res.json(result.recordset[0]);
+  } catch (err) {
+    console.error('خطأ في جلب ملخص العملاء:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+
+
+// ==========================
 // 🔔 الإشعارات
 // ==========================
 app.get('/api/notifications/unread', async (req, res) => {
