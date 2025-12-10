@@ -1,6 +1,7 @@
 const express = require('express');
 const sql = require('mssql');
 const cors = require('cors');
+const admin = require('firebase-admin'); // أضفنا Firebase Admin
 require('dotenv').config();
 
 const app = express();
@@ -40,6 +41,18 @@ async function connectDB() {
     console.error('❌ خطأ في الاتصال بقاعدة البيانات:', err.message);
     throw err;
   }
+}
+
+// تهيئة Firebase Admin SDK من Railway Variables (آمن 100%)
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+    }),
+  });
+  console.log('Firebase Admin SDK شغال بنجاح');
 }
 
 // تشغيل الاتصال
@@ -367,6 +380,92 @@ app.post('/api/notifications', async (req, res) => {
     });
   } catch (err) {
     console.error('خطأ في إرسال الإشعار:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ==========================
+// حفظ FCM Token للمستخدم
+// ==========================
+app.post('/api/users/save-token', async (req, res) => {
+  try {
+    const { userId, fcmToken } = req.body;
+    
+    if (!userId || !fcmToken) {
+      return res.status(400).json({ success: false, message: 'userId و fcmToken مطلوبين' });
+    }
+
+    const pool = await connectDB();
+    await pool.request()
+      .input('userId', sql.Int, userId)
+      .input('fcmToken', sql.NVarChar(500), fcmToken)
+      .query('UPDATE Users SET FCMToken = @fcmToken WHERE UserID = @userId');
+
+    console.log(`تم حفظ FCM Token للمستخدم ${userId}`);
+    res.json({ success: true, message: 'تم حفظ التوكن بنجاح' });
+
+  } catch (err) {
+    console.error('خطأ في حفظ FCM Token:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ==========================
+// إرسال Push Notification لمستخدم معين
+// ==========================
+app.post('/api/notifications/send-push', async (req, res) => {
+  try {
+    const { recipientUser, title, message, data } = req.body;
+
+    if (!recipientUser || !title || !message) {
+      return res.status(400).json({ success: false, message: 'البيانات ناقصة' });
+    }
+
+    const pool = await connectDB();
+    
+    const tokenResult = await pool.request()
+      .input('username', sql.NVarChar, recipientUser)
+      .query('SELECT FCMToken FROM Users WHERE Username = @username AND FCMToken IS NOT NULL');
+
+    if (tokenResult.recordset.length === 0) {
+      return res.json({ success: false, message: 'المستخدم لا يملك توكن FCM' });
+    }
+
+    const fcmToken = tokenResult.recordset[0].FCMToken;
+
+    const payload = {
+      token: fcmToken,
+      notification: {
+        title: title,
+        body: message,
+      },
+      data: data || {},
+      android: {
+        priority: 'high',
+        notification: {
+          sound: 'default',
+          channelId: 'high_importance_channel',
+        },
+      },
+      apns: {
+        payload: {
+          aps: {
+            sound: 'default',
+          },
+        },
+      },
+    };
+
+    await admin.messaging().send(payload);
+    console.log(`تم إرسال Push بنجاح لـ ${recipientUser}`);
+
+    res.json({ 
+      success: true, 
+      message: 'تم إرسال الإشعار بنجاح'
+    });
+
+  } catch (err) {
+    console.error('خطأ في إرسال Push:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
