@@ -1177,48 +1177,48 @@ app.get('/health', (req, res) => {
 // ===== آخر النشاطات =====
 app.get('/api/activities/recent', async (req, res) => {
   try {
-    const query = `
+    const pool = await connectDB(); // ← دي اللي ناقصة!
+    
+    const result = await pool.request().query(`
       SELECT TOP 10 * FROM (
         -- العملاء الجدد
         SELECT 
           'client' as type,
-          'عميل جديد' as title,
+          N'عميل جديد' as title,
           PartyName as description,
           CreatedAt as createdAt,
           'person_add' as icon,
           '#4CAF50' as color
-        FROM dbo.Parties 
-        WHERE PartyType = 1
+        FROM Parties 
+        WHERE PartyType = 1 AND IsActive = 1
         
         UNION ALL
         
         -- المصروفات
         SELECT 
           'expense' as type,
-          'مصروف' as title,
-          CONCAT(ExpenseName, ' - ', CAST(Amount AS VARCHAR), ' ج.م') as description,
+          N'مصروف' as title,
+          CONCAT(ExpenseName, N' - ', FORMAT(Amount, 'N2'), N' ج.م') as description,
           CreatedAt as createdAt,
           'money_off' as icon,
           '#F44336' as color
-        FROM dbo.Expenses
+        FROM Expenses
         
         UNION ALL
         
         -- الفرص
         SELECT 
           'opportunity' as type,
-          'فرصة جديدة' as title,
-          CONCAT(OpportunityName, ' - ', CAST(ExpectedValue AS VARCHAR), ' ج.م') as description,
+          N'فرصة جديدة' as title,
+          CONCAT(OpportunityName, N' - ', FORMAT(ExpectedValue, 'N2'), N' ج.م') as description,
           CreatedAt as createdAt,
           'lightbulb' as icon,
           '#FF9800' as color
-        FROM dbo.SalesOpportunities
+        FROM SalesOpportunities
         
       ) AS AllActivities
       ORDER BY createdAt DESC
-    `;
-    
-    const result = await sql.query(query);
+    `);
     
     // حساب الوقت المنقضي
     const activities = result.recordset.map(activity => {
@@ -1249,18 +1249,12 @@ app.get('/api/activities/recent', async (req, res) => {
     res.json(activities);
   } catch (err) {
     console.error('Error fetching activities:', err);
-    res.status(500).json({ error: 'فشل في جلب النشاطات' });
+    res.status(500).json({ 
+      success: false,
+      error: 'فشل في جلب النشاطات',
+      message: err.message 
+    });
   }
-});
-
-
-// ✅ Error Handler في آخر الملف قبل app.listen
-app.use((err, req, res, next) => {
-  console.error('❌ خطأ غير متوقع:', err);
-  res.status(500).json({ 
-    success: false, 
-    message: 'خطأ في السيرفر' 
-  });
 });
 
 
