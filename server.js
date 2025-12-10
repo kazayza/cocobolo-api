@@ -952,6 +952,24 @@ app.delete('/api/expenses/:id', async (req, res) => {
   }
 });
 
+// ✅ Health Check (مهم لـ Railway)
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString() 
+  });
+});
+
+// ✅ Error Handler في آخر الملف قبل app.listen
+app.use((err, req, res, next) => {
+  console.error('❌ خطأ غير متوقع:', err);
+  res.status(500).json({ 
+    success: false, 
+    message: 'خطأ في السيرفر' 
+  });
+});
+
+
 // ==========================
 // 🚀 تشغيل السيرفر
 // ==========================
