@@ -1187,7 +1187,7 @@ app.get('/api/activities/recent', async (req, res) => {
           CreatedAt as createdAt,
           'person_add' as icon,
           '#4CAF50' as color
-        FROM Parties 
+        FROM dbo.Parties 
         WHERE PartyType = 1
         
         UNION ALL
@@ -1200,7 +1200,7 @@ app.get('/api/activities/recent', async (req, res) => {
           CreatedAt as createdAt,
           'money_off' as icon,
           '#F44336' as color
-        FROM Expenses
+        FROM dbo.Expenses
         
         UNION ALL
         
@@ -1212,7 +1212,7 @@ app.get('/api/activities/recent', async (req, res) => {
           CreatedAt as createdAt,
           'lightbulb' as icon,
           '#FF9800' as color
-        FROM SalesOpportunities
+        FROM dbo.SalesOpportunities
         
       ) AS AllActivities
       ORDER BY createdAt DESC
