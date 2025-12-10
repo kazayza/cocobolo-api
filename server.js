@@ -1174,6 +1174,86 @@ app.get('/health', (req, res) => {
   });
 });
 
+// ===== آخر النشاطات =====
+app.get('/api/activities/recent', async (req, res) => {
+  try {
+    const query = `
+      SELECT TOP 10 * FROM (
+        -- العملاء الجدد
+        SELECT 
+          'client' as type,
+          'عميل جديد' as title,
+          PartyName as description,
+          CreatedAt as createdAt,
+          'person_add' as icon,
+          '#4CAF50' as color
+        FROM Parties 
+        WHERE PartyType = 1
+        
+        UNION ALL
+        
+        -- المصروفات
+        SELECT 
+          'expense' as type,
+          'مصروف' as title,
+          CONCAT(ExpenseName, ' - ', CAST(Amount AS VARCHAR), ' ج.م') as description,
+          CreatedAt as createdAt,
+          'money_off' as icon,
+          '#F44336' as color
+        FROM Expenses
+        
+        UNION ALL
+        
+        -- الفرص
+        SELECT 
+          'opportunity' as type,
+          'فرصة جديدة' as title,
+          CONCAT(OpportunityName, ' - ', CAST(ExpectedValue AS VARCHAR), ' ج.م') as description,
+          CreatedAt as createdAt,
+          'lightbulb' as icon,
+          '#FF9800' as color
+        FROM SalesOpportunities
+        
+      ) AS AllActivities
+      ORDER BY createdAt DESC
+    `;
+    
+    const result = await sql.query(query);
+    
+    // حساب الوقت المنقضي
+    const activities = result.recordset.map(activity => {
+      const now = new Date();
+      const created = new Date(activity.createdAt);
+      const diffMs = now - created;
+      const diffMins = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMs / 3600000);
+      const diffDays = Math.floor(diffMs / 86400000);
+      
+      let timeAgo;
+      if (diffMins < 1) {
+        timeAgo = 'الآن';
+      } else if (diffMins < 60) {
+        timeAgo = `منذ ${diffMins} د`;
+      } else if (diffHours < 24) {
+        timeAgo = `منذ ${diffHours} س`;
+      } else {
+        timeAgo = `منذ ${diffDays} يوم`;
+      }
+      
+      return {
+        ...activity,
+        timeAgo
+      };
+    });
+    
+    res.json(activities);
+  } catch (err) {
+    console.error('Error fetching activities:', err);
+    res.status(500).json({ error: 'فشل في جلب النشاطات' });
+  }
+});
+
+
 // ✅ Error Handler في آخر الملف قبل app.listen
 app.use((err, req, res, next) => {
   console.error('❌ خطأ غير متوقع:', err);
