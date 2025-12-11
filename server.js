@@ -1349,6 +1349,408 @@ app.get('/api/activities/recent', async (req, res) => {
 
 
 // ==========================
+// 🎯 فرص البيع (Sales Opportunities)
+// ==========================
+
+// ✅ جلب المراحل
+app.get('/api/opportunities/stages', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .query(`
+        SELECT StageID, StageName, StageNameAr, StageOrder, StageColor
+        FROM SalesStages 
+        WHERE IsActive = 1 
+        ORDER BY StageOrder
+      `);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب المراحل:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ✅ جلب مصادر التواصل
+app.get('/api/opportunities/sources', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .query(`
+        SELECT SourceID, SourceName, SourceNameAr, SourceIcon
+        FROM ContactSources 
+        WHERE IsActive = 1 
+        ORDER BY SourceName
+      `);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب مصادر التواصل:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ✅ جلب حالات التواصل
+app.get('/api/opportunities/statuses', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .query(`
+        SELECT StatusID, StatusName, StatusNameAr
+        FROM ContactStatus 
+        WHERE IsActive = 1 
+        ORDER BY StatusID
+      `);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب حالات التواصل:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ✅ ملخص الفرص
+app.get('/api/opportunities/summary', async (req, res) => {
+  try {
+    const { username } = req.query;
+    const pool = await connectDB();
+    
+    const result = await pool.request()
+      .query(`
+        SELECT 
+          COUNT(*) as totalOpportunities,
+          SUM(CASE WHEN StageID = 1 THEN 1 ELSE 0 END) as leadCount,
+          SUM(CASE WHEN StageID = 2 THEN 1 ELSE 0 END) as potentialCount,
+          SUM(CASE WHEN StageID = 3 THEN 1 ELSE 0 END) as closedCount,
+          SUM(CASE WHEN StageID = 4 THEN 1 ELSE 0 END) as lostCount,
+          SUM(CASE WHEN StageID = 5 THEN 1 ELSE 0 END) as notInterestedCount,
+          SUM(CASE WHEN CAST(NextFollowUpDate AS DATE) = CAST(GETDATE() AS DATE) THEN 1 ELSE 0 END) as todayFollowUp,
+          SUM(CASE WHEN CAST(NextFollowUpDate AS DATE) < CAST(GETDATE() AS DATE) AND StageID NOT IN (3,4,5) THEN 1 ELSE 0 END) as overdueFollowUp,
+          ISNULL(SUM(CASE WHEN StageID = 3 THEN ExpectedValue ELSE 0 END), 0) as totalClosedValue
+        FROM SalesOpportunities 
+        WHERE IsActive = 1
+      `);
+    
+    res.json(result.recordset[0]);
+  } catch (err) {
+    console.error('خطأ في جلب ملخص الفرص:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ✅ جلب كل الفرص مع الفلترة
+app.get('/api/opportunities', async (req, res) => {
+  try {
+    const { search, stageId, sourceId, employeeId, followUpStatus } = req.query;
+    const pool = await connectDB();
+    
+    let query = `
+      SELECT 
+        o.OpportunityID,
+        o.PartyID,
+        p.PartyName AS ClientName,
+        p.Phone AS Phone1,
+        p.Phone2,
+        p.Address,
+        o.EmployeeID,
+        e.FullName AS EmployeeName,
+        o.SourceID,
+        cs.SourceName,
+        cs.SourceNameAr,
+        cs.SourceIcon,
+        o.StageID,
+        ss.StageName,
+        ss.StageNameAr,
+        ss.StageColor,
+        ss.StageOrder,
+        o.StatusID,
+        cst.StatusName,
+        cst.StatusNameAr,
+        o.InterestedProduct,
+        o.ExpectedValue,
+        o.Location,
+        o.FirstContactDate,
+        o.NextFollowUpDate,
+        o.LastContactDate,
+        o.Notes,
+        o.CreatedBy,
+        o.CreatedAt,
+        DATEDIFF(DAY, o.FirstContactDate, GETDATE()) AS DaysSinceFirstContact,
+        CASE 
+          WHEN o.NextFollowUpDate IS NULL THEN N'NotSet'
+          WHEN CAST(o.NextFollowUpDate AS DATE) < CAST(GETDATE() AS DATE) THEN N'Overdue'
+          WHEN CAST(o.NextFollowUpDate AS DATE) = CAST(GETDATE() AS DATE) THEN N'Today'
+          WHEN CAST(o.NextFollowUpDate AS DATE) = DATEADD(DAY, 1, CAST(GETDATE() AS DATE)) THEN N'Tomorrow'
+          ELSE N'Upcoming'
+        END AS FollowUpStatus
+      FROM SalesOpportunities o
+      LEFT JOIN Parties p ON o.PartyID = p.PartyID
+      LEFT JOIN Employees e ON o.EmployeeID = e.EmployeeID
+      LEFT JOIN ContactSources cs ON o.SourceID = cs.SourceID
+      LEFT JOIN SalesStages ss ON o.StageID = ss.StageID
+      LEFT JOIN ContactStatus cst ON o.StatusID = cst.StatusID
+      WHERE o.IsActive = 1
+    `;
+    
+    const request = pool.request();
+    
+    // فلترة بالبحث
+    if (search && search.trim() !== '') {
+      query += ` AND (p.PartyName LIKE @search OR p.Phone LIKE @search OR o.InterestedProduct LIKE @search)`;
+      request.input('search', sql.NVarChar, `%${search}%`);
+    }
+    
+    // فلترة بالمرحلة
+    if (stageId && stageId !== '' && stageId !== '0') {
+      query += ` AND o.StageID = @stageId`;
+      request.input('stageId', sql.Int, stageId);
+    }
+    
+    // فلترة بمصدر التواصل
+    if (sourceId && sourceId !== '' && sourceId !== '0') {
+      query += ` AND o.SourceID = @sourceId`;
+      request.input('sourceId', sql.Int, sourceId);
+    }
+    
+    // فلترة بالموظف
+    if (employeeId && employeeId !== '' && employeeId !== '0') {
+      query += ` AND o.EmployeeID = @employeeId`;
+      request.input('employeeId', sql.Int, employeeId);
+    }
+    
+    // فلترة بحالة المتابعة
+    if (followUpStatus && followUpStatus !== '') {
+      switch (followUpStatus) {
+        case 'Overdue':
+          query += ` AND CAST(o.NextFollowUpDate AS DATE) < CAST(GETDATE() AS DATE) AND o.StageID NOT IN (3,4,5)`;
+          break;
+        case 'Today':
+          query += ` AND CAST(o.NextFollowUpDate AS DATE) = CAST(GETDATE() AS DATE)`;
+          break;
+        case 'Tomorrow':
+          query += ` AND CAST(o.NextFollowUpDate AS DATE) = DATEADD(DAY, 1, CAST(GETDATE() AS DATE))`;
+          break;
+        case 'Upcoming':
+          query += ` AND CAST(o.NextFollowUpDate AS DATE) > DATEADD(DAY, 1, CAST(GETDATE() AS DATE))`;
+          break;
+      }
+    }
+    
+    query += ` ORDER BY ss.StageOrder, o.NextFollowUpDate, o.CreatedAt DESC`;
+    
+    const result = await request.query(query);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب الفرص:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ✅ جلب تفاصيل فرصة واحدة
+app.get('/api/opportunities/:id', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .input('id', sql.Int, req.params.id)
+      .query(`
+        SELECT 
+          o.*,
+          p.PartyName AS ClientName,
+          p.Phone AS Phone1,
+          p.Phone2,
+          p.Email,
+          p.Address,
+          e.FullName AS EmployeeName,
+          cs.SourceName,
+          cs.SourceNameAr,
+          cs.SourceIcon,
+          ss.StageName,
+          ss.StageNameAr,
+          ss.StageColor,
+          cst.StatusName,
+          cst.StatusNameAr,
+          lr.ReasonName AS LostReasonName,
+          lr.ReasonNameAr AS LostReasonNameAr
+        FROM SalesOpportunities o
+        LEFT JOIN Parties p ON o.PartyID = p.PartyID
+        LEFT JOIN Employees e ON o.EmployeeID = e.EmployeeID
+        LEFT JOIN ContactSources cs ON o.SourceID = cs.SourceID
+        LEFT JOIN SalesStages ss ON o.StageID = ss.StageID
+        LEFT JOIN ContactStatus cst ON o.StatusID = cst.StatusID
+        LEFT JOIN LostReasons lr ON o.LostReasonID = lr.LostReasonID
+        WHERE o.OpportunityID = @id
+      `);
+    
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ success: false, message: 'الفرصة غير موجودة' });
+    }
+    
+    res.json(result.recordset[0]);
+  } catch (err) {
+    console.error('خطأ في جلب تفاصيل الفرصة:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ✅ إضافة فرصة جديدة
+app.post('/api/opportunities', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const {
+      partyId, employeeId, sourceId, stageId, statusId,
+      interestedProduct, expectedValue, location,
+      nextFollowUpDate, notes, createdBy
+    } = req.body;
+    
+    const result = await pool.request()
+      .input('partyId', sql.Int, partyId)
+      .input('employeeId', sql.Int, employeeId || null)
+      .input('sourceId', sql.Int, sourceId || null)
+      .input('stageId', sql.Int, stageId || 1)
+      .input('statusId', sql.Int, statusId || 1)
+      .input('interestedProduct', sql.NVarChar(200), interestedProduct || null)
+      .input('expectedValue', sql.Decimal(18, 2), expectedValue || 0)
+      .input('location', sql.NVarChar(200), location || null)
+      .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate || null)
+      .input('notes', sql.NVarChar(500), notes || null)
+      .input('createdBy', sql.NVarChar(50), createdBy)
+      .query(`
+        INSERT INTO SalesOpportunities (
+          PartyID, EmployeeID, SourceID, StageID, StatusID,
+          InterestedProduct, ExpectedValue, Location,
+          FirstContactDate, NextFollowUpDate, Notes,
+          IsActive, CreatedBy, CreatedAt
+        )
+        OUTPUT INSERTED.OpportunityID
+        VALUES (
+          @partyId, @employeeId, @sourceId, @stageId, @statusId,
+          @interestedProduct, @expectedValue, @location,
+          GETDATE(), @nextFollowUpDate, @notes,
+          1, @createdBy, GETDATE()
+        )
+      `);
+    
+    res.json({ 
+      success: true, 
+      opportunityId: result.recordset[0].OpportunityID,
+      message: 'تم إضافة الفرصة بنجاح' 
+    });
+  } catch (err) {
+    console.error('خطأ في إضافة الفرصة:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ✅ تعديل فرصة
+app.put('/api/opportunities/:id', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const {
+      partyId, employeeId, sourceId, stageId, statusId,
+      interestedProduct, expectedValue, location,
+      nextFollowUpDate, notes, lostReasonId, lostNotes, updatedBy
+    } = req.body;
+    
+    await pool.request()
+      .input('id', sql.Int, req.params.id)
+      .input('partyId', sql.Int, partyId)
+      .input('employeeId', sql.Int, employeeId || null)
+      .input('sourceId', sql.Int, sourceId || null)
+      .input('stageId', sql.Int, stageId)
+      .input('statusId', sql.Int, statusId || null)
+      .input('interestedProduct', sql.NVarChar(200), interestedProduct || null)
+      .input('expectedValue', sql.Decimal(18, 2), expectedValue || 0)
+      .input('location', sql.NVarChar(200), location || null)
+      .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate || null)
+      .input('notes', sql.NVarChar(500), notes || null)
+      .input('lostReasonId', sql.Int, lostReasonId || null)
+      .input('lostNotes', sql.NVarChar(500), lostNotes || null)
+      .input('updatedBy', sql.NVarChar(50), updatedBy)
+      .query(`
+        UPDATE SalesOpportunities SET
+          PartyID = @partyId,
+          EmployeeID = @employeeId,
+          SourceID = @sourceId,
+          StageID = @stageId,
+          StatusID = @statusId,
+          InterestedProduct = @interestedProduct,
+          ExpectedValue = @expectedValue,
+          Location = @location,
+          NextFollowUpDate = @nextFollowUpDate,
+          Notes = @notes,
+          LostReasonID = @lostReasonId,
+          LostNotes = @lostNotes,
+          LastUpdatedBy = @updatedBy,
+          LastUpdatedAt = GETDATE()
+        WHERE OpportunityID = @id
+      `);
+    
+    res.json({ success: true, message: 'تم تعديل الفرصة بنجاح' });
+  } catch (err) {
+    console.error('خطأ في تعديل الفرصة:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ✅ تغيير المرحلة فقط (سريع)
+app.put('/api/opportunities/:id/stage', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const { stageId, updatedBy } = req.body;
+    
+    await pool.request()
+      .input('id', sql.Int, req.params.id)
+      .input('stageId', sql.Int, stageId)
+      .input('updatedBy', sql.NVarChar(50), updatedBy)
+      .query(`
+        UPDATE SalesOpportunities SET
+          StageID = @stageId,
+          LastContactDate = GETDATE(),
+          LastUpdatedBy = @updatedBy,
+          LastUpdatedAt = GETDATE()
+        WHERE OpportunityID = @id
+      `);
+    
+    res.json({ success: true, message: 'تم تغيير المرحلة بنجاح' });
+  } catch (err) {
+    console.error('خطأ في تغيير المرحلة:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ✅ حذف فرصة (Soft Delete)
+app.delete('/api/opportunities/:id', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    
+    await pool.request()
+      .input('id', sql.Int, req.params.id)
+      .query('UPDATE SalesOpportunities SET IsActive = 0 WHERE OpportunityID = @id');
+    
+    res.json({ success: true, message: 'تم حذف الفرصة بنجاح' });
+  } catch (err) {
+    console.error('خطأ في حذف الفرصة:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ✅ جلب الموظفين (للفلترة)
+app.get('/api/employees', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .query(`
+        SELECT EmployeeID, FullName, JobTitle
+        FROM Employees 
+        WHERE Status = N'نشط'
+        ORDER BY FullName
+      `);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب الموظفين:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+
+// ==========================
 // 🚀 تشغيل السيرفر
 // ==========================
 const PORT = process.env.PORT || 8080;
