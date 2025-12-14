@@ -1,7 +1,7 @@
 const express = require('express');
 const sql = require('mssql');
 const cors = require('cors');
-const admin = require('firebase-admin'); // أضفنا Firebase Admin
+const admin = require('firebase-admin');
 require('dotenv').config();
 
 const app = express();
@@ -43,7 +43,7 @@ async function connectDB() {
   }
 }
 
-// تهيئة Firebase Admin SDK من Railway Variables (آمن 100%)
+// تهيئة Firebase Admin SDK
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert({
@@ -55,11 +55,10 @@ if (!admin.apps.length) {
   console.log('Firebase Admin SDK شغال بنجاح');
 }
 
-// تشغيل الاتصال
 connectDB();
 
 // ==========================
-// 🏠 الصفحة الرئيسية - للتأكد إن السيرفر شغال
+// 🏠 الصفحة الرئيسية
 // ==========================
 app.get('/', (req, res) => {
   res.json({ 
@@ -90,13 +89,22 @@ app.get('/api/test', async (req, res) => {
 });
 
 // ==========================
-// 🔐 تسجيل الدخول مع الصلاحيات (مرة واحدة فقط!)
+// ✅ Health Check
+// ==========================
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString() 
+  });
+});
+
+// ==========================
+// 🔐 تسجيل الدخول
 // ==========================
 app.post('/api/login', async (req, res) => {
   try {
     const pool = await connectDB();
     
-    // 1️⃣ التحقق من المستخدم
     const userResult = await pool.request()
       .input('username', sql.NVarChar, req.body.username)
       .input('password', sql.NVarChar, req.body.password)
@@ -117,25 +125,17 @@ app.post('/api/login', async (req, res) => {
 
     const user = userResult.recordset[0];
 
-    // 2️⃣ جلب صلاحيات المستخدم
     const permissionsResult = await pool.request()
       .input('userId', sql.Int, user.UserID)
       .query(`
         SELECT 
-          p.PermissionID,
-          p.PermissionName,
-          p.FormName,
-          p.Category,
-          up.CanView,
-          up.CanAdd,
-          up.CanEdit,
-          up.CanDelete
+          p.PermissionID, p.PermissionName, p.FormName, p.Category,
+          up.CanView, up.CanAdd, up.CanEdit, up.CanDelete
         FROM UserPermissions up
         INNER JOIN Permissions p ON up.PermissionID = p.PermissionID
         WHERE up.UserID = @userId
       `);
 
-    // 3️⃣ تحويل الصلاحيات لـ Object
     const permissions = {};
     permissionsResult.recordset.forEach(perm => {
       permissions[perm.FormName] = {
@@ -149,12 +149,7 @@ app.post('/api/login', async (req, res) => {
       };
     });
 
-    // 4️⃣ إرسال البيانات
-    res.json({ 
-      success: true, 
-      user: user,
-      permissions: permissions
-    });
+    res.json({ success: true, user, permissions });
 
   } catch (err) {
     console.error('خطأ في تسجيل الدخول:', err);
@@ -176,11 +171,10 @@ app.get('/api/dashboard', async (req, res) => {
       .query(`
         SELECT 
           (SELECT COUNT(*) FROM Parties WHERE CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE)) as newClientsToday,
-          (SELECT COUNT(*) FROM SalesOpportunities WHERE StageID NOT IN (6,7)) as openOpportunities,
+          (SELECT COUNT(*) FROM SalesOpportunities WHERE IsActive = 1 AND StageID NOT IN (3,4,5)) as openOpportunities,
           (SELECT COUNT(*) FROM CRM_Tasks WHERE CAST(DueDate AS DATE) = CAST(GETDATE() AS DATE) AND Status != 'Completed') as tasksToday,
           (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) AND TransactionType = 'Sale') as salesToday,
-          (SELECT COUNT(*) FROM Notifications 
-           WHERE RecipientUser = @username AND IsRead = 0) as unreadCount
+          (SELECT COUNT(*) FROM Notifications WHERE RecipientUser = @username AND IsRead = 0) as unreadCount
       `);
 
     res.json({
@@ -233,9 +227,50 @@ app.get('/api/customers-list', async (req, res) => {
   }
 });
 
-// ==========================
-// 👥 العملاء - APIs إضافية
-// ==========================
+// ✅ بحث عن عميل بالاسم أو التليفون
+app.get('/api/clients/search', async (req, res) => {
+  try {
+    const { q } = req.query;
+    const pool = await connectDB();
+    
+    const result = await pool.request()
+      .input('search', sql.NVarChar, `%${q}%`)
+      .query(`
+        SELECT TOP 20 
+          PartyID, PartyName, Phone, Phone2, Address
+        FROM Parties 
+        WHERE IsActive = 1 
+          AND PartyType = 1
+          AND (PartyName LIKE @search OR Phone LIKE @search OR Phone2 LIKE @search)
+        ORDER BY PartyName
+      `);
+    
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في البحث عن العميل:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ✅ ملخص العملاء
+app.get('/api/clients/summary', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .query(`
+        SELECT 
+          (SELECT COUNT(*) FROM Parties WHERE PartyType = 1 AND IsActive = 1) as totalClients,
+          (SELECT COUNT(*) FROM Parties WHERE PartyType = 1 AND IsActive = 1 
+           AND CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE)) as newToday,
+          (SELECT COUNT(*) FROM Parties WHERE PartyType = 1 AND IsActive = 1 
+           AND MONTH(CreatedAt) = MONTH(GETDATE()) AND YEAR(CreatedAt) = YEAR(GETDATE())) as newThisMonth
+      `);
+    res.json(result.recordset[0]);
+  } catch (err) {
+    console.error('خطأ في جلب ملخص العملاء:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
 
 // ✅ جلب تفاصيل عميل واحد
 app.get('/api/clients/:id', async (req, res) => {
@@ -277,7 +312,6 @@ app.post('/api/clients', async (req, res) => {
       floorNumber, referralSourceId, referralSourceClient, createdBy
     } = req.body;
     
-    // التحقق من عدم تكرار الاسم
     const checkResult = await pool.request()
       .input('partyName', sql.NVarChar(200), partyName)
       .query('SELECT PartyID FROM Parties WHERE PartyName = @partyName AND IsActive = 1');
@@ -288,7 +322,7 @@ app.post('/api/clients', async (req, res) => {
     
     const result = await pool.request()
       .input('partyName', sql.NVarChar(200), partyName)
-      .input('partyType', sql.Int, 1) // عميل
+      .input('partyType', sql.Int, 1)
       .input('contactPerson', sql.NVarChar(100), contactPerson || null)
       .input('phone', sql.NVarChar(50), phone || null)
       .input('phone2', sql.NVarChar(50), phone2 || null)
@@ -340,7 +374,6 @@ app.put('/api/clients/:id', async (req, res) => {
       floorNumber, referralSourceId, referralSourceClient
     } = req.body;
     
-    // التحقق من عدم تكرار الاسم (ما عدا نفس العميل)
     const checkResult = await pool.request()
       .input('partyName', sql.NVarChar(200), partyName)
       .input('id', sql.Int, req.params.id)
@@ -384,12 +417,11 @@ app.put('/api/clients/:id', async (req, res) => {
   }
 });
 
-// ✅ حذف عميل (Soft Delete)
+// ✅ حذف عميل
 app.delete('/api/clients/:id', async (req, res) => {
   try {
     const pool = await connectDB();
     
-    // التحقق من عدم وجود معاملات مرتبطة
     const checkResult = await pool.request()
       .input('id', sql.Int, req.params.id)
       .query('SELECT COUNT(*) as count FROM Transactions WHERE PartyID = @id');
@@ -412,7 +444,7 @@ app.delete('/api/clients/:id', async (req, res) => {
   }
 });
 
-// ✅ جلب مصادر الإحالة
+// ✅ مصادر الإحالة
 app.get('/api/referral-sources', async (req, res) => {
   try {
     const pool = await connectDB();
@@ -424,28 +456,6 @@ app.get('/api/referral-sources', async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
-
-// ✅ ملخص العملاء
-app.get('/api/clients/summary', async (req, res) => {
-  try {
-    const pool = await connectDB();
-    const result = await pool.request()
-      .query(`
-        SELECT 
-          (SELECT COUNT(*) FROM Parties WHERE PartyType = 1 AND IsActive = 1) as totalClients,
-          (SELECT COUNT(*) FROM Parties WHERE PartyType = 1 AND IsActive = 1 
-           AND CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE)) as newToday,
-          (SELECT COUNT(*) FROM Parties WHERE PartyType = 1 AND IsActive = 1 
-           AND MONTH(CreatedAt) = MONTH(GETDATE()) AND YEAR(CreatedAt) = YEAR(GETDATE())) as newThisMonth
-      `);
-    res.json(result.recordset[0]);
-  } catch (err) {
-    console.error('خطأ في جلب ملخص العملاء:', err);
-    res.status(500).json({ message: err.message });
-  }
-});
-
-
 
 // ==========================
 // 🔔 الإشعارات
@@ -459,18 +469,12 @@ app.get('/api/notifications/unread', async (req, res) => {
       .input('username', sql.NVarChar, username)
       .query(`
         SELECT 
-          NotificationID,
-          Title,
-          Message,
-          RelatedTable,
-          RelatedID,
-          FormName,
-          CreatedBy,
+          NotificationID, Title, Message, RelatedTable, RelatedID,
+          FormName, CreatedBy,
           FORMAT(CreatedAt, 'yyyy-MM-dd hh:mm tt') as CreatedAt,
           ReminderEnabled
         FROM Notifications 
-        WHERE RecipientUser = @username 
-          AND IsRead = 0
+        WHERE RecipientUser = @username AND IsRead = 0
         ORDER BY CreatedAt DESC
       `);
     
@@ -478,6 +482,30 @@ app.get('/api/notifications/unread', async (req, res) => {
       count: result.recordset.length,
       notifications: result.recordset
     });
+  } catch (err) {
+    console.error('خطأ في جلب الإشعارات:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get('/api/notifications', async (req, res) => {
+  try {
+    const { username } = req.query;
+    const pool = await connectDB();
+    
+    const result = await pool.request()
+      .input('username', sql.NVarChar, username)
+      .query(`
+        SELECT 
+          NotificationID, Title, Message, RelatedTable, RelatedID,
+          FormName, IsRead, CreatedBy,
+          FORMAT(CreatedAt, 'yyyy-MM-dd hh:mm tt') as CreatedAt, ReadAt
+        FROM Notifications 
+        WHERE RecipientUser = @username
+        ORDER BY CreatedAt DESC
+      `);
+    
+    res.json(result.recordset);
   } catch (err) {
     console.error('خطأ في جلب الإشعارات:', err);
     res.status(500).json({ message: err.message });
@@ -504,37 +532,6 @@ app.put('/api/notifications/read-all', async (req, res) => {
   }
 });
 
-app.get('/api/notifications', async (req, res) => {
-  try {
-    const { username } = req.query;
-    const pool = await connectDB();
-    
-    const result = await pool.request()
-      .input('username', sql.NVarChar, username)
-      .query(`
-        SELECT 
-          NotificationID,
-          Title,
-          Message,
-          RelatedTable,
-          RelatedID,
-          FormName,
-          IsRead,
-          CreatedBy,
-          FORMAT(CreatedAt, 'yyyy-MM-dd hh:mm tt') as CreatedAt,
-          ReadAt
-        FROM Notifications 
-        WHERE RecipientUser = @username
-        ORDER BY CreatedAt DESC
-      `);
-    
-    res.json(result.recordset);
-  } catch (err) {
-    console.error('خطأ في جلب الإشعارات:', err);
-    res.status(500).json({ message: err.message });
-  }
-});
-
 app.put('/api/notifications/:id/read', async (req, res) => {
   try {
     const pool = await connectDB();
@@ -556,16 +553,7 @@ app.put('/api/notifications/:id/read', async (req, res) => {
 
 app.post('/api/notifications', async (req, res) => {
   try {
-    const {
-      title,
-      message,
-      recipientUser,
-      relatedTable,
-      relatedId,
-      formName,
-      createdBy
-    } = req.body;
-    
+    const { title, message, recipientUser, relatedTable, relatedId, formName, createdBy } = req.body;
     const pool = await connectDB();
     
     const result = await pool.request()
@@ -588,10 +576,7 @@ app.post('/api/notifications', async (req, res) => {
         )
       `);
     
-    res.json({ 
-      success: true, 
-      notificationId: result.recordset[0].NotificationID 
-    });
+    res.json({ success: true, notificationId: result.recordset[0].NotificationID });
   } catch (err) {
     console.error('خطأ في إرسال الإشعار:', err);
     res.status(500).json({ success: false, message: err.message });
@@ -599,7 +584,7 @@ app.post('/api/notifications', async (req, res) => {
 });
 
 // ==========================
-// حفظ FCM Token للمستخدم
+// 📱 FCM Token & Push
 // ==========================
 app.post('/api/users/save-token', async (req, res) => {
   try {
@@ -615,18 +600,13 @@ app.post('/api/users/save-token', async (req, res) => {
       .input('fcmToken', sql.NVarChar(500), fcmToken)
       .query('UPDATE Users SET FCMToken = @fcmToken WHERE UserID = @userId');
 
-    console.log(`تم حفظ FCM Token للمستخدم ${userId}`);
     res.json({ success: true, message: 'تم حفظ التوكن بنجاح' });
-
   } catch (err) {
     console.error('خطأ في حفظ FCM Token:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// ==========================
-// إرسال Push Notification لمستخدم معين
-// ==========================
 app.post('/api/notifications/send-push', async (req, res) => {
   try {
     const { recipientUser, title, message, data } = req.body;
@@ -645,39 +625,19 @@ app.post('/api/notifications/send-push', async (req, res) => {
       return res.json({ success: false, message: 'المستخدم لا يملك توكن FCM' });
     }
 
-    const fcmToken = tokenResult.recordset[0].FCMToken;
-
     const payload = {
-      token: fcmToken,
-      notification: {
-        title: title,
-        body: message,
-      },
+      token: tokenResult.recordset[0].FCMToken,
+      notification: { title, body: message },
       data: data || {},
       android: {
         priority: 'high',
-        notification: {
-          sound: 'default',
-          channelId: 'high_importance_channel',
-        },
+        notification: { sound: 'default', channelId: 'high_importance_channel' },
       },
-      apns: {
-        payload: {
-          aps: {
-            sound: 'default',
-          },
-        },
-      },
+      apns: { payload: { aps: { sound: 'default' } } },
     };
 
     await admin.messaging().send(payload);
-    console.log(`تم إرسال Push بنجاح لـ ${recipientUser}`);
-
-    res.json({ 
-      success: true, 
-      message: 'تم إرسال الإشعار بنجاح'
-    });
-
+    res.json({ success: true, message: 'تم إرسال الإشعار بنجاح' });
   } catch (err) {
     console.error('خطأ في إرسال Push:', err);
     res.status(500).json({ success: false, message: err.message });
@@ -770,8 +730,7 @@ app.get('/api/products/:id', async (req, res) => {
     const imagesResult = await pool.request()
       .input('id', sql.Int, req.params.id)
       .query(`
-        SELECT ProductImagesID, ImageNote,
-               CAST(ImageProduct AS VARBINARY(MAX)) AS ImageProduct
+        SELECT ProductImagesID, ImageNote, CAST(ImageProduct AS VARBINARY(MAX)) AS ImageProduct
         FROM ProductImages WHERE ProductID = @id
       `);
     
@@ -967,7 +926,6 @@ app.get('/api/cashboxes', async (req, res) => {
 app.get('/api/expenses/summary', async (req, res) => {
   try {
     const pool = await connectDB();
-    
     const result = await pool.request()
       .query(`
         SELECT 
@@ -977,7 +935,6 @@ app.get('/api/expenses/summary', async (req, res) => {
           (SELECT ISNULL(SUM(Amount), 0) FROM Expenses WHERE CAST(ExpenseDate AS DATE) = CAST(GETDATE() AS DATE)) as todayAmount
         FROM Expenses
       `);
-    
     res.json(result.recordset[0]);
   } catch (err) {
     console.error('خطأ في جلب ملخص المصروفات:', err);
@@ -1046,7 +1003,6 @@ app.post('/api/expenses', async (req, res) => {
       notes, toRecipient, isAdvance, advanceMonths, createdBy
     } = req.body;
     
-    // إضافة المصروف
     const expenseResult = await transaction.request()
       .input('expenseName', sql.NVarChar(100), expenseName)
       .input('expenseGroupId', sql.Int, expenseGroupId)
@@ -1072,7 +1028,6 @@ app.post('/api/expenses', async (req, res) => {
     
     const expenseId = expenseResult.recordset[0].ExpenseID;
     
-    // إضافة حركة الخزينة
     await transaction.request()
       .input('cashBoxId', sql.Int, cashBoxId)
       .input('referenceId', sql.Int, expenseId)
@@ -1092,7 +1047,6 @@ app.post('/api/expenses', async (req, res) => {
     
     await transaction.commit();
     res.json({ success: true, expenseId, message: 'تم إضافة المصروف بنجاح' });
-    
   } catch (err) {
     await transaction.rollback();
     console.error('خطأ في إضافة المصروف:', err);
@@ -1126,7 +1080,6 @@ app.put('/api/expenses/:id', async (req, res) => {
         WHERE ExpenseID = @id
       `);
     
-    // تحديث حركة الخزينة
     await pool.request()
       .input('referenceId', sql.Int, req.params.id)
       .input('amount', sql.Decimal(18, 2), amount)
@@ -1166,95 +1119,21 @@ app.delete('/api/expenses/:id', async (req, res) => {
   }
 });
 
-// ✅ Health Check (مهم لـ Railway)
-app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString() 
-  });
-});
-
-
-// ===== 🔧 تشخيص جداول النشاطات =====
-app.get('/api/activities/debug', async (req, res) => {
-  try {
-    const pool = await connectDB();
-    const results = {};
-    
-    // اختبار جدول Parties
-    try {
-      const parties = await pool.request().query(`
-        SELECT TOP 1 PartyName, CreatedAt FROM Parties WHERE PartyType = 1
-      `);
-      results.parties = { 
-        success: true, 
-        count: parties.recordset.length,
-        sample: parties.recordset[0] || null
-      };
-    } catch (e) {
-      results.parties = { success: false, error: e.message };
-    }
-    
-    // اختبار جدول Expenses
-    try {
-      const expenses = await pool.request().query(`
-        SELECT TOP 1 ExpenseName, Amount, CreatedAt FROM Expenses
-      `);
-      results.expenses = { 
-        success: true, 
-        count: expenses.recordset.length,
-        sample: expenses.recordset[0] || null
-      };
-    } catch (e) {
-      results.expenses = { success: false, error: e.message };
-    }
-    
-    // اختبار جدول SalesOpportunities
-    try {
-      const opportunities = await pool.request().query(`
-        SELECT TOP 1 OpportunityName, ExpectedValue, CreatedAt FROM SalesOpportunities
-      `);
-      results.salesOpportunities = { 
-        success: true, 
-        count: opportunities.recordset.length,
-        sample: opportunities.recordset[0] || null
-      };
-    } catch (e) {
-      results.salesOpportunities = { success: false, error: e.message };
-    }
-    
-    res.json({
-      success: true,
-      message: 'نتائج التشخيص',
-      results
-    });
-    
-  } catch (err) {
-    res.status(500).json({ 
-      success: false, 
-      error: err.message 
-    });
-  }
-});
-
-// ===== آخر النشاطات (نسخة محسنة) =====
+// ==========================
+// 📊 النشاطات الأخيرة
+// ==========================
 app.get('/api/activities/recent', async (req, res) => {
   try {
     const pool = await connectDB();
-    
-    // نجيب كل نوع لوحده عشان نعرف مين فيهم فيه مشكلة
     let allActivities = [];
     
-    // 1️⃣ العملاء الجدد
+    // العملاء الجدد
     try {
       const clients = await pool.request().query(`
         SELECT TOP 5
-          'client' as type,
-          N'عميل جديد' as title,
-          PartyName as description,
-          CreatedAt as createdAt,
-          'person_add' as icon,
-          '#4CAF50' as color
+          'client' as type, N'عميل جديد' as title,
+          PartyName as description, CreatedAt as createdAt,
+          'person_add' as icon, '#4CAF50' as color
         FROM Parties 
         WHERE PartyType = 1 AND IsActive = 1
         ORDER BY CreatedAt DESC
@@ -1264,16 +1143,13 @@ app.get('/api/activities/recent', async (req, res) => {
       console.error('خطأ في جلب العملاء:', e.message);
     }
     
-    // 2️⃣ المصروفات
+    // المصروفات
     try {
       const expenses = await pool.request().query(`
         SELECT TOP 5
-          'expense' as type,
-          N'مصروف' as title,
+          'expense' as type, N'مصروف' as title,
           ExpenseName + N' - ' + CAST(Amount AS NVARCHAR) + N' ج.م' as description,
-          CreatedAt as createdAt,
-          'money_off' as icon,
-          '#F44336' as color
+          CreatedAt as createdAt, 'money_off' as icon, '#F44336' as color
         FROM Expenses
         ORDER BY CreatedAt DESC
       `);
@@ -1282,30 +1158,26 @@ app.get('/api/activities/recent', async (req, res) => {
       console.error('خطأ في جلب المصروفات:', e.message);
     }
     
-    // 3️⃣ الفرص (لو الجدول موجود)
+    // الفرص
     try {
       const opportunities = await pool.request().query(`
         SELECT TOP 5
-          'opportunity' as type,
-          N'فرصة جديدة' as title,
-          OpportunityName + N' - ' + CAST(ExpectedValue AS NVARCHAR) + N' ج.م' as description,
-          CreatedAt as createdAt,
-          'lightbulb' as icon,
-          '#FF9800' as color
-        FROM SalesOpportunities
-        ORDER BY CreatedAt DESC
+          'opportunity' as type, N'فرصة جديدة' as title,
+          p.PartyName + N' - ' + CAST(ISNULL(o.ExpectedValue, 0) AS NVARCHAR) + N' ج.م' as description,
+          o.CreatedAt as createdAt, 'lightbulb' as icon, '#FF9800' as color
+        FROM SalesOpportunities o
+        LEFT JOIN Parties p ON o.PartyID = p.PartyID
+        WHERE o.IsActive = 1
+        ORDER BY o.CreatedAt DESC
       `);
       allActivities = [...allActivities, ...opportunities.recordset];
     } catch (e) {
       console.error('خطأ في جلب الفرص:', e.message);
-      // مش مشكلة لو الجدول مش موجود
     }
     
-    // ترتيب حسب التاريخ وأخذ آخر 10
     allActivities.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     allActivities = allActivities.slice(0, 10);
     
-    // حساب الوقت المنقضي
     const activities = allActivities.map(activity => {
       const now = new Date();
       const created = new Date(activity.createdAt);
@@ -1315,54 +1187,61 @@ app.get('/api/activities/recent', async (req, res) => {
       const diffDays = Math.floor(diffMs / 86400000);
       
       let timeAgo;
-      if (diffMins < 1) {
-        timeAgo = 'الآن';
-      } else if (diffMins < 60) {
-        timeAgo = `منذ ${diffMins} د`;
-      } else if (diffHours < 24) {
-        timeAgo = `منذ ${diffHours} س`;
-      } else {
-        timeAgo = `منذ ${diffDays} يوم`;
-      }
+      if (diffMins < 1) timeAgo = 'الآن';
+      else if (diffMins < 60) timeAgo = `منذ ${diffMins} د`;
+      else if (diffHours < 24) timeAgo = `منذ ${diffHours} س`;
+      else timeAgo = `منذ ${diffDays} يوم`;
       
-      return {
-        ...activity,
-        timeAgo
-      };
+      return { ...activity, timeAgo };
     });
     
-    res.json({
-      success: true,
-      count: activities.length,
-      activities
-    });
-    
+    res.json({ success: true, count: activities.length, activities });
   } catch (err) {
     console.error('Error fetching activities:', err);
-    res.status(500).json({ 
-      success: false,
-      error: 'فشل في جلب النشاطات',
-      details: err.message  // ← ده المهم عشان نعرف المشكلة
-    });
+    res.status(500).json({ success: false, error: 'فشل في جلب النشاطات', details: err.message });
   }
 });
 
+app.get('/api/activities/debug', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const results = {};
+    
+    try {
+      const parties = await pool.request().query(`SELECT TOP 1 PartyName, CreatedAt FROM Parties WHERE PartyType = 1`);
+      results.parties = { success: true, count: parties.recordset.length, sample: parties.recordset[0] || null };
+    } catch (e) {
+      results.parties = { success: false, error: e.message };
+    }
+    
+    try {
+      const expenses = await pool.request().query(`SELECT TOP 1 ExpenseName, Amount, CreatedAt FROM Expenses`);
+      results.expenses = { success: true, count: expenses.recordset.length, sample: expenses.recordset[0] || null };
+    } catch (e) {
+      results.expenses = { success: false, error: e.message };
+    }
+    
+    try {
+      const opportunities = await pool.request().query(`SELECT TOP 1 OpportunityID, ExpectedValue, CreatedAt FROM SalesOpportunities`);
+      results.salesOpportunities = { success: true, count: opportunities.recordset.length, sample: opportunities.recordset[0] || null };
+    } catch (e) {
+      results.salesOpportunities = { success: false, error: e.message };
+    }
+    
+    res.json({ success: true, message: 'نتائج التشخيص', results });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // ==========================
-// 🎯 فرص البيع (Sales Opportunities)
+// 🎯 فرص البيع - Lookups
 // ==========================
-
-// ✅ جلب المراحل
 app.get('/api/opportunities/stages', async (req, res) => {
   try {
     const pool = await connectDB();
     const result = await pool.request()
-      .query(`
-        SELECT StageID, StageName, StageNameAr, StageOrder, StageColor
-        FROM SalesStages 
-        WHERE IsActive = 1 
-        ORDER BY StageOrder
-      `);
+      .query(`SELECT StageID, StageName, StageNameAr, StageOrder, StageColor FROM SalesStages WHERE IsActive = 1 ORDER BY StageOrder`);
     res.json(result.recordset);
   } catch (err) {
     console.error('خطأ في جلب المراحل:', err);
@@ -1370,17 +1249,11 @@ app.get('/api/opportunities/stages', async (req, res) => {
   }
 });
 
-// ✅ جلب مصادر التواصل
 app.get('/api/opportunities/sources', async (req, res) => {
   try {
     const pool = await connectDB();
     const result = await pool.request()
-      .query(`
-        SELECT SourceID, SourceName, SourceNameAr, SourceIcon
-        FROM ContactSources 
-        WHERE IsActive = 1 
-        ORDER BY SourceName
-      `);
+      .query(`SELECT SourceID, SourceName, SourceNameAr, SourceIcon FROM ContactSources WHERE IsActive = 1 ORDER BY SourceName`);
     res.json(result.recordset);
   } catch (err) {
     console.error('خطأ في جلب مصادر التواصل:', err);
@@ -1388,17 +1261,11 @@ app.get('/api/opportunities/sources', async (req, res) => {
   }
 });
 
-// ✅ جلب حالات التواصل
 app.get('/api/opportunities/statuses', async (req, res) => {
   try {
     const pool = await connectDB();
     const result = await pool.request()
-      .query(`
-        SELECT StatusID, StatusName, StatusNameAr
-        FROM ContactStatus 
-        WHERE IsActive = 1 
-        ORDER BY StatusID
-      `);
+      .query(`SELECT StatusID, StatusName, StatusNameAr FROM ContactStatus WHERE IsActive = 1 ORDER BY StatusID`);
     res.json(result.recordset);
   } catch (err) {
     console.error('خطأ في جلب حالات التواصل:', err);
@@ -1406,12 +1273,90 @@ app.get('/api/opportunities/statuses', async (req, res) => {
   }
 });
 
-// ✅ ملخص الفرص
+app.get('/api/opportunities/ad-types', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .query(`SELECT AdTypeID, AdTypeName, AdTypeNameAr FROM AdTypes WHERE IsActive = 1 ORDER BY AdTypeName`);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب أنواع الإعلانات:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get('/api/opportunities/categories', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .query(`SELECT CategoryID, CategoryName, CategoryNameAr FROM InterestCategories WHERE IsActive = 1 ORDER BY CategoryName`);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب فئات الاهتمام:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get('/api/opportunities/lost-reasons', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .query(`SELECT LostReasonID, ReasonName, ReasonNameAr FROM LostReasons WHERE IsActive = 1 ORDER BY ReasonName`);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب أسباب الخسارة:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get('/api/opportunities/task-types', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .query(`SELECT TaskTypeID, TaskTypeName, TaskTypeNameAr FROM TaskTypes WHERE IsActive = 1 ORDER BY TaskTypeName`);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب أنواع المهام:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get('/api/employees', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .query(`SELECT EmployeeID, FullName, JobTitle FROM Employees WHERE Status = N'نشط' ORDER BY FullName`);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب الموظفين:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get('/api/users/:userId/employee', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .input('userId', sql.Int, req.params.userId)
+      .query(`
+        SELECT u.employeeID, e.FullName
+        FROM Users u
+        LEFT JOIN Employees e ON u.employeeID = e.EmployeeID
+        WHERE u.UserID = @userId
+      `);
+    res.json(result.recordset[0] || { employeeID: null, FullName: null });
+  } catch (err) {
+    console.error('خطأ في جلب الموظف:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ==========================
+// 🎯 فرص البيع - CRUD
+// ==========================
 app.get('/api/opportunities/summary', async (req, res) => {
   try {
-    const { username } = req.query;
     const pool = await connectDB();
-    
     const result = await pool.request()
       .query(`
         SELECT 
@@ -1424,10 +1369,8 @@ app.get('/api/opportunities/summary', async (req, res) => {
           SUM(CASE WHEN CAST(NextFollowUpDate AS DATE) = CAST(GETDATE() AS DATE) THEN 1 ELSE 0 END) as todayFollowUp,
           SUM(CASE WHEN CAST(NextFollowUpDate AS DATE) < CAST(GETDATE() AS DATE) AND StageID NOT IN (3,4,5) THEN 1 ELSE 0 END) as overdueFollowUp,
           ISNULL(SUM(CASE WHEN StageID = 3 THEN ExpectedValue ELSE 0 END), 0) as totalClosedValue
-        FROM SalesOpportunities 
-        WHERE IsActive = 1
+        FROM SalesOpportunities WHERE IsActive = 1
       `);
-    
     res.json(result.recordset[0]);
   } catch (err) {
     console.error('خطأ في جلب ملخص الفرص:', err);
@@ -1435,7 +1378,6 @@ app.get('/api/opportunities/summary', async (req, res) => {
   }
 });
 
-// ✅ جلب كل الفرص مع الفلترة
 app.get('/api/opportunities', async (req, res) => {
   try {
     const { search, stageId, sourceId, employeeId, followUpStatus } = req.query;
@@ -1443,35 +1385,15 @@ app.get('/api/opportunities', async (req, res) => {
     
     let query = `
       SELECT 
-        o.OpportunityID,
-        o.PartyID,
-        p.PartyName AS ClientName,
-        p.Phone AS Phone1,
-        p.Phone2,
-        p.Address,
-        o.EmployeeID,
-        e.FullName AS EmployeeName,
-        o.SourceID,
-        cs.SourceName,
-        cs.SourceNameAr,
-        cs.SourceIcon,
-        o.StageID,
-        ss.StageName,
-        ss.StageNameAr,
-        ss.StageColor,
-        ss.StageOrder,
-        o.StatusID,
-        cst.StatusName,
-        cst.StatusNameAr,
-        o.InterestedProduct,
-        o.ExpectedValue,
-        o.Location,
-        o.FirstContactDate,
-        o.NextFollowUpDate,
-        o.LastContactDate,
-        o.Notes,
-        o.CreatedBy,
-        o.CreatedAt,
+        o.OpportunityID, o.PartyID, p.PartyName AS ClientName,
+        p.Phone AS Phone1, p.Phone2, p.Address,
+        o.EmployeeID, e.FullName AS EmployeeName,
+        o.SourceID, cs.SourceName, cs.SourceNameAr, cs.SourceIcon,
+        o.StageID, ss.StageName, ss.StageNameAr, ss.StageColor, ss.StageOrder,
+        o.StatusID, cst.StatusName, cst.StatusNameAr,
+        o.InterestedProduct, o.ExpectedValue, o.Location,
+        o.FirstContactDate, o.NextFollowUpDate, o.LastContactDate,
+        o.Notes, o.CreatedBy, o.CreatedAt,
         DATEDIFF(DAY, o.FirstContactDate, GETDATE()) AS DaysSinceFirstContact,
         CASE 
           WHEN o.NextFollowUpDate IS NULL THEN N'NotSet'
@@ -1491,31 +1413,26 @@ app.get('/api/opportunities', async (req, res) => {
     
     const request = pool.request();
     
-    // فلترة بالبحث
     if (search && search.trim() !== '') {
       query += ` AND (p.PartyName LIKE @search OR p.Phone LIKE @search OR o.InterestedProduct LIKE @search)`;
       request.input('search', sql.NVarChar, `%${search}%`);
     }
     
-    // فلترة بالمرحلة
     if (stageId && stageId !== '' && stageId !== '0') {
       query += ` AND o.StageID = @stageId`;
       request.input('stageId', sql.Int, stageId);
     }
     
-    // فلترة بمصدر التواصل
     if (sourceId && sourceId !== '' && sourceId !== '0') {
       query += ` AND o.SourceID = @sourceId`;
       request.input('sourceId', sql.Int, sourceId);
     }
     
-    // فلترة بالموظف
     if (employeeId && employeeId !== '' && employeeId !== '0') {
       query += ` AND o.EmployeeID = @employeeId`;
       request.input('employeeId', sql.Int, employeeId);
     }
     
-    // فلترة بحالة المتابعة
     if (followUpStatus && followUpStatus !== '') {
       switch (followUpStatus) {
         case 'Overdue':
@@ -1543,7 +1460,34 @@ app.get('/api/opportunities', async (req, res) => {
   }
 });
 
-// ✅ جلب تفاصيل فرصة واحدة
+app.get('/api/opportunities/check-open/:partyId', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .input('partyId', sql.Int, req.params.partyId)
+      .query(`
+        SELECT TOP 1 
+          o.OpportunityID, o.EmployeeID, o.SourceID, o.AdTypeID,
+          o.StageID, o.StatusID, o.CategoryID, o.InterestedProduct,
+          o.ExpectedValue, o.Notes, o.Guidance,
+          e.FullName AS EmployeeName, ss.StageNameAr
+        FROM SalesOpportunities o
+        LEFT JOIN Employees e ON o.EmployeeID = e.EmployeeID
+        LEFT JOIN SalesStages ss ON o.StageID = ss.StageID
+        WHERE o.PartyID = @partyId AND o.IsActive = 1 AND o.StageID NOT IN (3, 4, 5)
+        ORDER BY o.CreatedAt DESC
+      `);
+    
+    res.json({
+      hasOpenOpportunity: result.recordset.length > 0,
+      opportunity: result.recordset[0] || null
+    });
+  } catch (err) {
+    console.error('خطأ في التحقق من الفرصة:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
 app.get('/api/opportunities/:id', async (req, res) => {
   try {
     const pool = await connectDB();
@@ -1551,23 +1495,12 @@ app.get('/api/opportunities/:id', async (req, res) => {
       .input('id', sql.Int, req.params.id)
       .query(`
         SELECT 
-          o.*,
-          p.PartyName AS ClientName,
-          p.Phone AS Phone1,
-          p.Phone2,
-          p.Email,
-          p.Address,
+          o.*, p.PartyName AS ClientName, p.Phone AS Phone1, p.Phone2, p.Email, p.Address,
           e.FullName AS EmployeeName,
-          cs.SourceName,
-          cs.SourceNameAr,
-          cs.SourceIcon,
-          ss.StageName,
-          ss.StageNameAr,
-          ss.StageColor,
-          cst.StatusName,
-          cst.StatusNameAr,
-          lr.ReasonName AS LostReasonName,
-          lr.ReasonNameAr AS LostReasonNameAr
+          cs.SourceName, cs.SourceNameAr, cs.SourceIcon,
+          ss.StageName, ss.StageNameAr, ss.StageColor,
+          cst.StatusName, cst.StatusNameAr,
+          lr.ReasonName AS LostReasonName, lr.ReasonNameAr AS LostReasonNameAr
         FROM SalesOpportunities o
         LEFT JOIN Parties p ON o.PartyID = p.PartyID
         LEFT JOIN Employees e ON o.EmployeeID = e.EmployeeID
@@ -1581,7 +1514,6 @@ app.get('/api/opportunities/:id', async (req, res) => {
     if (result.recordset.length === 0) {
       return res.status(404).json({ success: false, message: 'الفرصة غير موجودة' });
     }
-    
     res.json(result.recordset[0]);
   } catch (err) {
     console.error('خطأ في جلب تفاصيل الفرصة:', err);
@@ -1589,7 +1521,6 @@ app.get('/api/opportunities/:id', async (req, res) => {
   }
 });
 
-// ✅ إضافة فرصة جديدة
 app.post('/api/opportunities', async (req, res) => {
   try {
     const pool = await connectDB();
@@ -1627,18 +1558,13 @@ app.post('/api/opportunities', async (req, res) => {
         )
       `);
     
-    res.json({ 
-      success: true, 
-      opportunityId: result.recordset[0].OpportunityID,
-      message: 'تم إضافة الفرصة بنجاح' 
-    });
+    res.json({ success: true, opportunityId: result.recordset[0].OpportunityID, message: 'تم إضافة الفرصة بنجاح' });
   } catch (err) {
     console.error('خطأ في إضافة الفرصة:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// ✅ تعديل فرصة
 app.put('/api/opportunities/:id', async (req, res) => {
   try {
     const pool = await connectDB();
@@ -1665,20 +1591,12 @@ app.put('/api/opportunities/:id', async (req, res) => {
       .input('updatedBy', sql.NVarChar(50), updatedBy)
       .query(`
         UPDATE SalesOpportunities SET
-          PartyID = @partyId,
-          EmployeeID = @employeeId,
-          SourceID = @sourceId,
-          StageID = @stageId,
-          StatusID = @statusId,
-          InterestedProduct = @interestedProduct,
-          ExpectedValue = @expectedValue,
-          Location = @location,
-          NextFollowUpDate = @nextFollowUpDate,
-          Notes = @notes,
-          LostReasonID = @lostReasonId,
-          LostNotes = @lostNotes,
-          LastUpdatedBy = @updatedBy,
-          LastUpdatedAt = GETDATE()
+          PartyID = @partyId, EmployeeID = @employeeId, SourceID = @sourceId,
+          StageID = @stageId, StatusID = @statusId,
+          InterestedProduct = @interestedProduct, ExpectedValue = @expectedValue,
+          Location = @location, NextFollowUpDate = @nextFollowUpDate,
+          Notes = @notes, LostReasonID = @lostReasonId, LostNotes = @lostNotes,
+          LastUpdatedBy = @updatedBy, LastUpdatedAt = GETDATE()
         WHERE OpportunityID = @id
       `);
     
@@ -1689,7 +1607,6 @@ app.put('/api/opportunities/:id', async (req, res) => {
   }
 });
 
-// ✅ تغيير المرحلة فقط (سريع)
 app.put('/api/opportunities/:id/stage', async (req, res) => {
   try {
     const pool = await connectDB();
@@ -1701,10 +1618,8 @@ app.put('/api/opportunities/:id/stage', async (req, res) => {
       .input('updatedBy', sql.NVarChar(50), updatedBy)
       .query(`
         UPDATE SalesOpportunities SET
-          StageID = @stageId,
-          LastContactDate = GETDATE(),
-          LastUpdatedBy = @updatedBy,
-          LastUpdatedAt = GETDATE()
+          StageID = @stageId, LastContactDate = GETDATE(),
+          LastUpdatedBy = @updatedBy, LastUpdatedAt = GETDATE()
         WHERE OpportunityID = @id
       `);
     
@@ -1715,11 +1630,9 @@ app.put('/api/opportunities/:id/stage', async (req, res) => {
   }
 });
 
-// ✅ حذف فرصة (Soft Delete)
 app.delete('/api/opportunities/:id', async (req, res) => {
   try {
     const pool = await connectDB();
-    
     await pool.request()
       .input('id', sql.Int, req.params.id)
       .query('UPDATE SalesOpportunities SET IsActive = 0 WHERE OpportunityID = @id');
@@ -1731,152 +1644,44 @@ app.delete('/api/opportunities/:id', async (req, res) => {
   }
 });
 
-// ✅ جلب الموظفين (للفلترة)
-app.get('/api/employees', async (req, res) => {
-  try {
-    const pool = await connectDB();
-    const result = await pool.request()
-      .query(`
-        SELECT EmployeeID, FullName, JobTitle
-        FROM Employees 
-        WHERE Status = N'نشط'
-        ORDER BY FullName
-      `);
-    res.json(result.recordset);
-  } catch (err) {
-    console.error('خطأ في جلب الموظفين:', err);
-    res.status(500).json({ message: err.message });
-  }
-});
-
-
-// ✅ جلب أنواع الإعلانات
-app.get('/api/opportunities/ad-types', async (req, res) => {
-  try {
-    const pool = await connectDB();
-    const result = await pool.request()
-      .query(`
-        SELECT AdTypeID, AdTypeName, AdTypeNameAr
-        FROM AdTypes 
-        WHERE IsActive = 1 
-        ORDER BY AdTypeName
-      `);
-    res.json(result.recordset);
-  } catch (err) {
-    console.error('خطأ في جلب أنواع الإعلانات:', err);
-    res.status(500).json({ message: err.message });
-  }
-});
-
-// ✅ جلب فئات الاهتمام
-app.get('/api/opportunities/categories', async (req, res) => {
-  try {
-    const pool = await connectDB();
-    const result = await pool.request()
-      .query(`
-        SELECT CategoryID, CategoryName, CategoryNameAr
-        FROM InterestCategories 
-        WHERE IsActive = 1 
-        ORDER BY CategoryName
-      `);
-    res.json(result.recordset);
-  } catch (err) {
-    console.error('خطأ في جلب فئات الاهتمام:', err);
-    res.status(500).json({ message: err.message });
-  }
-});
-
-// ✅ جلب أسباب الخسارة
-app.get('/api/opportunities/lost-reasons', async (req, res) => {
-  try {
-    const pool = await connectDB();
-    const result = await pool.request()
-      .query(`
-        SELECT LostReasonID, ReasonName, ReasonNameAr
-        FROM LostReasons 
-        WHERE IsActive = 1 
-        ORDER BY ReasonName
-      `);
-    res.json(result.recordset);
-  } catch (err) {
-    console.error('خطأ في جلب أسباب الخسارة:', err);
-    res.status(500).json({ message: err.message });
-  }
-});
-
-// ✅ البحث عن عميل بالهاتف
-app.get('/api/clients/search-by-phone', async (req, res) => {
-  try {
-    const { phone } = req.query;
-    const pool = await connectDB();
-    
-    const result = await pool.request()
-      .input('phone', sql.NVarChar, phone)
-      .query(`
-        SELECT PartyID, PartyName, Phone, Phone2, Address, Email
-        FROM Parties 
-        WHERE (Phone = @phone OR Phone2 = @phone) AND IsActive = 1
-      `);
-    
-    res.json({
-      found: result.recordset.length > 0,
-      client: result.recordset[0] || null
-    });
-  } catch (err) {
-    console.error('خطأ في البحث عن العميل:', err);
-    res.status(500).json({ message: err.message });
-  }
-});
-
-// ✅ جلب الموظف المرتبط بالمستخدم
-app.get('/api/users/:userId/employee', async (req, res) => {
-  try {
-    const pool = await connectDB();
-    const result = await pool.request()
-      .input('userId', sql.Int, req.params.userId)
-      .query(`
-        SELECT u.employeeID, e.FullName
-        FROM Users u
-        LEFT JOIN Employees e ON u.employeeID = e.EmployeeID
-        WHERE u.UserID = @userId
-      `);
-    
-    res.json(result.recordset[0] || { employeeID: null, FullName: null });
-  } catch (err) {
-    console.error('خطأ في جلب الموظف:', err);
-    res.status(500).json({ message: err.message });
-  }
-});
-
-// ✅ إضافة فرصة جديدة مع إنشاء عميل
-app.post('/api/opportunities/create-with-client', async (req, res) => {
+// ==========================
+// 🎯 تسجيل تواصل جديد (الـ Flow الكامل)
+// ==========================
+app.post('/api/interactions/create', async (req, res) => {
   const transaction = new sql.Transaction(await connectDB());
   
   try {
     await transaction.begin();
     
     const {
-      clientName, phone1, phone2, address,
-      employeeId, sourceId, adTypeId, stageId, statusId, categoryId,
-      interestedProduct, expectedValue, location,
-      nextFollowUpDate, notes, guidance, createdBy
+      isNewClient,
+      clientName,
+      phone1,
+      phone2,
+      address,
+      partyId,
+      employeeId,
+      sourceId,
+      adTypeId,
+      stageId,
+      statusId,
+      categoryId,
+      interestedProduct,
+      expectedValue,
+      summary,
+      guidance,
+      lostReasonId,
+      nextFollowUpDate,
+      taskTypeId,
+      createdBy
     } = req.body;
     
-    let partyId;
-    let isNewClient = false;
+    let finalPartyId = partyId;
+    let opportunityId = null;
+    let isNewOpportunity = false;
     
-    // التحقق من وجود العميل
-    const existingClient = await transaction.request()
-      .input('phone', sql.NVarChar, phone1)
-      .query(`
-        SELECT PartyID FROM Parties 
-        WHERE (Phone = @phone OR Phone2 = @phone) AND IsActive = 1
-      `);
-    
-    if (existingClient.recordset.length > 0) {
-      partyId = existingClient.recordset[0].PartyID;
-    } else {
-      // إنشاء عميل جديد
+    // 1️⃣ حفظ العميل الجديد
+    if (isNewClient) {
       const newClient = await transaction.request()
         .input('partyName', sql.NVarChar(200), clientName)
         .input('partyType', sql.Int, 1)
@@ -1896,59 +1701,166 @@ app.post('/api/opportunities/create-with-client', async (req, res) => {
           )
         `);
       
-      partyId = newClient.recordset[0].PartyID;
-      isNewClient = true;
+      finalPartyId = newClient.recordset[0].PartyID;
     }
     
-    // إنشاء الفرصة
-    const opportunity = await transaction.request()
-      .input('partyId', sql.Int, partyId)
+    // 2️⃣ التحقق من فرصة مفتوحة
+    const existingOpp = await transaction.request()
+      .input('partyId', sql.Int, finalPartyId)
+      .query(`
+        SELECT TOP 1 OpportunityID 
+        FROM SalesOpportunities 
+        WHERE PartyID = @partyId 
+          AND IsActive = 1 
+          AND StageID NOT IN (3, 4, 5)
+        ORDER BY CreatedAt DESC
+      `);
+    
+    if (existingOpp.recordset.length > 0) {
+      // 3️⃣ تحديث الفرصة الموجودة
+      opportunityId = existingOpp.recordset[0].OpportunityID;
+      
+      await transaction.request()
+        .input('oppId', sql.Int, opportunityId)
+        .input('employeeId', sql.Int, employeeId || null)
+        .input('stageId', sql.Int, stageId || null)
+        .input('statusId', sql.Int, statusId || null)
+        .input('categoryId', sql.Int, categoryId || null)
+        .input('interestedProduct', sql.NVarChar(200), interestedProduct || null)
+        .input('expectedValue', sql.Decimal(18, 2), expectedValue || null)
+        .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate || null)
+        .input('lostReasonId', sql.Int, lostReasonId || null)
+        .input('notes', sql.NVarChar(500), summary || null)
+        .input('guidance', sql.NVarChar(500), guidance || null)
+        .input('updatedBy', sql.NVarChar(50), createdBy)
+        .query(`
+          UPDATE SalesOpportunities SET
+            EmployeeID = COALESCE(@employeeId, EmployeeID),
+            StageID = COALESCE(@stageId, StageID),
+            StatusID = COALESCE(@statusId, StatusID),
+            CategoryID = COALESCE(@categoryId, CategoryID),
+            InterestedProduct = COALESCE(@interestedProduct, InterestedProduct),
+            ExpectedValue = COALESCE(@expectedValue, ExpectedValue),
+            NextFollowUpDate = @nextFollowUpDate,
+            LostReasonID = @lostReasonId,
+            Notes = @notes,
+            Guidance = @guidance,
+            LastContactDate = GETDATE(),
+            LastUpdatedBy = @updatedBy,
+            LastUpdatedAt = GETDATE()
+          WHERE OpportunityID = @oppId
+        `);
+        
+    } else {
+      // 3️⃣ إنشاء فرصة جديدة
+      isNewOpportunity = true;
+      
+      const newOpp = await transaction.request()
+        .input('partyId', sql.Int, finalPartyId)
+        .input('employeeId', sql.Int, employeeId || null)
+        .input('sourceId', sql.Int, sourceId || null)
+        .input('adTypeId', sql.Int, adTypeId || null)
+        .input('stageId', sql.Int, stageId || 1)
+        .input('statusId', sql.Int, statusId || null)
+        .input('categoryId', sql.Int, categoryId || null)
+        .input('interestedProduct', sql.NVarChar(200), interestedProduct || null)
+        .input('expectedValue', sql.Decimal(18, 2), expectedValue || null)
+        .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate || null)
+        .input('notes', sql.NVarChar(500), summary || null)
+        .input('guidance', sql.NVarChar(500), guidance || null)
+        .input('createdBy', sql.NVarChar(50), createdBy)
+        .query(`
+          INSERT INTO SalesOpportunities (
+            PartyID, EmployeeID, SourceID, AdTypeID, StageID, StatusID, CategoryID,
+            InterestedProduct, ExpectedValue, FirstContactDate, NextFollowUpDate,
+            Notes, Guidance, IsActive, CreatedBy, CreatedAt
+          )
+          OUTPUT INSERTED.OpportunityID
+          VALUES (
+            @partyId, @employeeId, @sourceId, @adTypeId, @stageId, @statusId, @categoryId,
+            @interestedProduct, @expectedValue, GETDATE(), @nextFollowUpDate,
+            @notes, @guidance, 1, @createdBy, GETDATE()
+          )
+        `);
+      
+      opportunityId = newOpp.recordset[0].OpportunityID;
+    }
+    
+    // 4️⃣ إضافة سجل التواصل
+    const interaction = await transaction.request()
+      .input('oppId', sql.Int, opportunityId)
+      .input('partyId', sql.Int, finalPartyId)
       .input('employeeId', sql.Int, employeeId || null)
       .input('sourceId', sql.Int, sourceId || null)
-      .input('adTypeId', sql.Int, adTypeId || null)
-      .input('stageId', sql.Int, stageId || 1)
       .input('statusId', sql.Int, statusId || null)
-      .input('categoryId', sql.Int, categoryId || null)
-      .input('interestedProduct', sql.NVarChar(200), interestedProduct || null)
-      .input('expectedValue', sql.Decimal(18, 2), expectedValue || 0)
-      .input('location', sql.NVarChar(200), location || null)
+      .input('summary', sql.NVarChar(1000), summary || null)
+      .input('stageAfterId', sql.Int, stageId || null)
       .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate || null)
-      .input('notes', sql.NVarChar(500), notes || null)
-      .input('guidance', sql.NVarChar(500), guidance || null)
+      .input('notes', sql.NVarChar(500), guidance || null)
       .input('createdBy', sql.NVarChar(50), createdBy)
       .query(`
-        INSERT INTO SalesOpportunities (
-          PartyID, EmployeeID, SourceID, AdTypeID, StageID, StatusID, CategoryID,
-          InterestedProduct, ExpectedValue, Location,
-          FirstContactDate, NextFollowUpDate, Notes, Guidance,
-          IsActive, CreatedBy, CreatedAt
+        INSERT INTO CustomerInteractions (
+          OpportunityID, PartyID, EmployeeID, SourceID, StatusID,
+          InteractionDate, Summary, StageAfterID, NextFollowUpDate,
+          Notes, CreatedBy, CreatedAt
         )
-        OUTPUT INSERTED.OpportunityID
+        OUTPUT INSERTED.InteractionID
         VALUES (
-          @partyId, @employeeId, @sourceId, @adTypeId, @stageId, @statusId, @categoryId,
-          @interestedProduct, @expectedValue, @location,
-          GETDATE(), @nextFollowUpDate, @notes, @guidance,
-          1, @createdBy, GETDATE()
+          @oppId, @partyId, @employeeId, @sourceId, @statusId,
+          GETDATE(), @summary, @stageAfterId, @nextFollowUpDate,
+          @notes, @createdBy, GETDATE()
         )
       `);
     
+    // 5️⃣ إنشاء مهمة متابعة
+    let taskId = null;
+    if (nextFollowUpDate && stageId !== 3 && stageId !== 4 && stageId !== 5) {
+      const task = await transaction.request()
+        .input('oppId', sql.Int, opportunityId)
+        .input('partyId', sql.Int, finalPartyId)
+        .input('assignedTo', sql.Int, employeeId || null)
+        .input('taskTypeId', sql.Int, taskTypeId || null)
+        .input('description', sql.NVarChar(500), guidance || 'متابعة العميل')
+        .input('dueDate', sql.DateTime, nextFollowUpDate)
+        .input('createdBy', sql.NVarChar(50), createdBy)
+        .query(`
+          INSERT INTO CRM_Tasks (
+            OpportunityID, PartyID, AssignedTo, TaskTypeID,
+            TaskDescription, DueDate, Priority, Status,
+            ReminderEnabled, IsActive, CreatedBy, CreatedAt
+          )
+          OUTPUT INSERTED.TaskID
+          VALUES (
+            @oppId, @partyId, @assignedTo, @taskTypeId,
+            @description, @dueDate, 'Normal', 'Pending',
+            1, 1, @createdBy, GETDATE()
+          )
+        `);
+      
+      taskId = task.recordset[0].TaskID;
+    }
+    
     await transaction.commit();
     
-    res.json({ 
-      success: true, 
-      opportunityId: opportunity.recordset[0].OpportunityID,
-      partyId: partyId,
-      isNewClient: isNewClient,
-      message: isNewClient ? 'تم إضافة الفرصة والعميل بنجاح' : 'تم إضافة الفرصة بنجاح'
+    res.json({
+      success: true,
+      data: {
+        partyId: finalPartyId,
+        opportunityId: opportunityId,
+        interactionId: interaction.recordset[0].InteractionID,
+        taskId: taskId,
+        isNewClient: isNewClient || false,
+        isNewOpportunity: isNewOpportunity
+      },
+      message: 'تم تسجيل التواصل بنجاح'
     });
     
   } catch (err) {
     await transaction.rollback();
-    console.error('خطأ في إضافة الفرصة:', err);
+    console.error('خطأ في تسجيل التواصل:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
-
 
 // ==========================
 // 🚀 تشغيل السيرفر
