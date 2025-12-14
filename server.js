@@ -1750,6 +1750,206 @@ app.get('/api/employees', async (req, res) => {
 });
 
 
+// ✅ جلب أنواع الإعلانات
+app.get('/api/opportunities/ad-types', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .query(`
+        SELECT AdTypeID, AdTypeName, AdTypeNameAr
+        FROM AdTypes 
+        WHERE IsActive = 1 
+        ORDER BY AdTypeName
+      `);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب أنواع الإعلانات:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ✅ جلب فئات الاهتمام
+app.get('/api/opportunities/categories', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .query(`
+        SELECT CategoryID, CategoryName, CategoryNameAr
+        FROM InterestCategories 
+        WHERE IsActive = 1 
+        ORDER BY CategoryName
+      `);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب فئات الاهتمام:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ✅ جلب أسباب الخسارة
+app.get('/api/opportunities/lost-reasons', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .query(`
+        SELECT LostReasonID, ReasonName, ReasonNameAr
+        FROM LostReasons 
+        WHERE IsActive = 1 
+        ORDER BY ReasonName
+      `);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('خطأ في جلب أسباب الخسارة:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ✅ البحث عن عميل بالهاتف
+app.get('/api/clients/search-by-phone', async (req, res) => {
+  try {
+    const { phone } = req.query;
+    const pool = await connectDB();
+    
+    const result = await pool.request()
+      .input('phone', sql.NVarChar, phone)
+      .query(`
+        SELECT PartyID, PartyName, Phone, Phone2, Address, Email
+        FROM Parties 
+        WHERE (Phone = @phone OR Phone2 = @phone) AND IsActive = 1
+      `);
+    
+    res.json({
+      found: result.recordset.length > 0,
+      client: result.recordset[0] || null
+    });
+  } catch (err) {
+    console.error('خطأ في البحث عن العميل:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ✅ جلب الموظف المرتبط بالمستخدم
+app.get('/api/users/:userId/employee', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .input('userId', sql.Int, req.params.userId)
+      .query(`
+        SELECT u.employeeID, e.FullName
+        FROM Users u
+        LEFT JOIN Employees e ON u.employeeID = e.EmployeeID
+        WHERE u.UserID = @userId
+      `);
+    
+    res.json(result.recordset[0] || { employeeID: null, FullName: null });
+  } catch (err) {
+    console.error('خطأ في جلب الموظف:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ✅ إضافة فرصة جديدة مع إنشاء عميل
+app.post('/api/opportunities/create-with-client', async (req, res) => {
+  const transaction = new sql.Transaction(await connectDB());
+  
+  try {
+    await transaction.begin();
+    
+    const {
+      clientName, phone1, phone2, address,
+      employeeId, sourceId, adTypeId, stageId, statusId, categoryId,
+      interestedProduct, expectedValue, location,
+      nextFollowUpDate, notes, guidance, createdBy
+    } = req.body;
+    
+    let partyId;
+    let isNewClient = false;
+    
+    // التحقق من وجود العميل
+    const existingClient = await transaction.request()
+      .input('phone', sql.NVarChar, phone1)
+      .query(`
+        SELECT PartyID FROM Parties 
+        WHERE (Phone = @phone OR Phone2 = @phone) AND IsActive = 1
+      `);
+    
+    if (existingClient.recordset.length > 0) {
+      partyId = existingClient.recordset[0].PartyID;
+    } else {
+      // إنشاء عميل جديد
+      const newClient = await transaction.request()
+        .input('partyName', sql.NVarChar(200), clientName)
+        .input('partyType', sql.Int, 1)
+        .input('phone', sql.NVarChar(50), phone1)
+        .input('phone2', sql.NVarChar(50), phone2 || null)
+        .input('address', sql.NVarChar(250), address || null)
+        .input('createdBy', sql.NVarChar(100), createdBy)
+        .query(`
+          INSERT INTO Parties (
+            PartyName, PartyType, Phone, Phone2, Address,
+            IsActive, CreatedBy, CreatedAt
+          )
+          OUTPUT INSERTED.PartyID
+          VALUES (
+            @partyName, @partyType, @phone, @phone2, @address,
+            1, @createdBy, GETDATE()
+          )
+        `);
+      
+      partyId = newClient.recordset[0].PartyID;
+      isNewClient = true;
+    }
+    
+    // إنشاء الفرصة
+    const opportunity = await transaction.request()
+      .input('partyId', sql.Int, partyId)
+      .input('employeeId', sql.Int, employeeId || null)
+      .input('sourceId', sql.Int, sourceId || null)
+      .input('adTypeId', sql.Int, adTypeId || null)
+      .input('stageId', sql.Int, stageId || 1)
+      .input('statusId', sql.Int, statusId || null)
+      .input('categoryId', sql.Int, categoryId || null)
+      .input('interestedProduct', sql.NVarChar(200), interestedProduct || null)
+      .input('expectedValue', sql.Decimal(18, 2), expectedValue || 0)
+      .input('location', sql.NVarChar(200), location || null)
+      .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate || null)
+      .input('notes', sql.NVarChar(500), notes || null)
+      .input('guidance', sql.NVarChar(500), guidance || null)
+      .input('createdBy', sql.NVarChar(50), createdBy)
+      .query(`
+        INSERT INTO SalesOpportunities (
+          PartyID, EmployeeID, SourceID, AdTypeID, StageID, StatusID, CategoryID,
+          InterestedProduct, ExpectedValue, Location,
+          FirstContactDate, NextFollowUpDate, Notes, Guidance,
+          IsActive, CreatedBy, CreatedAt
+        )
+        OUTPUT INSERTED.OpportunityID
+        VALUES (
+          @partyId, @employeeId, @sourceId, @adTypeId, @stageId, @statusId, @categoryId,
+          @interestedProduct, @expectedValue, @location,
+          GETDATE(), @nextFollowUpDate, @notes, @guidance,
+          1, @createdBy, GETDATE()
+        )
+      `);
+    
+    await transaction.commit();
+    
+    res.json({ 
+      success: true, 
+      opportunityId: opportunity.recordset[0].OpportunityID,
+      partyId: partyId,
+      isNewClient: isNewClient,
+      message: isNewClient ? 'تم إضافة الفرصة والعميل بنجاح' : 'تم إضافة الفرصة بنجاح'
+    });
+    
+  } catch (err) {
+    await transaction.rollback();
+    console.error('خطأ في إضافة الفرصة:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+
 // ==========================
 // 🚀 تشغيل السيرفر
 // ==========================
