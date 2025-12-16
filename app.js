@@ -16,7 +16,43 @@ applyMiddleware(app);
 
 // تهيئة Firebase
 initializeFirebase();
+// ===================================
+// 🔄 Backward Compatibility (المسارات القديمة)
+// ===================================
 
+const authController = require('./modules/auth/auth.controller');
+const clientsController = require('./modules/clients/clients.controller');
+const dashboardController = require('./modules/dashboard/dashboard.controller');
+const notificationsController = require('./modules/notifications/notifications.controller');
+
+// Auth
+app.post('/api/login', authController.login);
+app.post('/api/users/save-token', authController.saveFcmToken);
+app.get('/api/users/:userId/employee', authController.getEmployeeByUserId);
+
+// Dashboard
+app.get('/api/dashboard', dashboardController.getStats);
+app.get('/api/activities/recent', dashboardController.getRecentActivities);
+app.get('/api/activities/debug', dashboardController.getDebug);
+
+// Clients
+app.get('/api/clients', clientsController.getAll);
+app.get('/api/clients/summary', clientsController.getSummary);
+app.get('/api/clients/search', clientsController.search);
+app.get('/api/customers-list', clientsController.getList);
+app.get('/api/clients/:id', clientsController.getById);
+app.post('/api/clients', clientsController.create);
+app.put('/api/clients/:id', clientsController.update);
+app.delete('/api/clients/:id', clientsController.remove);
+app.get('/api/referral-sources', clientsController.getReferralSources);
+
+// Notifications
+app.get('/api/notifications', notificationsController.getAll);
+app.get('/api/notifications/unread', notificationsController.getUnread);
+app.put('/api/notifications/read-all', notificationsController.markAllAsRead);
+app.put('/api/notifications/:id/read', notificationsController.markAsRead);
+app.post('/api/notifications', notificationsController.create);
+app.post('/api/notifications/send-push', notificationsController.sendPush);
 // ===================================
 // 🏠 الصفحة الرئيسية واختبار الاتصال
 // ===================================
