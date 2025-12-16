@@ -1,0 +1,145 @@
+const express = require('express');
+
+// إنشاء التطبيق أولاً
+const app = express();
+
+// استيراد الـ Core
+const { connectDB } = require('./core/database');
+const { initializeFirebase } = require('./core/firebase');
+const { applyMiddleware } = require('./core/middleware');
+
+// استيراد الـ Error Handlers
+const { globalErrorHandler, notFoundHandler } = require('./shared/error-handler');
+
+// تطبيق الـ Middleware
+applyMiddleware(app);
+
+// تهيئة Firebase
+initializeFirebase();
+
+// ===================================
+// 🏠 الصفحة الرئيسية واختبار الاتصال
+// ===================================
+
+// الصفحة الرئيسية
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: 'COCOBOLO API شغال بنجاح! 🚀',
+    version: '2.0.0',
+    time: new Date().toISOString()
+  });
+});
+
+// اختبار الاتصال بقاعدة البيانات
+app.get('/api/test', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request().query('SELECT 1 as test');
+    res.json({
+      success: true,
+      message: 'الاتصال بقاعدة البيانات ناجح',
+      data: result.recordset
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message: 'فشل الاتصال بقاعدة البيانات',
+      error: err.message
+    });
+  }
+});
+
+// Health Check
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    success: true,
+    status: 'OK',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ===================================
+// 📦 تسجيل الـ Modules (هنضيفهم لاحقاً)
+// ===================================
+
+// TODO: هنا هنضيف الـ routes الخاصة بكل module
+
+// ===================================
+// 📦 تسجيل الـ Modules
+// ===================================
+
+// Auth Module
+app.use('/api/auth', require('./modules/auth/auth.routes'));
+
+
+// Clients Module
+app.use('/api/clients', require('./modules/clients/clients.routes'));
+
+
+// Products Module
+app.use('/api/products', require('./modules/products/products.routes'));
+
+
+// Expenses Module
+app.use('/api/expenses', require('./modules/expenses/expenses.routes'));
+
+
+// Opportunities Module
+app.use('/api/opportunities', require('./modules/opportunities/opportunities.routes'));
+
+
+// Notifications Module
+app.use('/api/notifications', require('./modules/notifications/notifications.routes'));
+
+
+// Dashboard Module
+app.use('/api/dashboard', require('./modules/dashboard/dashboard.routes'));
+
+
+// Interactions Module
+app.use('/api/interactions', require('./modules/interactions/interactions.routes'));
+
+
+// Employees Module
+app.use('/api/employees', require('./modules/employees/employees.routes'));
+
+// Attendance Module
+app.use('/api/attendance', require('./modules/attendance/attendance.routes'));
+
+// Payroll Module
+app.use('/api/payroll', require('./modules/payroll/payroll.routes'));
+
+// Inventory Module
+app.use('/api/inventory', require('./modules/inventory/inventory.routes'));
+
+// Transactions Module
+app.use('/api/transactions', require('./modules/transactions/transactions.routes'));
+
+// Quotations Module
+app.use('/api/quotations', require('./modules/quotations/quotations.routes'));
+
+// Cashbox Module
+app.use('/api/cashbox', require('./modules/cashbox/cashbox.routes'));
+
+// Tasks Module
+app.use('/api/tasks', require('./modules/tasks/tasks.routes'));
+
+// Commissions Module
+app.use('/api/commissions', require('./modules/commissions/commissions.routes'));
+
+// Settings Module
+app.use('/api/settings', require('./modules/settings/settings.routes'));
+
+// ===================================
+// ⚠️ Error Handling
+// ===================================
+
+// التعامل مع الـ routes غير الموجودة
+app.use(notFoundHandler);
+
+// التعامل مع الأخطاء العامة
+app.use(globalErrorHandler);
+
+// تصدير التطبيق
+module.exports = app;
