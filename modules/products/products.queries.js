@@ -12,7 +12,7 @@ async function getProductGroups() {
 async function getAllProducts(search = '', groupId = null) {
   const pool = await connectDB();
 
-  let query = `
+    let query = `
     SELECT 
       p.ProductID,
       p.ProductName,
@@ -27,7 +27,13 @@ async function getAllProducts(search = '', groupId = null) {
       p.SuggestedSalePriceElite,
       pg.ProductGroupID,
       pg.GroupName,
-      pa.PartyName AS CustomerName
+      pa.PartyName AS CustomerName,
+      (
+        SELECT TOP 1 ProductImagesID
+        FROM ProductImages
+        WHERE ProductID = p.ProductID
+        ORDER BY ProductImagesID
+      ) AS MainImageId              -- ✅ ده بس اللي زودناه
     FROM Products p
     INNER JOIN ProductGroups pg ON p.ProductGroupID = pg.ProductGroupID
     LEFT JOIN Parties pa ON p.Customer = pa.PartyID
