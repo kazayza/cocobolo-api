@@ -20,8 +20,7 @@ async function getAllProducts(search = '', groupId = null) {
       p.PurchasePriceElite, p.SuggestedSalePriceElite,        -- ✅ جديد
       pg.ProductGroupID, pg.GroupName,
       pa.PartyName AS CustomerName,
-      (SELECT TOP 1 CAST(ImageProduct AS VARBINARY(MAX)) 
-       FROM ProductImages WHERE ProductID = p.ProductID) AS ProductImage
+      
     FROM Products p
     INNER JOIN ProductGroups pg ON p.ProductGroupID = pg.ProductGroupID
     LEFT JOIN Parties pa ON p.Customer = pa.PartyID
