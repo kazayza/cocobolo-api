@@ -14,13 +14,20 @@ async function getAllProducts(search = '', groupId = null) {
 
   let query = `
     SELECT 
-      p.ProductID, p.ProductName, p.ProductDescription,
-      p.SuggestedSalePrice, p.PurchasePrice, p.QTY, p.Period,
-      p.PricingType, p.Customer,
-      p.PurchasePriceElite, p.SuggestedSalePriceElite,        -- ✅ جديد
-      pg.ProductGroupID, pg.GroupName,
-      pa.PartyName AS CustomerName,
-      
+      p.ProductID,
+      p.ProductName,
+      p.ProductDescription,
+      p.SuggestedSalePrice,
+      p.PurchasePrice,
+      p.QTY,
+      p.Period,
+      p.PricingType,
+      p.Customer,
+      p.PurchasePriceElite,
+      p.SuggestedSalePriceElite,
+      pg.ProductGroupID,
+      pg.GroupName,
+      pa.PartyName AS CustomerName
     FROM Products p
     INNER JOIN ProductGroups pg ON p.ProductGroupID = pg.ProductGroupID
     LEFT JOIN Parties pa ON p.Customer = pa.PartyID
@@ -29,11 +36,13 @@ async function getAllProducts(search = '', groupId = null) {
 
   const request = pool.request();
 
+  // فلتر البحث
   if (search && search.trim() !== '') {
     query += ` AND (p.ProductName LIKE @search OR pa.PartyName LIKE @search)`;
     request.input('search', sql.NVarChar, `%${search}%`);
   }
 
+  // فلتر المجموعة
   if (groupId && groupId !== '' && groupId !== '0') {
     query += ` AND p.ProductGroupID = @groupId`;
     request.input('groupId', sql.Int, groupId);
@@ -43,13 +52,8 @@ async function getAllProducts(search = '', groupId = null) {
 
   const result = await request.query(query);
 
-  // تحويل الصور لـ Base64
-  return result.recordset.map(product => ({
-    ...product,
-    ProductImage: product.ProductImage
-      ? Buffer.from(product.ProductImage).toString('base64')
-      : null
-  }));
+  // ✅ نرجّع الـ recordset زي ما هو، من غير ما نحول أي صور
+  return result.recordset;
 }
 
 // جلب منتج بالـ ID
