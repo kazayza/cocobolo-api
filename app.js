@@ -4,7 +4,7 @@ const express = require('express');
 const app = express();
 
 // استيراد الـ Core
-const { connectDB } = require('./core/database');
+const { connectDB, sql } = require('./core/database');
 const { initializeFirebase } = require('./core/firebase');
 const { applyMiddleware } = require('./core/middleware');
 
@@ -53,6 +53,36 @@ app.put('/api/notifications/read-all', notificationsController.markAllAsRead);
 app.put('/api/notifications/:id/read', notificationsController.markAsRead);
 app.post('/api/notifications', notificationsController.create);
 app.post('/api/notifications/send-push', notificationsController.sendPush);
+
+// ===================================
+// 🖼️ Product Images (for thumbnails)
+// ===================================
+app.get('/api/product-images/:id', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .input('id', sql.Int, req.params.id)
+      .query(`
+        SELECT TOP 1 ImageProduct
+        FROM ProductImages
+        WHERE ProductImagesID = @id
+      `);
+
+    if (!result.recordset.length || !result.recordset[0].ImageProduct) {
+      return res.status(404).send('Image not found');
+    }
+
+    const imgBuffer = Buffer.from(result.recordset[0].ImageProduct);
+
+    // تقدر تغيّر الـ Content-Type لو صورك PNG مثلاً
+    res.set('Content-Type', 'image/jpeg');
+    return res.send(imgBuffer);
+  } catch (err) {
+    console.error('خطأ في جلب صورة المنتج:', err);
+    return res.status(500).send('Error fetching image');
+  }
+});
+
 // ===================================
 // 🏠 الصفحة الرئيسية واختبار الاتصال
 // ===================================
