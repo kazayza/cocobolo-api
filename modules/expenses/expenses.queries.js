@@ -198,6 +198,35 @@ async function deleteExpense(id) {
   }
 }
 
+async function getExpenseGroupsByParent(parentGroupName = null) {
+  const pool = await connectDB();
+  
+  let query = `
+    SELECT 
+      G.ExpenseGroupID,
+      G.ExpenseGroupName,
+      PG.ExpenseGroupName AS ParentGroupName
+    FROM 
+      ExpenseGroups G
+      LEFT JOIN ExpenseGroups PG ON G.ParentGroupID = PG.ExpenseGroupID
+    WHERE 1=1
+  `;
+  
+  const request = pool.request();
+  
+  if (parentGroupName && parentGroupName !== '' && parentGroupName !== 'الكل') {
+    query += ` AND PG.ExpenseGroupName = @parentGroupName`;
+    request.input('parentGroupName', sql.NVarChar, parentGroupName);
+  }
+  
+  query += ` ORDER BY G.ExpenseGroupName`;
+  
+  const result = await request.query(query);
+  return result.recordset;
+}
+
+
+
 // تصدير الدوال
 module.exports = {
   getExpenseGroups,
@@ -206,5 +235,6 @@ module.exports = {
   getAllExpenses,
   createExpense,
   updateExpense,
-  deleteExpense
+  deleteExpense,
+  getExpenseGroupsByParent
 };

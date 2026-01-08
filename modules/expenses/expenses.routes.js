@@ -34,5 +34,9 @@ router.put('/:id', expensesController.update);
 // DELETE /api/expenses/:id
 router.delete('/:id', expensesController.remove);
 
+// جلب مجموعات المصروفات حسب المجموعة الأم
+// GET /api/expenses/groups/by-parent?parentGroupName=xxx
+router.get('/groups/by-parent', expensesController.getGroupsByParent);
+
 // تصدير الراوتر
 module.exports = router;

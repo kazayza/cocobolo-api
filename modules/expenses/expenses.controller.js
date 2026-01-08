@@ -125,6 +125,18 @@ async function remove(req, res) {
   }
 }
 
+async function getGroupsByParent(req, res) {
+  try {
+    const { parentGroupName } = req.query;
+    
+    const groups = await expensesQueries.getExpenseGroupsByParent(parentGroupName);
+    return res.json(groups);
+  } catch (err) {
+    console.error('خطأ في جلب مجموعات المصروفات حسب الأب:', err);
+    return errorResponse(res, 'فشل تحميل المجموعات حسب المجموعة الأم', 500, err.message);
+  }
+}
+
 // تصدير الدوال
 module.exports = {
   getGroups,
@@ -133,5 +145,6 @@ module.exports = {
   getAll,
   create,
   update,
-  remove
+  remove,
+  getGroupsByParent
 };
