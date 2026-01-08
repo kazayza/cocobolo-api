@@ -21,11 +21,14 @@ async function getExpensesSummary() {
   const pool = await connectDB();
   const result = await pool.request()
     .query(`
-      SELECT 
+        SELECT 
         COUNT(*) as totalCount,
         ISNULL(SUM(Amount), 0) as totalAmount,
         (SELECT COUNT(*) FROM Expenses WHERE CAST(ExpenseDate AS DATE) = CAST(GETDATE() AS DATE)) as todayCount,
-        (SELECT ISNULL(SUM(Amount), 0) FROM Expenses WHERE CAST(ExpenseDate AS DATE) = CAST(GETDATE() AS DATE)) as todayAmount
+        (SELECT ISNULL(SUM(Amount), 0) FROM Expenses WHERE CAST(ExpenseDate AS DATE) = CAST(GETDATE() AS DATE)) as todayAmount,
+        (SELECT ISNULL(SUM(Amount), 0) FROM Expenses 
+         WHERE YEAR(ExpenseDate) = YEAR(GETDATE()) 
+           AND MONTH(ExpenseDate) = MONTH(GETDATE())) as monthAmount
       FROM Expenses
     `);
   return result.recordset[0];
