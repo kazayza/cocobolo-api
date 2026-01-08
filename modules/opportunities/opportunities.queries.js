@@ -104,15 +104,29 @@ async function getAllOpportunities(filters = {}) {
   let query = `
     SELECT 
       o.OpportunityID, o.PartyID, p.PartyName AS ClientName,
-      p.Phone AS Phone1, p.Phone2, p.Address,
+      p.Phone AS Phone1, p.Phone2, p.Address, p.Email,
+      
+      -- ✅ بيانات الموظف (عشان تظهر في التفاصيل)
       o.EmployeeID, e.FullName AS EmployeeName,
+      
+      -- ✅ بيانات المصدر
       o.SourceID, cs.SourceName, cs.SourceNameAr, cs.SourceIcon,
+      
+      -- ✅ بيانات نوع الإعلان (عشان تظهر في التفاصيل)
+      o.AdTypeID, at.AdTypeName, at.AdTypeNameAr,
+      
+      -- ✅ بيانات فئة الاهتمام (عشان تظهر في التفاصيل)
+      o.CategoryID, ic.CategoryName, ic.CategoryNameAr,
+      
+      -- باقي البيانات
       o.StageID, ss.StageName, ss.StageNameAr, ss.StageColor, ss.StageOrder,
       o.StatusID, cst.StatusName, cst.StatusNameAr,
       o.InterestedProduct, o.ExpectedValue, o.Location,
       o.FirstContactDate, o.NextFollowUpDate, o.LastContactDate,
-      o.Notes, o.CreatedBy, o.CreatedAt,
+      o.Notes, o.Guidance, o.CreatedBy, o.CreatedAt,
+      
       DATEDIFF(DAY, o.FirstContactDate, GETDATE()) AS DaysSinceFirstContact,
+      
       CASE 
         WHEN o.NextFollowUpDate IS NULL THEN N'NotSet'
         WHEN CAST(o.NextFollowUpDate AS DATE) < CAST(GETDATE() AS DATE) THEN N'Overdue'
@@ -120,12 +134,19 @@ async function getAllOpportunities(filters = {}) {
         WHEN CAST(o.NextFollowUpDate AS DATE) = DATEADD(DAY, 1, CAST(GETDATE() AS DATE)) THEN N'Tomorrow'
         ELSE N'Upcoming'
       END AS FollowUpStatus
+
     FROM SalesOpportunities o
     LEFT JOIN Parties p ON o.PartyID = p.PartyID
     LEFT JOIN Employees e ON o.EmployeeID = e.EmployeeID
     LEFT JOIN ContactSources cs ON o.SourceID = cs.SourceID
+    
+    -- ✅ الـ Joins الجديدة (مهمة جداً)
+    LEFT JOIN AdTypes at ON o.AdTypeID = at.AdTypeID
+    LEFT JOIN InterestCategories ic ON o.CategoryID = ic.CategoryID
+    
     LEFT JOIN SalesStages ss ON o.StageID = ss.StageID
     LEFT JOIN ContactStatus cst ON o.StatusID = cst.StatusID
+    
     WHERE o.IsActive = 1
   `;
 
