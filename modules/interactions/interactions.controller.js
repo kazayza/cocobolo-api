@@ -32,7 +32,21 @@ async function create(req, res) {
   }
 }
 
+// جلب سجل التفاعلات لفرصة
+async function getByOpportunityId(req, res) {
+  try {
+    const { id } = req.params;
+    const interactions = await interactionsQueries.getInteractionsByOpportunityId(id);
+    return res.json(interactions);
+  } catch (err) {
+    console.error('خطأ في جلب سجل التفاعلات:', err);
+    return errorResponse(res, 'فشل تحميل السجل', 500, err.message);
+  }
+}
+
+
 // تصدير الدوال
 module.exports = {
-  create
+  create,
+  getByOpportunityId // <--- ضيف دي
 };

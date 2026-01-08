@@ -212,7 +212,39 @@ async function createInteraction(data) {
   }
 }
 
+// جلب سجل التفاعلات لفرصة معينة (Timeline)
+async function getInteractionsByOpportunityId(opportunityId) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('oppId', sql.Int, opportunityId)
+    .query(`
+      SELECT 
+        i.InteractionID,
+        i.InteractionDate,
+        i.Summary,
+        i.Notes,
+        i.NextFollowUpDate,
+        e.FullName AS EmployeeName,
+        cs.SourceName, cs.SourceIcon,
+        cst.StatusName, cst.StatusNameAr,
+        sb.StageNameAr AS StageBefore,
+        sa.StageNameAr AS StageAfter,
+        i.CreatedAt
+      FROM CustomerInteractions i
+      LEFT JOIN Employees e ON i.EmployeeID = e.EmployeeID
+      LEFT JOIN ContactSources cs ON i.SourceID = cs.SourceID
+      LEFT JOIN ContactStatus cst ON i.StatusID = cst.StatusID
+      LEFT JOIN SalesStages sb ON i.StageBeforeID = sb.StageID
+      LEFT JOIN SalesStages sa ON i.StageAfterID = sa.StageID
+      WHERE i.OpportunityID = @oppId
+      ORDER BY i.CreatedAt DESC
+    `);
+  return result.recordset;
+}
+
+
 // تصدير الدوال
 module.exports = {
-  createInteraction
+  createInteraction,
+  getInteractionsByOpportunityId // <--- ضيف دي
 };
