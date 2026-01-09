@@ -12,6 +12,17 @@ async function getAll(req, res) {
   }
 }
 
+// جلب الخزائن فقط (بدون رصيد)
+async function getCashboxesOnly(req, res) {
+  try {
+    const cashboxes = await cashboxQueries.getCashboxesOnly();
+    return res.json(cashboxes);
+  } catch (err) {
+    console.error('خطأ في جلب الخزائن:', err);
+    return errorResponse(res, 'فشل تحميل الخزائن', 500, err.message);
+  }
+}
+
 // جلب خزينة بالـ ID
 async function getById(req, res) {
   try {

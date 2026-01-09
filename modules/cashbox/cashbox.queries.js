@@ -17,6 +17,13 @@ async function getAllCashboxes() {
     `);
   return result.recordset;
 }
+// جلب الخزائن فقط (بدون رصيد)
+async function getCashboxesOnly() {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .query('SELECT CashBoxID, CashBoxName, Description FROM CashBoxes ORDER BY CashBoxName');
+  return result.recordset;
+}
 
 // جلب خزينة بالـ ID
 async function getCashboxById(id) {
