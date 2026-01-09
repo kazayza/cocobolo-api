@@ -79,14 +79,9 @@ async function getAllExpenses(search = '', groupId = null, startDate = null, end
   return result.recordset;
 }
 
-// إضافة مصروف جديد
-async function createExpense(expenseData) {
-  const pool = await connectDB();
-  const transaction = new sql.Transaction(pool);
-
+// ====================== مصروف عادي ======================
+async function createRegularExpense(expenseData, transaction) {
   try {
-    await transaction.begin();
-
     // إضافة المصروف
     const expenseResult = await transaction.request()
       .input('expenseName', sql.NVarChar(100), expenseData.expenseName)
@@ -96,8 +91,8 @@ async function createExpense(expenseData) {
       .input('expenseDate', sql.DateTime, expenseData.expenseDate || new Date())
       .input('notes', sql.NVarChar(255), expenseData.notes || null)
       .input('toRecipient', sql.NVarChar(100), expenseData.toRecipient || null)
-      .input('isAdvance', sql.Bit, expenseData.isAdvance || false)
-      .input('advanceMonths', sql.Int, expenseData.advanceMonths || null)
+      .input('isAdvance', sql.Bit, false) // مصروف عادي
+      .input('advanceMonths', sql.Int, null)
       .input('createdBy', sql.NVarChar(50), expenseData.createdBy)
       .query(`
         INSERT INTO Expenses (
@@ -131,6 +126,113 @@ async function createExpense(expenseData) {
         )
       `);
 
+    return expenseId;
+  } catch (err) {
+    throw err;
+  }
+}
+
+// ====================== مصروف مقدم ======================
+async function createAdvanceExpense(expenseData, transaction) {
+  try {
+    const { advanceMonths, amount, expenseName, notes, toRecipient, expenseDate } = expenseData;
+    const monthlyAmount = amount / advanceMonths;
+    
+    let firstExpenseId = null;
+
+    // 1. إضافة حركة الخزينة واحدة بالمبلغ الكامل أولاً
+    const cashTransResult = await transaction.request()
+      .input('cashBoxId', sql.Int, expenseData.cashBoxId)
+      .input('amount', sql.Decimal(18, 2), amount)
+      .input('notes', sql.NVarChar(sql.MAX), 
+        `مصروف مقدم - ${notes || ''} المستفيد: ${toRecipient || ''}`)
+      .input('createdBy', sql.NVarChar(50), expenseData.createdBy)
+      .query(`
+        INSERT INTO CashboxTransactions (
+          CashBoxID, PaymentID, ReferenceID, ReferenceType, TransactionType,
+          Amount, TransactionDate, Notes, CreatedBy, CreatedAt
+        )
+        OUTPUT INSERTED.CashboxTransactionID
+        VALUES (
+          @cashBoxId, NULL, 0, 'AdvanceExpense', N'صرف',
+          @amount, GETDATE(), @notes, @createdBy, GETDATE()
+        )
+      `);
+
+    const cashTransId = cashTransResult.recordset[0].CashboxTransactionID;
+
+    // 2. إضافة عدة مصروفات (قسط كل شهر)
+    for (let i = 1; i <= advanceMonths; i++) {
+      const monthDate = new Date(expenseDate || new Date());
+      monthDate.setMonth(monthDate.getMonth() + (i - 1));
+      
+      const expenseResult = await transaction.request()
+        .input('expenseName', sql.NVarChar(100), `${expenseName} (قسط ${i}/${advanceMonths})`)
+        .input('expenseGroupId', sql.Int, expenseData.expenseGroupId)
+        .input('cashBoxId', sql.Int, expenseData.cashBoxId)
+        .input('amount', sql.Decimal(18, 2), monthlyAmount)
+        .input('expenseDate', sql.DateTime, monthDate)
+        .input('notes', sql.NVarChar(255), 
+          `${notes || ''} - قسط ${i} من ${advanceMonths}${toRecipient ? ' - المستفيد: ' + toRecipient : ''}`)
+        .input('toRecipient', sql.NVarChar(100), toRecipient || null)
+        .input('isAdvance', sql.Bit, true)
+        .input('advanceMonths', sql.Int, advanceMonths)
+        .input('createdBy', sql.NVarChar(50), expenseData.createdBy)
+        .query(`
+          INSERT INTO Expenses (
+            ExpenseName, ExpenseGroupID, CashBoxID, Amount, ExpenseDate,
+            Notes, Torecipient, IsAdvance, AdvanceMonths, CreatedBy, CreatedAt
+          )
+          OUTPUT INSERTED.ExpenseID
+          VALUES (
+            @expenseName, @expenseGroupId, @cashBoxId, @amount, @expenseDate,
+            @notes, @toRecipient, @isAdvance, @advanceMonths, @createdBy, GETDATE()
+          )
+        `);
+
+      const expenseId = expenseResult.recordset[0].ExpenseID;
+      
+      // حفظ الـ ID الأول للربط
+      if (i === 1) {
+        firstExpenseId = expenseId;
+        
+        // تحديث حركة الخزينة بالـ ReferenceID الصحيح
+        await transaction.request()
+          .input('cashTransId', sql.Int, cashTransId)
+          .input('referenceId', sql.Int, expenseId)
+          .query(`
+            UPDATE CashboxTransactions 
+            SET ReferenceID = @referenceId 
+            WHERE CashboxTransactionID = @cashTransId
+          `);
+      }
+    }
+
+    return firstExpenseId; // نرجع أول ID
+  } catch (err) {
+    throw err;
+  }
+}
+
+// ====================== إضافة مصروف (الوظيفة الرئيسية) ======================
+async function createExpense(expenseData) {
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+
+  try {
+    await transaction.begin();
+
+    const { isAdvance, advanceMonths } = expenseData;
+    let expenseId;
+
+    if (isAdvance && advanceMonths > 1) {
+      // مصروف مقدم
+      expenseId = await createAdvanceExpense(expenseData, transaction);
+    } else {
+      // مصروف عادي
+      expenseId = await createRegularExpense(expenseData, transaction);
+    }
+
     await transaction.commit();
     return expenseId;
   } catch (err) {
@@ -139,43 +241,100 @@ async function createExpense(expenseData) {
   }
 }
 
-// تعديل مصروف
+// ====================== تعديل مصروف ======================
 async function updateExpense(id, expenseData) {
   const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
 
-  // تعديل المصروف
-  await pool.request()
-    .input('id', sql.Int, id)
-    .input('expenseName', sql.NVarChar(100), expenseData.expenseName)
-    .input('expenseGroupId', sql.Int, expenseData.expenseGroupId)
-    .input('amount', sql.Decimal(18, 2), expenseData.amount)
-    .input('expenseDate', sql.DateTime, expenseData.expenseDate)
-    .input('notes', sql.NVarChar(255), expenseData.notes || null)
-    .input('toRecipient', sql.NVarChar(100), expenseData.toRecipient || null)
-    .input('isAdvance', sql.Bit, expenseData.isAdvance || false)
-    .input('advanceMonths', sql.Int, expenseData.advanceMonths || null)
-    .query(`
-      UPDATE Expenses SET
-        ExpenseName = @expenseName, ExpenseGroupID = @expenseGroupId,
-        Amount = @amount, ExpenseDate = @expenseDate, Notes = @notes,
-        Torecipient = @toRecipient, IsAdvance = @isAdvance, AdvanceMonths = @advanceMonths
-      WHERE ExpenseID = @id
-    `);
+  try {
+    await transaction.begin();
 
-  // تعديل حركة الخزينة
-  await pool.request()
-    .input('referenceId', sql.Int, id)
-    .input('amount', sql.Decimal(18, 2), expenseData.amount)
-    .input('notes', sql.NVarChar(sql.MAX), expenseData.notes || null)
-    .query(`
-      UPDATE CashboxTransactions SET Amount = @amount, Notes = @notes
-      WHERE ReferenceID = @referenceId AND ReferenceType = 'Expense'
-    `);
+    // 1. جلب البيانات القديمة أولاً
+    const oldExpenseResult = await transaction.request()
+      .input('id', sql.Int, id)
+      .query(`
+        SELECT CashBoxID, Amount FROM Expenses WHERE ExpenseID = @id
+      `);
 
-  return true;
+    if (!oldExpenseResult.recordset[0]) {
+      throw new Error('المصروف غير موجود');
+    }
+
+    const oldCashBoxId = oldExpenseResult.recordset[0].CashBoxID;
+    const oldAmount = oldExpenseResult.recordset[0].Amount;
+    const newCashBoxId = expenseData.cashBoxId;
+    const newAmount = expenseData.amount;
+
+    // 2. تعديل المصروف
+    await transaction.request()
+      .input('id', sql.Int, id)
+      .input('expenseName', sql.NVarChar(100), expenseData.expenseName)
+      .input('expenseGroupId', sql.Int, expenseData.expenseGroupId)
+      .input('cashBoxId', sql.Int, newCashBoxId)
+      .input('amount', sql.Decimal(18, 2), newAmount)
+      .input('expenseDate', sql.DateTime, expenseData.expenseDate)
+      .input('notes', sql.NVarChar(255), expenseData.notes || null)
+      .input('toRecipient', sql.NVarChar(100), expenseData.toRecipient || null)
+      .input('isAdvance', sql.Bit, expenseData.isAdvance || false)
+      .input('advanceMonths', sql.Int, expenseData.advanceMonths || null)
+      .query(`
+        UPDATE Expenses SET
+          ExpenseName = @expenseName, ExpenseGroupID = @expenseGroupId,
+          CashBoxID = @cashBoxId, Amount = @amount, ExpenseDate = @expenseDate,
+          Notes = @notes, Torecipient = @toRecipient, 
+          IsAdvance = @isAdvance, AdvanceMonths = @advanceMonths
+        WHERE ExpenseID = @id
+      `);
+
+    // 3. التعامل مع حركة الخزينة
+    if (oldCashBoxId !== newCashBoxId || oldAmount !== newAmount) {
+      // 3.1 حذف الحركة القديمة إذا اختلفت الخزينة أو المبلغ
+      await transaction.request()
+        .input('referenceId', sql.Int, id)
+        .query(`
+          DELETE FROM CashboxTransactions 
+          WHERE ReferenceID = @referenceId AND ReferenceType IN ('Expense', 'AdvanceExpense')
+        `);
+
+      // 3.2 إضافة حركة جديدة
+      await transaction.request()
+        .input('cashBoxId', sql.Int, newCashBoxId)
+        .input('referenceId', sql.Int, id)
+        .input('amount', sql.Decimal(18, 2), newAmount)
+        .input('notes', sql.NVarChar(sql.MAX), expenseData.notes || null)
+        .input('createdBy', sql.NVarChar(50), expenseData.createdBy)
+        .query(`
+          INSERT INTO CashboxTransactions (
+            CashBoxID, PaymentID, ReferenceID, ReferenceType, TransactionType,
+            Amount, TransactionDate, Notes, CreatedBy, CreatedAt
+          )
+          VALUES (
+            @cashBoxId, NULL, @referenceId, 'Expense', N'صرف',
+            @amount, GETDATE(), @notes, @createdBy, GETDATE()
+          )
+        `);
+    } else {
+      // 3.3 تعديل الحركة الحالية إذا نفس الخزينة
+      await transaction.request()
+        .input('referenceId', sql.Int, id)
+        .input('amount', sql.Decimal(18, 2), newAmount)
+        .input('notes', sql.NVarChar(sql.MAX), expenseData.notes || null)
+        .query(`
+          UPDATE CashboxTransactions SET 
+            Amount = @amount, Notes = @notes
+          WHERE ReferenceID = @referenceId AND ReferenceType IN ('Expense', 'AdvanceExpense')
+        `);
+    }
+
+    await transaction.commit();
+    return true;
+  } catch (err) {
+    await transaction.rollback();
+    throw err;
+  }
 }
 
-// حذف مصروف
+// ====================== حذف مصروف ======================
 async function deleteExpense(id) {
   const pool = await connectDB();
   const transaction = new sql.Transaction(pool);
@@ -183,12 +342,15 @@ async function deleteExpense(id) {
   try {
     await transaction.begin();
 
-    // حذف حركة الخزينة
+    // 1. حذف حركة الخزينة
     await transaction.request()
       .input('referenceId', sql.Int, id)
-      .query(`DELETE FROM CashboxTransactions WHERE ReferenceID = @referenceId AND ReferenceType = 'Expense'`);
+      .query(`
+        DELETE FROM CashboxTransactions 
+        WHERE ReferenceID = @referenceId AND ReferenceType IN ('Expense', 'AdvanceExpense')
+      `);
 
-    // حذف المصروف
+    // 2. حذف المصروف
     await transaction.request()
       .input('id', sql.Int, id)
       .query('DELETE FROM Expenses WHERE ExpenseID = @id');
@@ -201,6 +363,7 @@ async function deleteExpense(id) {
   }
 }
 
+// جلب مجموعات حسب الأب
 async function getExpenseGroupsByParent(parentGroupName = null) {
   const pool = await connectDB();
   
@@ -227,8 +390,6 @@ async function getExpenseGroupsByParent(parentGroupName = null) {
   const result = await request.query(query);
   return result.recordset;
 }
-
-
 
 // تصدير الدوال
 module.exports = {
