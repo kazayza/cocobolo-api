@@ -26,9 +26,7 @@ router.get('/', cashboxController.getAll);
 // GET /api/cashbox/:id
 router.get('/:id', cashboxController.getById);
 
-// جلب الخزائن فقط (بدون رصيد)
-// GET /api/cashbox/only
-router.get('/only', cashboxController.getCashboxesOnly);
+
 
 // إنشاء خزينة جديدة
 // POST /api/cashbox
