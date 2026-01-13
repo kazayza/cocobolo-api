@@ -2,6 +2,7 @@ const { sql, connectDB } = require('../../core/database');
 
 // جلب كل المهام
 // في tasks.queries.js
+// جلب كل المهام (شامل التعديلات الجديدة)
 async function getAllTasks(filters = {}) {
   const pool = await connectDB();
   const { assignedTo, status, priority, startDate, endDate, opportunityEmployeeId } = filters;
@@ -15,18 +16,19 @@ async function getAllTasks(filters = {}) {
       -- بيانات العميل
       p.PartyName AS ClientName, p.Phone,
       
-      -- بيانات الموظف المكلف بالمهمة
+      -- بيانات الموظف المكلف بالمهمة (Assigned To)
       e.FullName AS AssignedToName,
       
-      -- ✅ بيانات صاحب الفرصة (عشان نعرف مين صاحب العميل ده)
+      -- ✅ بيانات صاحب الفرصة (Opportunity Owner) - ده الجديد والمهم
       o.EmployeeID AS OpportunityOwnerID,
+      empOwner.FullName AS OpportunityOwnerName,
       
-      -- ✅ تاريخ آخر تواصل (عشان يظهر في الكارت)
+      -- ✅ تاريخ آخر تواصل
       o.LastContactDate,
       
       tt.TaskTypeName, tt.TaskTypeNameAr,
       
-      -- حالة المهمة
+      -- حالة المهمة المحسوبة
       CASE 
         WHEN t.Status = N'Completed' THEN N'Completed'
         WHEN CAST(t.DueDate AS DATE) < CAST(GETDATE() AS DATE) THEN N'Overdue'
@@ -39,31 +41,36 @@ async function getAllTasks(filters = {}) {
     LEFT JOIN Parties p ON t.PartyID = p.PartyID
     LEFT JOIN Employees e ON t.AssignedTo = e.EmployeeID
     LEFT JOIN TaskTypes tt ON t.TaskTypeID = tt.TaskTypeID
-    -- ✅ الربط مع الفرص ضروري عشان نجيب البيانات دي
+    
+    -- ✅ الربط مع الفرص عشان نجيب بيانات المالك
     LEFT JOIN SalesOpportunities o ON t.OpportunityID = o.OpportunityID
+    
+    -- ✅ الربط مع جدول الموظفين تاني عشان نجيب اسم صاحب الفرصة
+    LEFT JOIN Employees empOwner ON o.EmployeeID = empOwner.EmployeeID
     
     WHERE t.IsActive = 1
   `;
 
   const request = pool.request();
 
-  // ✅ 1. فلتر صاحب الفرصة (الجديد)
+  // 1. فلتر بصاحب الفرصة (لو مختارين من الفلتر فوق)
   if (opportunityEmployeeId) {
     query += ` AND o.EmployeeID = @opportunityEmployeeId`;
     request.input('opportunityEmployeeId', sql.Int, opportunityEmployeeId);
-  }
-
-  // ✅ 2. فلتر الموظف المكلف (القديم)
-  if (assignedTo) {
+  } 
+  // 2. فلتر بالمكلف بالمهمة (لو مش مختارين فلتر، يبقى نجيب مهام الموظف الحالي)
+  else if (assignedTo) {
     query += ` AND t.AssignedTo = @assignedTo`;
     request.input('assignedTo', sql.Int, assignedTo);
   }
 
+  // باقي الفلاتر العادية
   if (status) {
     query += ` AND t.Status = @status`;
     request.input('status', sql.NVarChar(20), status);
   }
 
+  // ترتيب حسب التاريخ والأولوية
   query += ` ORDER BY t.DueDate ASC, t.Priority DESC`;
 
   const result = await request.query(query);
