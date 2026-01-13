@@ -1,37 +1,59 @@
 const { sql, connectDB } = require('../../core/database');
 
 // جلب كل المهام
+// في tasks.queries.js
 async function getAllTasks(filters = {}) {
   const pool = await connectDB();
-  const { assignedTo, status, priority, startDate, endDate } = filters;
+  const { assignedTo, status, priority, startDate, endDate, opportunityEmployeeId } = filters;
 
   let query = `
     SELECT 
       t.TaskID, t.OpportunityID, t.PartyID, t.AssignedTo,
       t.TaskTypeID, t.TaskDescription, t.DueDate, t.DueTime,
-      t.Priority, t.Status, t.CompletedDate, t.CompletedBy,
-      t.CompletionNotes, t.ReminderEnabled, t.ReminderMinutes,
-      t.IsActive, t.CreatedBy, t.CreatedAt,
+      t.Priority, t.Status, t.IsActive,
+      
+      -- بيانات العميل
       p.PartyName AS ClientName, p.Phone,
+      
+      -- بيانات الموظف المكلف بالمهمة
       e.FullName AS AssignedToName,
+      
+      -- ✅ بيانات صاحب الفرصة (عشان نعرف مين صاحب العميل ده)
+      o.EmployeeID AS OpportunityOwnerID,
+      
+      -- ✅ تاريخ آخر تواصل (عشان يظهر في الكارت)
+      o.LastContactDate,
+      
       tt.TaskTypeName, tt.TaskTypeNameAr,
+      
+      -- حالة المهمة
       CASE 
         WHEN t.Status = N'Completed' THEN N'Completed'
-        WHEN t.Status = N'Cancelled' THEN N'Cancelled'
         WHEN CAST(t.DueDate AS DATE) < CAST(GETDATE() AS DATE) THEN N'Overdue'
         WHEN CAST(t.DueDate AS DATE) = CAST(GETDATE() AS DATE) THEN N'Today'
         WHEN CAST(t.DueDate AS DATE) = DATEADD(DAY, 1, CAST(GETDATE() AS DATE)) THEN N'Tomorrow'
         ELSE N'Upcoming'
       END AS TaskDueStatus
+
     FROM CRM_Tasks t
     LEFT JOIN Parties p ON t.PartyID = p.PartyID
     LEFT JOIN Employees e ON t.AssignedTo = e.EmployeeID
     LEFT JOIN TaskTypes tt ON t.TaskTypeID = tt.TaskTypeID
+    -- ✅ الربط مع الفرص ضروري عشان نجيب البيانات دي
+    LEFT JOIN SalesOpportunities o ON t.OpportunityID = o.OpportunityID
+    
     WHERE t.IsActive = 1
   `;
 
   const request = pool.request();
 
+  // ✅ 1. فلتر صاحب الفرصة (الجديد)
+  if (opportunityEmployeeId) {
+    query += ` AND o.EmployeeID = @opportunityEmployeeId`;
+    request.input('opportunityEmployeeId', sql.Int, opportunityEmployeeId);
+  }
+
+  // ✅ 2. فلتر الموظف المكلف (القديم)
   if (assignedTo) {
     query += ` AND t.AssignedTo = @assignedTo`;
     request.input('assignedTo', sql.Int, assignedTo);
@@ -40,21 +62,6 @@ async function getAllTasks(filters = {}) {
   if (status) {
     query += ` AND t.Status = @status`;
     request.input('status', sql.NVarChar(20), status);
-  }
-
-  if (priority) {
-    query += ` AND t.Priority = @priority`;
-    request.input('priority', sql.NVarChar(20), priority);
-  }
-
-  if (startDate) {
-    query += ` AND CAST(t.DueDate AS DATE) >= @startDate`;
-    request.input('startDate', sql.Date, startDate);
-  }
-
-  if (endDate) {
-    query += ` AND CAST(t.DueDate AS DATE) <= @endDate`;
-    request.input('endDate', sql.Date, endDate);
   }
 
   query += ` ORDER BY t.DueDate ASC, t.Priority DESC`;

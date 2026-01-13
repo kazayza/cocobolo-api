@@ -4,9 +4,10 @@ const { successResponse, errorResponse, notFoundResponse } = require('../../shar
 // جلب كل المهام
 async function getAll(req, res) {
   try {
-    const { assignedTo, status, priority, startDate, endDate } = req.query;
+    //const { assignedTo, status, priority, startDate, endDate } = req.query;
+    const { assignedTo, status, priority, startDate, endDate, opportunityEmployeeId } = req.query;
     const tasks = await tasksQueries.getAllTasks({
-      assignedTo, status, priority, startDate, endDate
+      assignedTo, status, priority, startDate, endDate, opportunityEmployeeId
     });
     return res.json(tasks);
   } catch (err) {
