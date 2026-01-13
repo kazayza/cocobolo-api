@@ -94,13 +94,21 @@ async function getEmployees(req, res) {
 }
 
 // ===================================
-// 📊 الإحصائيات
+// 📊 الإحصائيات (Summary)
 // ===================================
 
-// ملخص الفرص
+// ملخص الفرص (معدل لاستقبال الفلاتر)
 async function getSummary(req, res) {
   try {
-    const summary = await opportunitiesQueries.getOpportunitiesSummary();
+    // ✅ نستقبل الفلاتر عشان نحدث الملخص بناءً عليها
+    const { employeeId, sourceId, adTypeId } = req.query;
+    
+    const summary = await opportunitiesQueries.getOpportunitiesSummary({
+      employeeId,
+      sourceId,
+      adTypeId
+    });
+    
     return res.json(summary);
   } catch (err) {
     console.error('خطأ في جلب ملخص الفرص:', err);
@@ -112,16 +120,27 @@ async function getSummary(req, res) {
 // 🎯 الفرص - CRUD
 // ===================================
 
-// جلب كل الفرص
+// جلب كل الفرص (معدل لاستقبال كل الفلاتر الجديدة)
 async function getAll(req, res) {
   try {
-    const { search, stageId, sourceId, employeeId, followUpStatus } = req.query;
+    const { 
+      search, 
+      stageId, 
+      sourceId, 
+      adTypeId,      // ✅ جديد
+      employeeId,    // ✅ جديد
+      followUpStatus,
+      sortBy         // ✅ جديد
+    } = req.query;
+
     const opportunities = await opportunitiesQueries.getAllOpportunities({
       search,
       stageId,
       sourceId,
+      adTypeId,
       employeeId,
-      followUpStatus
+      followUpStatus,
+      sortBy
     });
     return res.json(opportunities);
   } catch (err) {
@@ -239,7 +258,6 @@ async function remove(req, res) {
 
 // تصدير الدوال
 module.exports = {
-  // Lookups
   getStages,
   getSources,
   getStatuses,
@@ -248,9 +266,7 @@ module.exports = {
   getLostReasons,
   getTaskTypes,
   getEmployees,
-  // Summary
   getSummary,
-  // CRUD
   getAll,
   checkOpenOpportunity,
   getById,
