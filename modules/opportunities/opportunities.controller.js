@@ -1,3 +1,5 @@
+// opportunities.controller.js
+
 const opportunitiesQueries = require('./opportunities.queries');
 const { successResponse, errorResponse, notFoundResponse } = require('../../shared/response.helper');
 
@@ -5,7 +7,6 @@ const { successResponse, errorResponse, notFoundResponse } = require('../../shar
 // 📋 Lookups Controllers
 // ===================================
 
-// جلب مراحل البيع
 async function getStages(req, res) {
   try {
     const stages = await opportunitiesQueries.getStages();
@@ -16,8 +17,7 @@ async function getStages(req, res) {
   }
 }
 
-// جلب مصادر التواصل
-async function getSources(req, res) {
+async labour function getSources(req, res) {
   try {
     const sources = await opportunitiesQueries.getSources();
     return res.json(sources);
@@ -27,7 +27,6 @@ async function getSources(req, res) {
   }
 }
 
-// جلب حالات التواصل
 async function getStatuses(req, res) {
   try {
     const statuses = await opportunitiesQueries.getStatuses();
@@ -38,7 +37,6 @@ async function getStatuses(req, res) {
   }
 }
 
-// جلب أنواع الإعلانات
 async function getAdTypes(req, res) {
   try {
     const adTypes = await opportunitiesQueries.getAdTypes();
@@ -49,7 +47,6 @@ async function getAdTypes(req, res) {
   }
 }
 
-// جلب فئات الاهتمام
 async function getCategories(req, res) {
   try {
     const categories = await opportunitiesQueries.getCategories();
@@ -60,7 +57,6 @@ async function getCategories(req, res) {
   }
 }
 
-// جلب أسباب الخسارة
 async function getLostReasons(req, res) {
   try {
     const reasons = await opportunitiesQueries.getLostReasons();
@@ -71,8 +67,7 @@ async function getLostReasons(req, res) {
   }
 }
 
-// جلب أنواع المهام
-async function getTaskTypes(req, res) {
+async function getTaskTypes(req(req, res) {
   try {
     const taskTypes = await opportunitiesQueries.getTaskTypes();
     return res.json(taskTypes);
@@ -82,7 +77,6 @@ async function getTaskTypes(req, res) {
   }
 }
 
-// جلب الموظفين
 async function getEmployees(req, res) {
   try {
     const employees = await opportunitiesQueries.getEmployees();
@@ -97,16 +91,17 @@ async function getEmployees(req, res) {
 // 📊 الإحصائيات (Summary)
 // ===================================
 
-// ملخص الفرص (معدل لاستقبال الفلاتر)
 async function getSummary(req, res) {
   try {
-    // ✅ نستقبل الفلاتر عشان نحدث الملخص بناءً عليها
-    const { employeeId, sourceId, adTypeId } = req.query;
-    
+    const { employeeId, sourceId, adTypeId, stageId, dateFrom, dateTo } = req.query;
+
     const summary = await opportunitiesQueries.getOpportunitiesSummary({
       employeeId,
       sourceId,
-      adTypeId
+      adTypeId,
+      stageId,
+      dateFrom,   // ✅ أضفناه
+      dateTo      // ✅ أضفناه
     });
     
     return res.json(summary);
@@ -117,21 +112,24 @@ async function getSummary(req, res) {
 }
 
 // ===================================
-// 🎯 الفرص - CRUD
+// 🎯 الفرص - جلب الكل
 // ===================================
 
-// جلب كل الفرص (معدل لاستقبال كل الفلاتر الجديدة)
 async function getAll(req, res) {
   try {
     const { 
       search, 
       stageId, 
       sourceId, 
-      adTypeId,      // ✅ جديد
-      employeeId,    // ✅ جديد
+      adTypeId, 
+      employeeId, 
       followUpStatus,
-      sortBy         // ✅ جديد
+      sortBy,
+      dateFrom,   // ✅ جديد
+      dateTo      // ✅ جديد
     } = req.query;
+
+    console.log('🔍 Filters received:', { search, stageId, sourceId, adTypeId, employeeId, followUpStatus, sortBy, dateFrom, dateTo });
 
     const opportunities = await opportunitiesQueries.getAllOpportunities({
       search,
@@ -140,8 +138,11 @@ async function getAll(req, res) {
       adTypeId,
       employeeId,
       followUpStatus,
-      sortBy
+      sortBy,
+      dateFrom,   // ✅ مررناه
+      dateTo      // ✅ مررناه
     });
+    
     return res.json(opportunities);
   } catch (err) {
     console.error('خطأ في جلب الفرص:', err);
@@ -149,7 +150,7 @@ async function getAll(req, res) {
   }
 }
 
-// التحقق من وجود فرصة مفتوحة للعميل
+// باقي الدوال بدون تغيير
 async function checkOpenOpportunity(req, res) {
   try {
     const { partyId } = req.params;
@@ -161,7 +162,6 @@ async function checkOpenOpportunity(req, res) {
   }
 }
 
-// جلب فرصة بالـ ID
 async function getById(req, res) {
   try {
     const { id } = req.params;
@@ -178,7 +178,6 @@ async function getById(req, res) {
   }
 }
 
-// إضافة فرصة جديدة
 async function create(req, res) {
   try {
     const { partyId } = req.body;
@@ -200,7 +199,6 @@ async function create(req, res) {
   }
 }
 
-// تعديل فرصة
 async function update(req, res) {
   try {
     const { id } = req.params;
@@ -217,7 +215,6 @@ async function update(req, res) {
   }
 }
 
-// تغيير مرحلة الفرصة
 async function updateStage(req, res) {
   try {
     const { id } = req.params;
@@ -239,7 +236,6 @@ async function updateStage(req, res) {
   }
 }
 
-// حذف فرصة
 async function remove(req, res) {
   try {
     const { id } = req.params;
@@ -256,7 +252,6 @@ async function remove(req, res) {
   }
 }
 
-// تصدير الدوال
 module.exports = {
   getStages,
   getSources,
@@ -274,4 +269,4 @@ module.exports = {
   update,
   updateStage,
   remove
-};
+}
