@@ -17,7 +17,7 @@ async function getStages(req, res) {
   }
 }
 
-async labour function getSources(req, res) {
+async function getSources(req, res) {
   try {
     const sources = await opportunitiesQueries.getSources();
     return res.json(sources);
@@ -67,7 +67,7 @@ async function getLostReasons(req, res) {
   }
 }
 
-async function getTaskTypes(req(req, res) {
+async function getTaskTypes(req, res) {
   try {
     const taskTypes = await opportunitiesQueries.getTaskTypes();
     return res.json(taskTypes);
@@ -88,7 +88,7 @@ async function getEmployees(req, res) {
 }
 
 // ===================================
-// 📊 الإحصائيات (Summary)
+// 📊 ملخص الفرص (Summary)
 // ===================================
 
 async function getSummary(req, res) {
@@ -100,10 +100,10 @@ async function getSummary(req, res) {
       sourceId,
       adTypeId,
       stageId,
-      dateFrom,   // ✅ أضفناه
-      dateTo      // ✅ أضفناه
+      dateFrom,
+      dateTo
     });
-    
+
     return res.json(summary);
   } catch (err) {
     console.error('خطأ في جلب ملخص الفرص:', err);
@@ -112,24 +112,25 @@ async function getSummary(req, res) {
 }
 
 // ===================================
-// 🎯 الفرص - جلب الكل
+// 🎯 جلب كل الفرص مع كل الفلاتر
 // ===================================
 
 async function getAll(req, res) {
   try {
-    const { 
-      search, 
-      stageId, 
-      sourceId, 
-      adTypeId, 
-      employeeId, 
+    const {
+      search,
+      stageId,
+      sourceId,
+      adTypeId,
+      employeeId,
       followUpStatus,
       sortBy,
-      dateFrom,   // ✅ جديد
-      dateTo      // ✅ جديد
+      dateFrom,
+      dateTo
     } = req.query;
 
-    console.log('🔍 Filters received:', { search, stageId, sourceId, adTypeId, employeeId, followUpStatus, sortBy, dateFrom, dateTo });
+    // للتأكد إن الفلاتر واصلة
+    console.log('فلاتر الفرص:', { search, stageId, sourceId, adTypeId, employeeId, followUpStatus, sortBy, dateFrom, dateTo });
 
     const opportunities = await opportunitiesQueries.getAllOpportunities({
       search,
@@ -139,10 +140,10 @@ async function getAll(req, res) {
       employeeId,
       followUpStatus,
       sortBy,
-      dateFrom,   // ✅ مررناه
-      dateTo      // ✅ مررناه
+      dateFrom,
+      dateTo
     });
-    
+
     return res.json(opportunities);
   } catch (err) {
     console.error('خطأ في جلب الفرص:', err);
@@ -150,7 +151,10 @@ async function getAll(req, res) {
   }
 }
 
-// باقي الدوال بدون تغيير
+// ===================================
+// باقي الدوال (بدون تغيير)
+// ===================================
+
 async function checkOpenOpportunity(req, res) {
   try {
     const { partyId } = req.params;
@@ -166,11 +170,7 @@ async function getById(req, res) {
   try {
     const { id } = req.params;
     const opportunity = await opportunitiesQueries.getOpportunityById(id);
-
-    if (!opportunity) {
-      return notFoundResponse(res, 'الفرصة غير موجودة');
-    }
-
+    if (!opportunity) return notFoundResponse(res, 'الفرصة غير موجودة');
     return res.json(opportunity);
   } catch (err) {
     console.error('خطأ في جلب تفاصيل الفرصة:', err);
@@ -181,16 +181,13 @@ async function getById(req, res) {
 async function create(req, res) {
   try {
     const { partyId } = req.body;
+    if (!partyId) return errorResponse(res, 'العميل مطلوب', 400);
 
-    if (!partyId) {
-      return errorResponse(res, 'العميل مطلوب', 400);
-    }
-
-    const opportunityId = await opportunitiesQueries.createOpportunity(req.body);
+    const opportunityId = awaitoppawaitrtunitiesQueries.createOpportunity(req.body);
 
     return res.json({
       success: true,
-      opportunityId: opportunityId,
+      opportunityId: opportunityId.OpportunityID || opportunityId,
       message: 'تم إضافة الفرصة بنجاح'
     });
   } catch (err) {
@@ -202,13 +199,8 @@ async function create(req, res) {
 async function update(req, res) {
   try {
     const { id } = req.params;
-
     await opportunitiesQueries.updateOpportunity(id, req.body);
-
-    return res.json({
-      success: true,
-      message: 'تم تعديل الفرصة بنجاح'
-    });
+    return res.json({ success: true, message: 'تم تعديل الفرصة بنجاح' });
   } catch (err) {
     console.error('خطأ في تعديل الفرصة:', err);
     return errorResponse(res, 'فشل تعديل الفرصة', 500, err.message);
@@ -219,17 +211,10 @@ async function updateStage(req, res) {
   try {
     const { id } = req.params;
     const { stageId, updatedBy } = req.body;
-
-    if (!stageId) {
-      return errorResponse(res, 'المرحلة مطلوبة', 400);
-    }
+    if (!stageId) return errorResponse(res, 'المرحلة مطلوبة', 400);
 
     await opportunitiesQueries.updateOpportunityStage(id, stageId, updatedBy);
-
-    return res.json({
-      success: true,
-      message: 'تم تغيير المرحلة بنجاح'
-    });
+    return res.json({ success: true, message: 'تم تغيير المرحلة بنجاح' });
   } catch (err) {
     console.error('خطأ في تغيير المرحلة:', err);
     return errorResponse(res, 'فشل تغيير المرحلة', 500, err.message);
@@ -239,19 +224,15 @@ async function updateStage(req, res) {
 async function remove(req, res) {
   try {
     const { id } = req.params;
-
     await opportunitiesQueries.deleteOpportunity(id);
-
-    return res.json({
-      success: true,
-      message: 'تم حذف الفرصة بنجاح'
-    });
+    return res.json({ success: true, message: 'تم حذف الفرصة بنجاح' });
   } catch (err) {
     console.error('خطأ في حذف الفرصة:', err);
     return errorResponse(res, 'فشل حذف الفرصة', 500, err.message);
   }
 }
 
+// تصدير الكل
 module.exports = {
   getStages,
   getSources,
@@ -269,4 +250,4 @@ module.exports = {
   update,
   updateStage,
   remove
-}
+};
