@@ -183,7 +183,7 @@ async function create(req, res) {
     const { partyId } = req.body;
     if (!partyId) return errorResponse(res, 'العميل مطلوب', 400);
 
-    const opportunityId = awaitoppawaitrtunitiesQueries.createOpportunity(req.body);
+    const opportunityId = await opportunitiesQueries.createOpportunity(req.body);
 
     return res.json({
       success: true,
@@ -232,6 +232,73 @@ async function remove(req, res) {
   }
 }
 
+// ===================================
+// ➕ إنشاء فرصة مع عميل جديد
+// ===================================
+
+async function createWithClient(req, res) {
+  try {
+    const { clientName, phone1, createdBy } = req.body;
+
+    // التحقق من البيانات المطلوبة
+    if (!clientName || !clientName.trim()) {
+      return errorResponse(res, 'اسم العميل مطلوب', 400);
+    }
+
+    if (!phone1 || !phone1.trim()) {
+      return errorResponse(res, 'رقم الهاتف مطلوب', 400);
+    }
+
+    if (!createdBy) {
+      return errorResponse(res, 'اسم المستخدم مطلوب', 400);
+    }
+
+    const result = await opportunitiesQueries.createOpportunityWithClient(req.body);
+
+    if (result.success) {
+      return res.json({
+        success: true,
+        opportunityId: result.opportunityId,
+        partyId: result.partyId,
+        isNewClient: result.isNewClient,
+        message: result.message
+      });
+    } else {
+      return res.json({
+        success: false,
+        message: result.message,
+        existingOpportunityId: result.existingOpportunityId,
+        partyId: result.partyId
+      });
+    }
+
+  } catch (err) {
+    console.error('خطأ في إنشاء الفرصة مع العميل:', err);
+    return errorResponse(res, 'فشل إنشاء الفرصة', 500, err.message);
+  }
+}
+
+// ===================================
+// 🔍 البحث عن عميل بالتليفون
+// ===================================
+
+async function searchByPhone(req, res) {
+  try {
+    const { phone } = req.query;
+
+    if (!phone || phone.length < 6) {
+      return res.json({ found: false, client: null });
+    }
+
+    const result = await opportunitiesQueries.searchClientByPhone(phone);
+    return res.json(result);
+
+  } catch (err) {
+    console.error('خطأ في البحث عن العميل:', err);
+    return errorResponse(res, 'فشل البحث', 500, err.message);
+  }
+}
+
 // تصدير الكل
 module.exports = {
   getStages,
@@ -249,5 +316,7 @@ module.exports = {
   create,
   update,
   updateStage,
-  remove
+  remove,
+  createWithClient,
+  searchByPhone
 };

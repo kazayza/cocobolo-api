@@ -481,6 +481,177 @@ async function deleteOpportunity(id) {
 }
 
 // ===================================
+// ➕ إنشاء فرصة مع عميل جديد (Flow كامل)
+// ===================================
+
+async function createOpportunityWithClient(data) {
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+
+  try {
+    await transaction.begin();
+
+    const {
+      // بيانات العميل
+      clientName,
+      phone1,
+      phone2,
+      address,
+      // بيانات الفرصة
+      employeeId,
+      sourceId,
+      adTypeId,
+      categoryId,
+      stageId = 1,
+      statusId,
+      interestedProduct,
+      expectedValue,
+      location,
+      notes,
+      guidance,
+      nextFollowUpDate,
+      createdBy
+    } = data;
+
+    let partyId = null;
+
+    // 1️⃣ البحث عن العميل بالتليفون
+    const existingClient = await transaction.request()
+      .input('phone1', sql.NVarChar(50), phone1)
+      .query(`
+        SELECT TOP 1 PartyID, PartyName 
+        FROM Parties 
+        WHERE (Phone = @phone1 OR Phone2 = @phone1) 
+          AND IsActive = 1
+      `);
+
+    if (existingClient.recordset.length > 0) {
+      // ✅ العميل موجود
+      partyId = existingClient.recordset[0].PartyID;
+    } else {
+      // ✅ إنشاء عميل جديد
+      const newClient = await transaction.request()
+        .input('partyName', sql.NVarChar(200), clientName)
+        .input('partyType', sql.Int, 1) // 1 = عميل
+        .input('phone', sql.NVarChar(50), phone1)
+        .input('phone2', sql.NVarChar(50), phone2 || null)
+        .input('address', sql.NVarChar(250), address || null)
+        .input('createdBy', sql.NVarChar(100), createdBy)
+        .query(`
+          INSERT INTO Parties (
+            PartyName, PartyType, Phone, Phone2, Address,
+            IsActive, CreatedBy, CreatedAt
+          )
+          OUTPUT INSERTED.PartyID
+          VALUES (
+            @partyName, @partyType, @phone, @phone2, @address,
+            1, @createdBy, GETDATE()
+          )
+        `);
+
+      partyId = newClient.recordset[0].PartyID;
+    }
+
+    // 2️⃣ التحقق من وجود فرصة مفتوحة للعميل
+    const existingOpp = await transaction.request()
+      .input('partyId', sql.Int, partyId)
+      .query(`
+        SELECT TOP 1 OpportunityID 
+        FROM SalesOpportunities 
+        WHERE PartyID = @partyId 
+          AND IsActive = 1 
+          AND StageID NOT IN (3, 4, 5)
+        ORDER BY CreatedAt DESC
+      `);
+
+    if (existingOpp.recordset.length > 0) {
+      // ❌ يوجد فرصة مفتوحة
+      await transaction.rollback();
+      return {
+        success: false,
+        message: 'يوجد فرصة مفتوحة لهذا العميل بالفعل',
+        existingOpportunityId: existingOpp.recordset[0].OpportunityID,
+        partyId: partyId
+      };
+    }
+
+    // 3️⃣ إنشاء الفرصة الجديدة
+    const newOpp = await transaction.request()
+      .input('partyId', sql.Int, partyId)
+      .input('employeeId', sql.Int, employeeId || null)
+      .input('sourceId', sql.Int, sourceId || null)
+      .input('adTypeId', sql.Int, adTypeId || null)
+      .input('categoryId', sql.Int, categoryId || null)
+      .input('stageId', sql.Int, stageId)
+      .input('statusId', sql.Int, statusId || null)
+      .input('interestedProduct', sql.NVarChar(200), interestedProduct || null)
+      .input('expectedValue', sql.Decimal(18, 2), expectedValue || 0)
+      .input('location', sql.NVarChar(200), location || null)
+      .input('notes', sql.NVarChar(500), notes || null)
+      .input('guidance', sql.NVarChar(500), guidance || null)
+      .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate || null)
+      .input('createdBy', sql.NVarChar(50), createdBy)
+      .query(`
+        INSERT INTO SalesOpportunities (
+          PartyID, EmployeeID, SourceID, AdTypeID, CategoryID,
+          StageID, StatusID, InterestedProduct, ExpectedValue, Location,
+          Notes, Guidance, NextFollowUpDate, FirstContactDate,
+          IsActive, CreatedBy, CreatedAt
+        )
+        OUTPUT INSERTED.OpportunityID
+        VALUES (
+          @partyId, @employeeId, @sourceId, @adTypeId, @categoryId,
+          @stageId, @statusId, @interestedProduct, @expectedValue, @location,
+          @notes, @guidance, @nextFollowUpDate, GETDATE(),
+          1, @createdBy, GETDATE()
+        )
+      `);
+
+    const opportunityId = newOpp.recordset[0].OpportunityID;
+
+    await transaction.commit();
+
+    return {
+      success: true,
+      opportunityId: opportunityId,
+      partyId: partyId,
+      isNewClient: existingClient.recordset.length === 0,
+      message: existingClient.recordset.length === 0 
+        ? 'تم إضافة العميل والفرصة بنجاح' 
+        : 'تم إضافة الفرصة بنجاح'
+    };
+
+  } catch (err) {
+    await transaction.rollback();
+    throw err;
+  }
+}
+
+// ===================================
+// 🔍 البحث عن عميل بالتليفون
+// ===================================
+
+async function searchClientByPhone(phone) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('phone', sql.NVarChar(50), phone)
+    .query(`
+      SELECT TOP 1 
+        PartyID, PartyName, Phone, Phone2, Address, Email
+      FROM Parties 
+      WHERE (Phone LIKE '%' + @phone + '%' OR Phone2 LIKE '%' + @phone + '%')
+        AND PartyType = 1
+        AND IsActive = 1
+      ORDER BY PartyID DESC
+    `);
+
+  if (result.recordset.length > 0) {
+    return { found: true, client: result.recordset[0] };
+  }
+  return { found: false, client: null };
+}
+
+// ===================================
 // 📤 تصدير الدوال
 // ===================================
 
@@ -505,5 +676,9 @@ module.exports = {
   createOpportunity,
   updateOpportunity,
   updateOpportunityStage,
-  deleteOpportunity
+  deleteOpportunity,
+  
+  // ✅ الجديد
+  createOpportunityWithClient,
+  searchClientByPhone
 };

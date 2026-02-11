@@ -39,6 +39,18 @@ router.get('/task-types', opportunitiesController.getTaskTypes);
 router.get('/employees', opportunitiesController.getEmployees);
 
 // ===================================
+// ➕ إنشاء فرصة مع عميل
+// ===================================
+
+// إنشاء فرصة مع عميل جديد أو موجود
+// POST /api/opportunities/create-with-client
+router.post('/create-with-client', opportunitiesController.createWithClient);
+
+// البحث عن عميل بالتليفون
+// GET /api/opportunities/search-by-phone?phone=01xxxxxxxx
+router.get('/search-by-phone', opportunitiesController.searchByPhone);
+
+// ===================================
 // 📊 الإحصائيات
 // ===================================
 
