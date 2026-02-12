@@ -7,6 +7,8 @@ async function createInteraction(data) {
 
   try {
     await transaction.begin();
+        // متغير لحفظ المرحلة السابقة
+    let stageBeforeId = null;
 
     const {
       isNewClient,
@@ -63,7 +65,7 @@ async function createInteraction(data) {
     const existingOpp = await transaction.request()
       .input('partyId', sql.Int, finalPartyId)
       .query(`
-        SELECT TOP 1 OpportunityID 
+        SELECT TOP 1 OpportunityID, StageID 
         FROM SalesOpportunities 
         WHERE PartyID = @partyId 
           AND IsActive = 1 
@@ -74,6 +76,7 @@ async function createInteraction(data) {
     if (existingOpp.recordset.length > 0) {
       // 3️⃣ تحديث الفرصة الموجودة
       opportunityId = existingOpp.recordset[0].OpportunityID;
+      stageBeforeId = existingOpp.recordset[0].StageID;
 
       await transaction.request()
         .input('oppId', sql.Int, opportunityId)
@@ -153,6 +156,7 @@ async function createInteraction(data) {
       .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate || null)
       .input('notes', sql.NVarChar(500), guidance || null)
       .input('createdBy', sql.NVarChar(50), createdBy)
+      .input('stageBeforeId', sql.Int, stageBeforeId)
       .query(`
         INSERT INTO CustomerInteractions (
           OpportunityID, PartyID, EmployeeID, SourceID, StatusID,
@@ -167,7 +171,23 @@ async function createInteraction(data) {
         )
       `);
 
-    // 5️⃣ إنشاء مهمة متابعة
+        // 5️⃣ إدارة المهام (Tasks Management)
+    
+    // ✅ (جديد) إغلاق كل المهام المفتوحة لهذه الفرصة
+    await transaction.request()
+      .input('oppId', sql.Int, opportunityId)
+      .input('completedBy', sql.NVarChar(50), createdBy)
+      .query(`
+        UPDATE CRM_Tasks 
+        SET Status = 'Completed',
+            CompletedDate = GETDATE(),
+            CompletedBy = @completedBy,
+            CompletionNotes = N'تم الإغلاق تلقائياً - تم تسجيل تواصل جديد'
+        WHERE OpportunityID = @oppId 
+          AND Status IN ('Pending', 'In Progress')
+      `);
+
+    // ✅ إنشاء مهمة جديدة (زي ما هو)
     let taskId = null;
     if (nextFollowUpDate && stageId !== 3 && stageId !== 4 && stageId !== 5) {
       const task = await transaction.request()
