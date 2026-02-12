@@ -60,61 +60,101 @@ async function getEmployees() {
   return result.recordset;
 }
 
+
 // ===================================
-// 📊 الإحصائيات (Summary)
+// 📊 الإحصائيات (Summary) - محدث
 // ===================================
 
 async function getOpportunitiesSummary(filters = {}) {
   const pool = await connectDB();
   const { employeeId, sourceId, adTypeId, stageId, dateFrom, dateTo } = filters;
   
-  let whereClause = `WHERE IsActive = 1`;
+  // 1️⃣ إعداد الفلاتر المشتركة
+  let whereClause = `WHERE o.IsActive = 1`;
   const request = pool.request();
 
-  if (employeeId) {
-    whereClause += ` AND EmployeeID = @employeeId`;
+  if (employeeId && employeeId !== 'null') {
+    whereClause += ` AND o.EmployeeID = @employeeId`;
     request.input('employeeId', sql.Int, employeeId);
   }
-  if (sourceId) {
-    whereClause += ` AND SourceID = @sourceId`;
+  if (sourceId && sourceId !== 'null') {
+    whereClause += ` AND o.SourceID = @sourceId`;
     request.input('sourceId', sql.Int, sourceId);
   }
-  if (adTypeId) {
-    whereClause += ` AND AdTypeID = @adTypeId`;
+  if (adTypeId && adTypeId !== 'null') {
+    whereClause += ` AND o.AdTypeID = @adTypeId`;
     request.input('adTypeId', sql.Int, adTypeId);
   }
-  if (stageId) {
-    whereClause += ` AND StageID = @stageId`;
+  if (stageId && stageId !== 'null') {
+    whereClause += ` AND o.StageID = @stageId`;
     request.input('stageId', sql.Int, stageId);
   }
-
-  // ✅ فلتر التاريخ
   if (dateFrom) {
-    whereClause += ` AND CAST(CreatedAt AS DATE) >= @dateFrom`;
+    whereClause += ` AND CAST(o.CreatedAt AS DATE) >= @dateFrom`;
     request.input('dateFrom', sql.Date, dateFrom);
   }
   if (dateTo) {
-    whereClause += ` AND CAST(CreatedAt AS DATE) <= @dateTo`;
+    whereClause += ` AND CAST(o.CreatedAt AS DATE) <= @dateTo`;
     request.input('dateTo', sql.Date, dateTo);
   }
 
-  const result = await request.query(`
+  // 2️⃣ الاستعلام الرئيسي (أعداد وقيم)
+  const mainQuery = `
     SELECT 
       COUNT(*) as totalOpportunities,
-      SUM(CASE WHEN StageID = 1 THEN 1 ELSE 0 END) as leadCount,
-      SUM(CASE WHEN StageID = 2 THEN 1 ELSE 0 END) as potentialCount,
-      SUM(CASE WHEN StageID = 3 THEN 1 ELSE 0 END) as closedCount,
-      SUM(CASE WHEN StageID = 4 THEN 1 ELSE 0 END) as lostCount,
-      SUM(CASE WHEN StageID = 5 THEN 1 ELSE 0 END) as notInterestedCount,
-      SUM(CASE WHEN CAST(NextFollowUpDate AS DATE) = CAST(GETDATE() AS DATE) THEN 1 ELSE 0 END) as todayFollowUp,
-      SUM(CASE WHEN CAST(NextFollowUpDate AS DATE) < CAST(GETDATE() AS DATE) AND StageID NOT IN (3,4,5) THEN 1 ELSE 0 END) as overdueFollowUp,
-      ISNULL(SUM(ExpectedValue), 0) as totalExpectedValue,
-      ISNULL(SUM(CASE WHEN StageID = 3 THEN ExpectedValue ELSE 0 END), 0) as closedValue,
-      ISNULL(SUM(CASE WHEN StageID = 4 THEN ExpectedValue ELSE 0 END), 0) as lostValue
-    FROM SalesOpportunities
+      
+      -- مراحل البيع
+      SUM(CASE WHEN o.StageID = 1 THEN 1 ELSE 0 END) as leadCount,
+      SUM(CASE WHEN o.StageID = 2 THEN 1 ELSE 0 END) as potentialCount,
+      SUM(CASE WHEN o.StageID = 7 THEN 1 ELSE 0 END) as highInterestCount,
+      SUM(CASE WHEN o.StageID = 3 THEN 1 ELSE 0 END) as wonCount,
+      SUM(CASE WHEN o.StageID IN (4, 5) THEN 1 ELSE 0 END) as lostCount,
+
+      -- المتابعة
+      SUM(CASE WHEN CAST(o.NextFollowUpDate AS DATE) < CAST(GETDATE() AS DATE) AND o.StageID NOT IN (3,4,5) THEN 1 ELSE 0 END) as overdueCount,
+      SUM(CASE WHEN CAST(o.NextFollowUpDate AS DATE) = CAST(GETDATE() AS DATE) THEN 1 ELSE 0 END) as todayCount,
+      
+      -- الجدد هذا الشهر
+      SUM(CASE WHEN MONTH(o.CreatedAt) = MONTH(GETDATE()) AND YEAR(o.CreatedAt) = YEAR(GETDATE()) THEN 1 ELSE 0 END) as newThisMonth,
+      
+      -- 💰 القيم المالية
+      ISNULL(SUM(o.ExpectedValue), 0) as totalExpectedValue,
+      ISNULL(SUM(CASE WHEN o.StageID = 3 THEN o.ExpectedValue ELSE 0 END), 0) as wonValue
+
+    FROM SalesOpportunities o
     ${whereClause}
-  `);
-  return result.recordset[0];
+  `;
+
+  // 3️⃣ استعلام المصادر (Top 5)
+  const sourcesQuery = `
+    SELECT TOP 5 cs.SourceNameAr as name, COUNT(*) as count
+    FROM SalesOpportunities o
+    LEFT JOIN ContactSources cs ON o.SourceID = cs.SourceID
+    ${whereClause}
+    GROUP BY cs.SourceNameAr
+    ORDER BY count DESC
+  `;
+
+  // 4️⃣ استعلام الحملات (Top 5)
+  const adsQuery = `
+    SELECT TOP 5 at.AdTypeNameAr as name, COUNT(*) as count
+    FROM SalesOpportunities o
+    LEFT JOIN AdTypes at ON o.AdTypeID = at.AdTypeID
+    ${whereClause}
+    GROUP BY at.AdTypeNameAr
+    ORDER BY count DESC
+  `;
+
+  // تنفيذ الاستعلامات
+  const mainResult = await request.query(mainQuery);
+  const sourcesResult = await request.query(sourcesQuery);
+  const adsResult = await request.query(adsQuery);
+
+  return {
+    stats: mainResult.recordset[0],
+    topSources: sourcesResult.recordset,
+    topCampaigns: adsResult.recordset
+  };
 }
 
 // ===================================
