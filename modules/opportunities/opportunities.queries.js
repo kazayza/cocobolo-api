@@ -593,12 +593,12 @@ async function createOpportunityWithClient(data) {
         .query(`
           INSERT INTO Parties (
           PartyName, PartyType, Phone, Phone2, Address,
-          Email, IsActive, CreatedBy, CreatedAt
+           IsActive, CreatedBy, CreatedAt
          )
           OUTPUT INSERTED.PartyID
           VALUES (
   @partyName, @partyType, @phone, @phone2, @address,
-  @email, 1, @createdBy, GETDATE()
+  1, @createdBy, GETDATE()
 )
         `);
 
@@ -616,7 +616,7 @@ async function createOpportunityWithClient(data) {
           AND StageID NOT IN (3, 4, 5)
         ORDER BY CreatedAt DESC
       `);
-
+ 
     if (existingOpp.recordset.length > 0) {
       // ❌ يوجد فرصة مفتوحة
       await transaction.rollback();
