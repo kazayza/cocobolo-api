@@ -262,11 +262,14 @@ async function getAllOpportunities(filters = {}) {
       case 'followup':
         query += ` ORDER BY o.NextFollowUpDate ASC`;
         break;
+      case 'stage':
+        query += ` ORDER BY ss.StageOrder, o.NextFollowUpDate, o.CreatedAt DESC`;
+        break;
       default: 
-        query += ` ORDER BY ss.StageOrder, o.NextFollowUpDate`;
+        query += ` ORDER BY o.CreatedAt DESC`;
     }
   } else {
-    query += ` ORDER BY ss.StageOrder, o.NextFollowUpDate, o.CreatedAt DESC`;
+    query += ` ORDER BY o.CreatedAt DESC`;
   }
 
   const result = await request.query(query);
