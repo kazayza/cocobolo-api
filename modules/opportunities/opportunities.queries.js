@@ -595,6 +595,7 @@ async function createOpportunityWithClient(data) {
           PartyName, PartyType, Phone, Phone2, Address,
           Email, IsActive, CreatedBy, CreatedAt
          )
+          OUTPUT INSERTED.PartyID
           VALUES (
   @partyName, @partyType, @phone, @phone2, @address,
   @email, 1, @createdBy, GETDATE()
