@@ -548,17 +548,17 @@ async function createOpportunityWithClient(data) {
         .input('phone', sql.NVarChar(50), phone1)
         .input('phone2', sql.NVarChar(50), phone2 || null)
         .input('address', sql.NVarChar(250), address || null)
+        .input('email', sql.NVarChar(100), data.email || null)
         .input('createdBy', sql.NVarChar(100), createdBy)
         .query(`
           INSERT INTO Parties (
-            PartyName, PartyType, Phone, Phone2, Address,
-            IsActive, CreatedBy, CreatedAt
-          )
-          OUTPUT INSERTED.PartyID
+          PartyName, PartyType, Phone, Phone2, Address,
+          Email, IsActive, CreatedBy, CreatedAt
+         )
           VALUES (
-            @partyName, @partyType, @phone, @phone2, @address,
-            1, @createdBy, GETDATE()
-          )
+  @partyName, @partyType, @phone, @phone2, @address,
+  @email, 1, @createdBy, GETDATE()
+)
         `);
 
       partyId = newClient.recordset[0].PartyID;
