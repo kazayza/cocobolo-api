@@ -126,25 +126,49 @@ async function getAll(req, res) {
       followUpStatus,
       sortBy,
       dateFrom,
-      dateTo
+      dateTo,
+      page = 1,
+      limit = 30
     } = req.query;
 
     // للتأكد إن الفلاتر واصلة
     console.log('فلاتر الفرص:', { search, stageId, sourceId, adTypeId, employeeId, followUpStatus, sortBy, dateFrom, dateTo });
 
-    const opportunities = await opportunitiesQueries.getAllOpportunities({
-      search,
-      stageId,
-      sourceId,
-      adTypeId,
-      employeeId,
-      followUpStatus,
-      sortBy,
-      dateFrom,
-      dateTo
-    });
+const opportunities = await opportunitiesQueries.getAllOpportunities({
+  search,
+  stageId,
+  sourceId,
+  adTypeId,
+  employeeId,
+  followUpStatus,
+  sortBy,
+  dateFrom,
+  dateTo,
+  page,
+  limit
+});
 
-    return res.json(opportunities);
+const total = await opportunitiesQueries.getTotalOpportunitiesCount({
+  search,
+  stageId,
+  sourceId,
+  adTypeId,
+  employeeId,
+  followUpStatus,
+  dateFrom,
+  dateTo
+});
+
+return res.json({
+  data: opportunities,
+  pagination: {
+    page: parseInt(page),
+    limit: parseInt(limit),
+    total: total,
+    totalPages: Math.ceil(total / limit),
+    hasMore: page * limit < total
+  }
+});
   } catch (err) {
     console.error('خطأ في جلب الفرص:', err);
     return errorResponse(res, 'فشل تحميل الفرص', 500, err.message);

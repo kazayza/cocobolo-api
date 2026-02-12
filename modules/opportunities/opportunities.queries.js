@@ -132,8 +132,12 @@ async function getAllOpportunities(filters = {}) {
     followUpStatus, 
     sortBy,
     dateFrom,    // ✅ جديد
-    dateTo       // ✅ جديد
+    dateTo,
+    page = 1,
+    limit = 30
   } = filters;
+
+  const offset = (page - 1) * limit;
 
   let query = `
     SELECT 
@@ -268,12 +272,17 @@ async function getAllOpportunities(filters = {}) {
       default: 
         query += ` ORDER BY o.CreatedAt DESC`;
     }
-  } else {
-    query += ` ORDER BY o.CreatedAt DESC`;
-  }
+} else {
+  query += ` ORDER BY o.CreatedAt DESC`;
+}
 
-  const result = await request.query(query);
-  return result.recordset;
+// ✅ Pagination
+query += ` OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`;
+request.input('offset', sql.Int, offset);
+request.input('limit', sql.Int, parseInt(limit));
+
+const result = await request.query(query);
+return result.recordset;
 }
 
 // ===================================
@@ -655,6 +664,85 @@ async function searchClientByPhone(phone) {
 }
 
 // ===================================
+// 📊 حساب إجمالي عدد الفرص (للـ Pagination)
+// ===================================
+
+async function getTotalOpportunitiesCount(filters = {}) {
+  const pool = await connectDB();
+  const { 
+    search, 
+    stageId, 
+    sourceId, 
+    adTypeId, 
+    employeeId, 
+    followUpStatus,
+    dateFrom,
+    dateTo
+  } = filters;
+
+  let query = `SELECT COUNT(*) as total FROM SalesOpportunities o
+    LEFT JOIN Parties p ON o.PartyID = p.PartyID
+    WHERE o.IsActive = 1`;
+
+  const request = pool.request();
+
+  if (search && search.trim() !== '') {
+    query += ` AND (p.PartyName LIKE @search OR p.Phone LIKE @search OR o.InterestedProduct LIKE @search)`;
+    request.input('search', sql.NVarChar, `%${search}%`);
+  }
+
+  if (stageId && stageId !== '0') {
+    query += ` AND o.StageID = @stageId`;
+    request.input('stageId', sql.Int, stageId);
+  }
+
+  if (sourceId && sourceId !== '0') {
+    query += ` AND o.SourceID = @sourceId`;
+    request.input('sourceId', sql.Int, sourceId);
+  }
+
+  if (adTypeId && adTypeId !== '0') {
+    query += ` AND o.AdTypeID = @adTypeId`;
+    request.input('adTypeId', sql.Int, adTypeId);
+  }
+
+  if (employeeId && employeeId !== '0') {
+    query += ` AND o.EmployeeID = @employeeId`;
+    request.input('employeeId', sql.Int, employeeId);
+  }
+
+  if (dateFrom) {
+    query += ` AND CAST(o.CreatedAt AS DATE) >= @dateFrom`;
+    request.input('dateFrom', sql.Date, dateFrom);
+  }
+
+  if (dateTo) {
+    query += ` AND CAST(o.CreatedAt AS DATE) <= @dateTo`;
+    request.input('dateTo', sql.Date, dateTo);
+  }
+
+  if (followUpStatus) {
+    switch (followUpStatus) {
+      case 'Overdue':
+        query += ` AND CAST(o.NextFollowUpDate AS DATE) < CAST(GETDATE() AS DATE) AND o.StageID NOT IN (3,4,5)`;
+        break;
+      case 'Today':
+        query += ` AND CAST(o.NextFollowUpDate AS DATE) = CAST(GETDATE() AS DATE)`;
+        break;
+      case 'Tomorrow':
+        query += ` AND CAST(o.NextFollowUpDate AS DATE) = DATEADD(DAY, 1, CAST(GETDATE() AS DATE))`;
+        break;
+      case 'Upcoming':
+        query += ` AND CAST(o.NextFollowUpDate AS DATE) > DATEADD(DAY, 1, CAST(GETDATE() AS DATE))`;
+        break;
+    }
+  }
+
+  const result = await request.query(query);
+  return result.recordset[0].total;
+}
+
+// ===================================
 // 📤 تصدير الدوال
 // ===================================
 
@@ -674,6 +762,7 @@ module.exports = {
   
   // CRUD
   getAllOpportunities,
+  getTotalOpportunitiesCount,
   checkOpenOpportunity,
   getOpportunityById,
   createOpportunity,
