@@ -1,14 +1,13 @@
 const { sql, connectDB } = require('../../core/database');
 
 // تسجيل تواصل جديد (الـ Flow الكامل)
+// تسجيل تواصل جديد (الـ Flow الكامل) - معدل للـ Triggers
 async function createInteraction(data) {
   const pool = await connectDB();
   const transaction = new sql.Transaction(pool);
 
   try {
     await transaction.begin();
-        // متغير لحفظ المرحلة السابقة
-    let stageBeforeId = null;
 
     const {
       isNewClient,
@@ -36,6 +35,7 @@ async function createInteraction(data) {
     let finalPartyId = partyId;
     let opportunityId = null;
     let isNewOpportunity = false;
+    let stageBeforeId = null; // ✅ متغير لحفظ المرحلة السابقة
 
     // 1️⃣ حفظ العميل الجديد
     if (isNewClient) {
@@ -51,11 +51,11 @@ async function createInteraction(data) {
             PartyName, PartyType, Phone, Phone2, Address,
             IsActive, CreatedBy, CreatedAt
           )
-          OUTPUT INSERTED.PartyID
           VALUES (
             @partyName, @partyType, @phone, @phone2, @address,
             1, @createdBy, GETDATE()
-          )
+          );
+          SELECT SCOPE_IDENTITY() AS PartyID; -- ✅ الحل هنا
         `);
 
       finalPartyId = newClient.recordset[0].PartyID;
@@ -76,7 +76,7 @@ async function createInteraction(data) {
     if (existingOpp.recordset.length > 0) {
       // 3️⃣ تحديث الفرصة الموجودة
       opportunityId = existingOpp.recordset[0].OpportunityID;
-      stageBeforeId = existingOpp.recordset[0].StageID;
+      stageBeforeId = existingOpp.recordset[0].StageID; // ✅ حفظ المرحلة القديمة
 
       await transaction.request()
         .input('oppId', sql.Int, opportunityId)
@@ -86,14 +86,14 @@ async function createInteraction(data) {
         .input('categoryId', sql.Int, categoryId || null)
         .input('interestedProduct', sql.NVarChar(200), interestedProduct || null)
         .input('expectedValue', sql.Decimal(18, 2), expectedValue || null)
-        .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate || null)
+        .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate ? new Date(nextFollowUpDate) : null)
         .input('lostReasonId', sql.Int, lostReasonId || null)
         .input('notes', sql.NVarChar(500), summary || null)
         .input('guidance', sql.NVarChar(500), guidance || null)
         .input('updatedBy', sql.NVarChar(50), createdBy)
         .query(`
           UPDATE SalesOpportunities SET
-            EmployeeID = COALESCE(@employeeId, EmployeeID),
+            EmployeeID = CASE WHEN EmployeeID IS NULL THEN @employeeId ELSE EmployeeID END, -- ✅ حماية الموظف الأصلي
             StageID = COALESCE(@stageId, StageID),
             StatusID = COALESCE(@statusId, StatusID),
             CategoryID = COALESCE(@categoryId, CategoryID),
@@ -123,7 +123,7 @@ async function createInteraction(data) {
         .input('categoryId', sql.Int, categoryId || null)
         .input('interestedProduct', sql.NVarChar(200), interestedProduct || null)
         .input('expectedValue', sql.Decimal(18, 2), expectedValue || null)
-        .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate || null)
+        .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate ? new Date(nextFollowUpDate) : null)
         .input('notes', sql.NVarChar(500), summary || null)
         .input('guidance', sql.NVarChar(500), guidance || null)
         .input('createdBy', sql.NVarChar(50), createdBy)
@@ -133,12 +133,12 @@ async function createInteraction(data) {
             InterestedProduct, ExpectedValue, FirstContactDate, NextFollowUpDate,
             Notes, Guidance, IsActive, CreatedBy, CreatedAt
           )
-          OUTPUT INSERTED.OpportunityID
           VALUES (
             @partyId, @employeeId, @sourceId, @adTypeId, @stageId, @statusId, @categoryId,
             @interestedProduct, @expectedValue, GETDATE(), @nextFollowUpDate,
             @notes, @guidance, 1, @createdBy, GETDATE()
-          )
+          );
+          SELECT SCOPE_IDENTITY() AS OpportunityID; -- ✅ الحل هنا
         `);
 
       opportunityId = newOpp.recordset[0].OpportunityID;
@@ -152,28 +152,28 @@ async function createInteraction(data) {
       .input('sourceId', sql.Int, sourceId || null)
       .input('statusId', sql.Int, statusId || null)
       .input('summary', sql.NVarChar(1000), summary || null)
+      .input('stageBeforeId', sql.Int, stageBeforeId) // ✅ تمرير المرحلة السابقة
       .input('stageAfterId', sql.Int, stageId || null)
-      .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate || null)
+      .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate ? new Date(nextFollowUpDate) : null)
       .input('notes', sql.NVarChar(500), guidance || null)
       .input('createdBy', sql.NVarChar(50), createdBy)
-      .input('stageBeforeId', sql.Int, stageBeforeId)
       .query(`
         INSERT INTO CustomerInteractions (
           OpportunityID, PartyID, EmployeeID, SourceID, StatusID,
-          InteractionDate, Summary, StageAfterID, NextFollowUpDate,
+          InteractionDate, Summary, StageBeforeID, StageAfterID, NextFollowUpDate,
           Notes, CreatedBy, CreatedAt
         )
-        OUTPUT INSERTED.InteractionID
         VALUES (
           @oppId, @partyId, @employeeId, @sourceId, @statusId,
-          GETDATE(), @summary, @stageAfterId, @nextFollowUpDate,
+          GETDATE(), @summary, @stageBeforeId, @stageAfterId, @nextFollowUpDate,
           @notes, @createdBy, GETDATE()
-        )
+        );
+        SELECT SCOPE_IDENTITY() AS InteractionID; -- ✅ الحل هنا
       `);
 
-        // 5️⃣ إدارة المهام (Tasks Management)
+    // 5️⃣ إدارة المهام (إغلاق القديم وإنشاء الجديد)
     
-    // ✅ (جديد) إغلاق كل المهام المفتوحة لهذه الفرصة
+    // أولاً: إغلاق كل المهام المفتوحة لهذه الفرصة
     await transaction.request()
       .input('oppId', sql.Int, opportunityId)
       .input('completedBy', sql.NVarChar(50), createdBy)
@@ -187,7 +187,7 @@ async function createInteraction(data) {
           AND Status IN ('Pending', 'In Progress')
       `);
 
-    // ✅ إنشاء مهمة جديدة (زي ما هو)
+    // ثانياً: إنشاء مهمة جديدة
     let taskId = null;
     if (nextFollowUpDate && stageId !== 3 && stageId !== 4 && stageId !== 5) {
       const task = await transaction.request()
@@ -196,7 +196,7 @@ async function createInteraction(data) {
         .input('assignedTo', sql.Int, employeeId || null)
         .input('taskTypeId', sql.Int, taskTypeId || null)
         .input('description', sql.NVarChar(500), guidance || 'متابعة العميل')
-        .input('dueDate', sql.DateTime, nextFollowUpDate)
+        .input('dueDate', sql.DateTime, nextFollowUpDate ? new Date(nextFollowUpDate) : null)
         .input('createdBy', sql.NVarChar(50), createdBy)
         .query(`
           INSERT INTO CRM_Tasks (
@@ -204,12 +204,12 @@ async function createInteraction(data) {
             TaskDescription, DueDate, Priority, Status,
             ReminderEnabled, IsActive, CreatedBy, CreatedAt
           )
-          OUTPUT INSERTED.TaskID
           VALUES (
             @oppId, @partyId, @assignedTo, @taskTypeId,
             @description, @dueDate, 'Normal', 'Pending',
             1, 1, @createdBy, GETDATE()
-          )
+          );
+          SELECT SCOPE_IDENTITY() AS TaskID; -- ✅ الحل هنا
         `);
 
       taskId = task.recordset[0].TaskID;
