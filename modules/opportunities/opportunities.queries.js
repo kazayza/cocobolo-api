@@ -420,7 +420,7 @@ async function createOpportunity(data) {
     .input('location', sql.NVarChar(255), location || null)
     .input('notes', sql.NVarChar(sql.MAX), notes || null)
     .input('guidance', sql.NVarChar(sql.MAX), guidance || null)
-    .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate || null)
+    .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate ? new Date(nextFollowUpDate) : null)
     .input('createdBy', sql.NVarChar(50), createdBy)
     .query(`
       INSERT INTO SalesOpportunities (
@@ -476,7 +476,7 @@ async function updateOpportunity(id, data) {
     .input('location', sql.NVarChar(255), location || null)
     .input('notes', sql.NVarChar(sql.MAX), notes || null)
     .input('guidance', sql.NVarChar(sql.MAX), guidance || null)
-    .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate || null)
+    .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate ? new Date(nextFollowUpDate) : null)
     .input('updatedBy', sql.NVarChar(50), updatedBy)
     .query(`
       UPDATE SalesOpportunities SET
@@ -642,7 +642,7 @@ async function createOpportunityWithClient(data) {
       .input('location', sql.NVarChar(200), location || null)
       .input('notes', sql.NVarChar(500), notes || null)
       .input('guidance', sql.NVarChar(500), guidance || null)
-      .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate || null)
+      .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate ? new Date(nextFollowUpDate) : null)
       .input('createdBy', sql.NVarChar(50), createdBy)
       .query(`
         INSERT INTO SalesOpportunities (
