@@ -584,7 +584,7 @@ async function createOpportunityWithClient(data) {
       // ✅ إنشاء عميل جديد
       const newClient = await transaction.request()
         .input('partyName', sql.NVarChar(200), clientName)
-        .input('partyType', sql.Int, 1) // 1 = عميل
+        .input('partyType', sql.Int, 1)
         .input('phone', sql.NVarChar(50), phone1)
         .input('phone2', sql.NVarChar(50), phone2 || null)
         .input('address', sql.NVarChar(250), address || null)
@@ -592,14 +592,15 @@ async function createOpportunityWithClient(data) {
         .input('createdBy', sql.NVarChar(100), createdBy)
         .query(`
           INSERT INTO Parties (
-          PartyName, PartyType, Phone, Phone2, Address,
-           IsActive, CreatedBy, CreatedAt
-         )
-          OUTPUT INSERTED.PartyID
+            PartyName, PartyType, Phone, Phone2, Address,
+            Email, IsActive, CreatedBy, CreatedAt
+          )
           VALUES (
-  @partyName, @partyType, @phone, @phone2, @address,
-  1, @createdBy, GETDATE()
-)
+            @partyName, @partyType, @phone, @phone2, @address,
+            @email, 1, @createdBy, GETDATE()
+          );
+          
+          SELECT SCOPE_IDENTITY() AS PartyID; -- 👈 الحل هنا
         `);
 
       partyId = newClient.recordset[0].PartyID;
@@ -645,22 +646,23 @@ async function createOpportunityWithClient(data) {
       .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate ? new Date(nextFollowUpDate) : null)
       .input('createdBy', sql.NVarChar(50), createdBy)
       .query(`
-        INSERT INTO SalesOpportunities (
-          PartyID, EmployeeID, SourceID, AdTypeID, CategoryID,
-          StageID, StatusID, InterestedProduct, ExpectedValue, Location,
-          Notes, Guidance, NextFollowUpDate, FirstContactDate,
-          IsActive, CreatedBy, CreatedAt
-        )
-        OUTPUT INSERTED.OpportunityID
-        VALUES (
-          @partyId, @employeeId, @sourceId, @adTypeId, @categoryId,
-          @stageId, @statusId, @interestedProduct, @expectedValue, @location,
-          @notes, @guidance, @nextFollowUpDate, GETDATE(),
-          1, @createdBy, GETDATE()
-        )
-      `);
+          INSERT INTO SalesOpportunities (
+            PartyID, EmployeeID, SourceID, AdTypeID, CategoryID,
+            StageID, StatusID, InterestedProduct, ExpectedValue, Location,
+            Notes, Guidance, NextFollowUpDate, FirstContactDate,
+            IsActive, CreatedBy, CreatedAt
+          )
+          VALUES (
+            @partyId, @employeeId, @sourceId, @adTypeId, @categoryId,
+            @stageId, @statusId, @interestedProduct, @expectedValue, @location,
+            @notes, @guidance, @nextFollowUpDate, GETDATE(),
+            1, @createdBy, GETDATE()
+          );
+          
+          SELECT SCOPE_IDENTITY() AS OpportunityID; -- 👈 الحل هنا
+        `);
 
-    const opportunityId = newOpp.recordset[0].OpportunityID;
+      const opportunityId = newOpp.recordset[0].OpportunityID;
 
     await transaction.commit();
 
