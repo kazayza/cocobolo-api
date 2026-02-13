@@ -3,7 +3,7 @@ const { errorResponse } = require('../../shared/response.helper');
 
 async function getDashboard(req, res) {
   try {
-    const { dateFrom, dateTo, employeeId, sourceId, stageId } = req.query;
+    const { dateFrom, dateTo, employeeId, sourceId, stageId, adTypeId } = req.query;
 
     // Validation
     if (dateFrom && isNaN(Date.parse(dateFrom))) {
@@ -19,6 +19,7 @@ async function getDashboard(req, res) {
       employeeId: employeeId || null,
       sourceId: sourceId || null,
       stageId: stageId || null,
+      adTypeId: adTypeId || null,
     });
 
     return res.json({

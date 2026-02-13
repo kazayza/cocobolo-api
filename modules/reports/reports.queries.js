@@ -50,6 +50,11 @@ function buildFilters(request, filters, tableAlias = 'o') {
     request.input('stgId', sql.Int, parseInt(filters.stageId));
   }
 
+  if (filters.adTypeId) {
+    where += ` AND ${tableAlias}.AdTypeID = @adtId`;
+    request.input('adtId', sql.Int, parseInt(filters.adTypeId));
+  }
+
   return where;
 }
 
@@ -63,7 +68,7 @@ async function getKPIs(pool, dates, filters) {
   request.input('pStart', sql.Date, dates.pStart);
   request.input('pEnd', sql.Date, dates.pEnd);
 
-  const empFilter = filters.employeeId
+    const empFilter = filters.employeeId
     ? 'AND o.EmployeeID = @empId'
     : '';
   const srcFilter = filters.sourceId
@@ -72,6 +77,9 @@ async function getKPIs(pool, dates, filters) {
   const stgFilter = filters.stageId
     ? 'AND o.StageID = @stgId'
     : '';
+  const adtFilter = filters.adTypeId
+    ? 'AND o.AdTypeID = @adtId'
+    : '';
 
   if (filters.employeeId)
     request.input('empId', sql.Int, parseInt(filters.employeeId));
@@ -79,8 +87,10 @@ async function getKPIs(pool, dates, filters) {
     request.input('srcId', sql.Int, parseInt(filters.sourceId));
   if (filters.stageId)
     request.input('stgId', sql.Int, parseInt(filters.stageId));
+  if (filters.adTypeId)
+    request.input('adtId', sql.Int, parseInt(filters.adTypeId));
 
-  const allFilters = `${empFilter} ${srcFilter} ${stgFilter}`;
+  const allFilters = `${empFilter} ${srcFilter} ${stgFilter} ${adtFilter}`;
 
   const query = `
     SELECT 
@@ -416,17 +426,22 @@ async function getLeaderboard(pool, dates, filters) {
   // حساب عدد أيام العمل في الفترة
   const diffDays = dates.diffDays || 30;
 
-  const srcFilter = filters.sourceId
+    const srcFilter = filters.sourceId
     ? 'AND o.SourceID = @srcId'
     : '';
   const stgFilter = filters.stageId
     ? 'AND o.StageID = @stgId'
+    : '';
+  const adtFilter = filters.adTypeId
+    ? 'AND o.AdTypeID = @adtId'
     : '';
 
   if (filters.sourceId)
     request.input('srcId', sql.Int, parseInt(filters.sourceId));
   if (filters.stageId)
     request.input('stgId', sql.Int, parseInt(filters.stageId));
+  if (filters.adTypeId)
+    request.input('adtId', sql.Int, parseInt(filters.adTypeId));
 
   const query = `
     SELECT TOP 10
@@ -488,7 +503,7 @@ async function getLeaderboard(pool, dates, filters) {
       ON e.EmployeeID = o.EmployeeID 
       AND o.IsActive = 1 
       AND CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd
-      ${srcFilter} ${stgFilter}
+      ${srcFilter} ${stgFilter} ${adtFilter}
     WHERE e.Status = N'نشط' AND e.Department = N'المبيعات'
     GROUP BY e.EmployeeID, e.FullName
     HAVING COUNT(o.OpportunityID) > 0
@@ -833,7 +848,7 @@ async function getStagnantOpportunities(pool, filters) {
 // 13. قوائم الفلاتر (Dropdowns)
 // ===================================================
 async function getFilterLists(pool) {
-  const [employees, sources, stages] = await Promise.all([
+  const [employees, sources, stages, adTypes] = await Promise.all([
     pool.request().query(`
       SELECT EmployeeID, FullName 
       FROM Employees 
@@ -852,12 +867,19 @@ async function getFilterLists(pool) {
       WHERE IsActive = 1 
       ORDER BY StageOrder
     `),
+    pool.request().query(`
+      SELECT AdTypeID, AdTypeNameAr AS name 
+      FROM AdTypes 
+      WHERE IsActive = 1 
+      ORDER BY AdTypeNameAr
+    `),
   ]);
 
   return {
     employees: employees.recordset,
     sources: sources.recordset,
     stages: stages.recordset,
+    adTypes: adTypes.recordset,
   };
 }
 
