@@ -68,7 +68,7 @@ async function getKPIs(pool, dates, filters) {
   request.input('pStart', sql.Date, dates.pStart);
   request.input('pEnd', sql.Date, dates.pEnd);
 
-    const empFilter = filters.employeeId
+  const empFilter = filters.employeeId
     ? 'AND o.EmployeeID = @empId'
     : '';
   const srcFilter = filters.sourceId
@@ -93,158 +93,149 @@ async function getKPIs(pool, dates, filters) {
   const allFilters = `${empFilter} ${srcFilter} ${stgFilter} ${adtFilter}`;
 
   const query = `
+    DECLARE @currentOpportunities INT, @currentWon INT, @currentLost INT;
+    DECLARE @currentExpectedRevenue FLOAT, @currentActualRevenue FLOAT, @currentCollected FLOAT;
+    DECLARE @currentConversion FLOAT, @currentAvgCloseTime INT;
+    DECLARE @prevOpportunities INT, @prevWon INT, @prevLost INT;
+    DECLARE @prevExpectedRevenue FLOAT, @prevActualRevenue FLOAT;
+    DECLARE @prevConversion FLOAT, @prevAvgCloseTime INT;
+    DECLARE @currentMarketingCost FLOAT, @prevMarketingCost FLOAT;
+    DECLARE @todayTasksCount INT, @overdueTasksCount INT;
+    DECLARE @openComplaintsCount INT, @stagnantCount INT, @overdueFollowUpsCount INT;
+
+    -- الفترة الحالية: الفرص
     SELECT 
-      -- ===== الفترة الحالية =====
-      COUNT(CASE WHEN CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd THEN 1 END) 
-        AS currentOpportunities,
-      
-      COUNT(CASE WHEN CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd 
-        AND o.StageID = 3 THEN 1 END) 
-        AS currentWon,
-      
-      COUNT(CASE WHEN CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd 
-        AND o.StageID IN (4,5) THEN 1 END) 
-        AS currentLost,
-
-      ISNULL(SUM(CASE WHEN CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd 
-        AND o.StageID = 3 THEN o.ExpectedValue ELSE 0 END), 0) 
-        AS currentExpectedRevenue,
-
-      -- الإيراد الفعلي من الفواتير
-      ISNULL((
-        SELECT SUM(t.GrandTotal) 
-        FROM Transactions t 
-        INNER JOIN SalesOpportunities o2 ON o2.TransactionID = t.TransactionID
-        WHERE o2.IsActive = 1 AND o2.StageID = 3
-        AND CAST(o2.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd
-        AND t.TransactionType = 'Sale'
-        ${allFilters.replace(/o\./g, 'o2.')}
-      ), 0) AS currentActualRevenue,
-
-      -- المحصل فعلياً
-      ISNULL((
-        SELECT SUM(py.Amount) 
-        FROM Payments py
-        INNER JOIN Transactions t ON py.TransactionID = t.TransactionID
-        INNER JOIN SalesOpportunities o2 ON o2.TransactionID = t.TransactionID
-        WHERE o2.IsActive = 1 AND o2.StageID = 3
-        AND CAST(o2.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd
-        AND t.TransactionType = 'Sale'
-        ${allFilters.replace(/o\./g, 'o2.')}
-      ), 0) AS currentCollected,
-
-      -- نسبة التحويل
-      CASE 
-        WHEN COUNT(CASE WHEN CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd 
-          AND o.StageID IN (3,4,5) THEN 1 END) = 0 THEN 0
+      @currentOpportunities = COUNT(*),
+      @currentWon = COUNT(CASE WHEN o.StageID = 3 THEN 1 END),
+      @currentLost = COUNT(CASE WHEN o.StageID IN (4,5) THEN 1 END),
+      @currentExpectedRevenue = ISNULL(SUM(CASE WHEN o.StageID = 3 THEN o.ExpectedValue ELSE 0 END), 0),
+      @currentAvgCloseTime = ISNULL(AVG(CASE WHEN o.StageID = 3 
+        THEN DATEDIFF(DAY, o.FirstContactDate, o.LastUpdatedAt) END), 0),
+      @currentConversion = CASE 
+        WHEN COUNT(CASE WHEN o.StageID IN (3,4,5) THEN 1 END) = 0 THEN 0
         ELSE ROUND(
-          (CAST(COUNT(CASE WHEN CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd 
-            AND o.StageID = 3 THEN 1 END) AS FLOAT) / 
-          COUNT(CASE WHEN CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd 
-            AND o.StageID IN (3,4,5) THEN 1 END)) * 100, 1)
-      END AS currentConversion,
-
-      -- متوسط وقت الإغلاق
-      ISNULL(AVG(CASE WHEN CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd 
-        AND o.StageID = 3 
-        THEN DATEDIFF(DAY, o.FirstContactDate, o.LastUpdatedAt) END), 0) 
-        AS currentAvgCloseTime,
-
-      -- ===== الفترة السابقة =====
-      COUNT(CASE WHEN CAST(o.CreatedAt AS DATE) BETWEEN @pStart AND @pEnd THEN 1 END) 
-        AS prevOpportunities,
-
-      COUNT(CASE WHEN CAST(o.CreatedAt AS DATE) BETWEEN @pStart AND @pEnd 
-        AND o.StageID = 3 THEN 1 END) 
-        AS prevWon,
-
-      COUNT(CASE WHEN CAST(o.CreatedAt AS DATE) BETWEEN @pStart AND @pEnd 
-        AND o.StageID IN (4,5) THEN 1 END) 
-        AS prevLost,
-
-      ISNULL(SUM(CASE WHEN CAST(o.CreatedAt AS DATE) BETWEEN @pStart AND @pEnd 
-        AND o.StageID = 3 THEN o.ExpectedValue ELSE 0 END), 0) 
-        AS prevExpectedRevenue,
-
-      ISNULL((
-        SELECT SUM(t.GrandTotal) 
-        FROM Transactions t 
-        INNER JOIN SalesOpportunities o2 ON o2.TransactionID = t.TransactionID
-        WHERE o2.IsActive = 1 AND o2.StageID = 3
-        AND CAST(o2.CreatedAt AS DATE) BETWEEN @pStart AND @pEnd
-        AND t.TransactionType = 'Sale'
-        ${allFilters.replace(/o\./g, 'o2.')}
-      ), 0) AS prevActualRevenue,
-
-      CASE 
-        WHEN COUNT(CASE WHEN CAST(o.CreatedAt AS DATE) BETWEEN @pStart AND @pEnd 
-          AND o.StageID IN (3,4,5) THEN 1 END) = 0 THEN 0
-        ELSE ROUND(
-          (CAST(COUNT(CASE WHEN CAST(o.CreatedAt AS DATE) BETWEEN @pStart AND @pEnd 
-            AND o.StageID = 3 THEN 1 END) AS FLOAT) / 
-          COUNT(CASE WHEN CAST(o.CreatedAt AS DATE) BETWEEN @pStart AND @pEnd 
-            AND o.StageID IN (3,4,5) THEN 1 END)) * 100, 1)
-      END AS prevConversion,
-
-      ISNULL(AVG(CASE WHEN CAST(o.CreatedAt AS DATE) BETWEEN @pStart AND @pEnd 
-        AND o.StageID = 3 
-        THEN DATEDIFF(DAY, o.FirstContactDate, o.LastUpdatedAt) END), 0) 
-        AS prevAvgCloseTime,
-
-      -- ===== مصاريف الماركتنج =====
-      ISNULL((
-        SELECT SUM(ex.Amount) FROM Expenses ex 
-        WHERE ex.ExpenseGroupID = 9 
-        AND CAST(ex.ExpenseDate AS DATE) BETWEEN @cStart AND @cEnd
-      ), 0) AS currentMarketingCost,
-
-      ISNULL((
-        SELECT SUM(ex.Amount) FROM Expenses ex 
-        WHERE ex.ExpenseGroupID = 9 
-        AND CAST(ex.ExpenseDate AS DATE) BETWEEN @pStart AND @pEnd
-      ), 0) AS prevMarketingCost,
-
-      -- ===== المهام =====
-      (SELECT COUNT(*) FROM CRM_Tasks t 
-        WHERE t.IsActive = 1 AND t.Status NOT IN ('Completed','Cancelled') 
-        AND CAST(t.DueDate AS DATE) = CAST(GETDATE() AS DATE)
-        ${filters.employeeId ? "AND t.AssignedTo = @empId" : ""}
-      ) AS todayTasks,
-
-      (SELECT COUNT(*) FROM CRM_Tasks t 
-        WHERE t.IsActive = 1 AND t.Status NOT IN ('Completed','Cancelled') 
-        AND CAST(t.DueDate AS DATE) < CAST(GETDATE() AS DATE)
-        ${filters.employeeId ? "AND t.AssignedTo = @empId" : ""}
-      ) AS overdueTasks,
-
-      -- ===== الشكاوى المفتوحة =====
-      (SELECT COUNT(*) FROM Complaints c 
-        WHERE c.Status IN (1,2)
-        ${filters.employeeId ? "AND c.AssignedTo = @empId" : ""}
-      ) AS openComplaints,
-
-      -- ===== الفرص الراكدة (7 أيام بدون تفاعل) =====
-      (SELECT COUNT(*) FROM SalesOpportunities stg
-        WHERE stg.IsActive = 1 AND stg.StageID NOT IN (3,4,5)
-        AND NOT EXISTS (
-          SELECT 1 FROM CustomerInteractions ci 
-          WHERE ci.OpportunityID = stg.OpportunityID 
-          AND CAST(ci.InteractionDate AS DATE) >= DATEADD(DAY, -7, CAST(GETDATE() AS DATE))
-        )
-        AND DATEDIFF(DAY, stg.LastUpdatedAt, GETDATE()) > 7
-        ${filters.employeeId ? "AND stg.EmployeeID = @empId" : ""}
-      ) AS stagnantOpportunities,
-
-      -- ===== متابعات متأخرة =====
-      (SELECT COUNT(*) FROM SalesOpportunities fu
-        WHERE fu.IsActive = 1 AND fu.StageID NOT IN (3,4,5)
-        AND fu.NextFollowUpDate IS NOT NULL
-        AND CAST(fu.NextFollowUpDate AS DATE) < CAST(GETDATE() AS DATE)
-        ${filters.employeeId ? "AND fu.EmployeeID = @empId" : ""}
-      ) AS overdueFollowUps
-
+          (CAST(COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS FLOAT) / 
+          COUNT(CASE WHEN o.StageID IN (3,4,5) THEN 1 END)) * 100, 1)
+      END
     FROM SalesOpportunities o
-    WHERE o.IsActive = 1 ${allFilters}
+    WHERE o.IsActive = 1 AND CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd
+    ${allFilters};
+
+    -- الفترة الحالية: الإيراد الفعلي
+    SELECT @currentActualRevenue = ISNULL(SUM(t.GrandTotal), 0)
+    FROM Transactions t 
+    INNER JOIN SalesOpportunities o ON o.TransactionID = t.TransactionID
+    WHERE o.IsActive = 1 AND o.StageID = 3
+    AND CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd
+    AND t.TransactionType = 'Sale'
+    ${allFilters};
+
+    -- الفترة الحالية: المحصل
+    SELECT @currentCollected = ISNULL(SUM(py.Amount), 0)
+    FROM Payments py
+    INNER JOIN Transactions t ON py.TransactionID = t.TransactionID
+    INNER JOIN SalesOpportunities o ON o.TransactionID = t.TransactionID
+    WHERE o.IsActive = 1 AND o.StageID = 3
+    AND CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd
+    AND t.TransactionType = 'Sale'
+    ${allFilters};
+
+    -- الفترة السابقة: الفرص
+    SELECT 
+      @prevOpportunities = COUNT(*),
+      @prevWon = COUNT(CASE WHEN o.StageID = 3 THEN 1 END),
+      @prevLost = COUNT(CASE WHEN o.StageID IN (4,5) THEN 1 END),
+      @prevExpectedRevenue = ISNULL(SUM(CASE WHEN o.StageID = 3 THEN o.ExpectedValue ELSE 0 END), 0),
+      @prevAvgCloseTime = ISNULL(AVG(CASE WHEN o.StageID = 3 
+        THEN DATEDIFF(DAY, o.FirstContactDate, o.LastUpdatedAt) END), 0),
+      @prevConversion = CASE 
+        WHEN COUNT(CASE WHEN o.StageID IN (3,4,5) THEN 1 END) = 0 THEN 0
+        ELSE ROUND(
+          (CAST(COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS FLOAT) / 
+          COUNT(CASE WHEN o.StageID IN (3,4,5) THEN 1 END)) * 100, 1)
+      END
+    FROM SalesOpportunities o
+    WHERE o.IsActive = 1 AND CAST(o.CreatedAt AS DATE) BETWEEN @pStart AND @pEnd
+    ${allFilters};
+
+    -- الفترة السابقة: الإيراد الفعلي
+    SELECT @prevActualRevenue = ISNULL(SUM(t.GrandTotal), 0)
+    FROM Transactions t 
+    INNER JOIN SalesOpportunities o ON o.TransactionID = t.TransactionID
+    WHERE o.IsActive = 1 AND o.StageID = 3
+    AND CAST(o.CreatedAt AS DATE) BETWEEN @pStart AND @pEnd
+    AND t.TransactionType = 'Sale'
+    ${allFilters};
+
+    -- مصاريف التسويق
+    SELECT @currentMarketingCost = ISNULL(SUM(ex.Amount), 0) 
+    FROM Expenses ex 
+    WHERE ex.ExpenseGroupID = 9 
+    AND CAST(ex.ExpenseDate AS DATE) BETWEEN @cStart AND @cEnd;
+
+    SELECT @prevMarketingCost = ISNULL(SUM(ex.Amount), 0) 
+    FROM Expenses ex 
+    WHERE ex.ExpenseGroupID = 9 
+    AND CAST(ex.ExpenseDate AS DATE) BETWEEN @pStart AND @pEnd;
+
+    -- المهام
+    SELECT @todayTasksCount = COUNT(*) FROM CRM_Tasks t 
+    WHERE t.IsActive = 1 AND t.Status NOT IN ('Completed','Cancelled') 
+    AND CAST(t.DueDate AS DATE) = CAST(GETDATE() AS DATE)
+    ${filters.employeeId ? "AND t.AssignedTo = @empId" : ""};
+
+    SELECT @overdueTasksCount = COUNT(*) FROM CRM_Tasks t 
+    WHERE t.IsActive = 1 AND t.Status NOT IN ('Completed','Cancelled') 
+    AND CAST(t.DueDate AS DATE) < CAST(GETDATE() AS DATE)
+    ${filters.employeeId ? "AND t.AssignedTo = @empId" : ""};
+
+    -- الشكاوى
+    SELECT @openComplaintsCount = COUNT(*) FROM Complaints c 
+    WHERE c.Status IN (1,2)
+    ${filters.employeeId ? "AND c.AssignedTo = @empId" : ""};
+
+    -- الفرص الراكدة
+    SELECT @stagnantCount = COUNT(*) FROM SalesOpportunities stg
+    WHERE stg.IsActive = 1 AND stg.StageID NOT IN (3,4,5)
+    AND NOT EXISTS (
+      SELECT 1 FROM CustomerInteractions ci 
+      WHERE ci.OpportunityID = stg.OpportunityID 
+      AND CAST(ci.InteractionDate AS DATE) >= DATEADD(DAY, -7, CAST(GETDATE() AS DATE))
+    )
+    AND DATEDIFF(DAY, stg.LastUpdatedAt, GETDATE()) > 7
+    ${filters.employeeId ? "AND stg.EmployeeID = @empId" : ""};
+
+    -- متابعات متأخرة
+    SELECT @overdueFollowUpsCount = COUNT(*) FROM SalesOpportunities fu
+    WHERE fu.IsActive = 1 AND fu.StageID NOT IN (3,4,5)
+    AND fu.NextFollowUpDate IS NOT NULL
+    AND CAST(fu.NextFollowUpDate AS DATE) < CAST(GETDATE() AS DATE)
+    ${filters.employeeId ? "AND fu.EmployeeID = @empId" : ""};
+
+    -- النتيجة النهائية
+    SELECT 
+      @currentOpportunities AS currentOpportunities,
+      @currentWon AS currentWon,
+      @currentLost AS currentLost,
+      @currentExpectedRevenue AS currentExpectedRevenue,
+      @currentActualRevenue AS currentActualRevenue,
+      @currentCollected AS currentCollected,
+      @currentConversion AS currentConversion,
+      @currentAvgCloseTime AS currentAvgCloseTime,
+      @prevOpportunities AS prevOpportunities,
+      @prevWon AS prevWon,
+      @prevLost AS prevLost,
+      @prevExpectedRevenue AS prevExpectedRevenue,
+      @prevActualRevenue AS prevActualRevenue,
+      @prevConversion AS prevConversion,
+      @prevAvgCloseTime AS prevAvgCloseTime,
+      @currentMarketingCost AS currentMarketingCost,
+      @prevMarketingCost AS prevMarketingCost,
+      @todayTasksCount AS todayTasks,
+      @overdueTasksCount AS overdueTasks,
+      @openComplaintsCount AS openComplaints,
+      @stagnantCount AS stagnantOpportunities,
+      @overdueFollowUpsCount AS overdueFollowUps;
   `;
 
   const result = await request.query(query);
