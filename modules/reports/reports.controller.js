@@ -1,13 +1,9 @@
-// reports.controller.js
 const reportsQueries = require('./reports.queries');
 const { errorResponse } = require('../../shared/response.helper');
 
-// ===================================================
-// 🔹 Dashboard الرئيسي
-// ===================================================
 async function getDashboard(req, res) {
   try {
-    const { dateFrom, dateTo, employeeId } = req.query;
+    const { dateFrom, dateTo, employeeId, sourceId, stageId } = req.query;
 
     // Validation
     if (dateFrom && isNaN(Date.parse(dateFrom))) {
@@ -20,7 +16,9 @@ async function getDashboard(req, res) {
     const data = await reportsQueries.getDashboardData({
       dateFrom,
       dateTo,
-      employeeId: employeeId ? parseInt(employeeId) : null,
+      employeeId: employeeId || null,
+      sourceId: sourceId || null,
+      stageId: stageId || null,
     });
 
     return res.json({
@@ -34,26 +32,4 @@ async function getDashboard(req, res) {
   }
 }
 
-// ===================================================
-// 🔹 قائمة الموظفين (للفلتر في الـ Dropdown)
-// ===================================================
-async function getEmployees(req, res) {
-  try {
-    const { connectDB } = require('../../core/database');
-    const pool = await connectDB();
-    const employees = await reportsQueries.getSalesEmployees(pool);
-
-    return res.json({
-      success: true,
-      data: employees,
-    });
-  } catch (err) {
-    console.error('❌ Employees Error:', err);
-    return errorResponse(res, 'فشل تحميل قائمة الموظفين', 500, err.message);
-  }
-}
-
-module.exports = {
-  getDashboard,
-  getEmployees,
-};
+module.exports = { getDashboard };

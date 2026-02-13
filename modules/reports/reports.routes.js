@@ -1,12 +1,7 @@
-// reports.routes.js
 const express = require('express');
 const router = express.Router();
-const reportsController = require('./reports.controller');
+const controller = require('./reports.controller');
 
-// GET /api/reports/dashboard?dateFrom=&dateTo=&employeeId=
-router.get('/dashboard', reportsController.getDashboard);
-
-// GET /api/reports/employees (للـ Filter Dropdown)
-router.get('/employees', reportsController.getEmployees);
+router.get('/dashboard', controller.getDashboard);
 
 module.exports = router;
