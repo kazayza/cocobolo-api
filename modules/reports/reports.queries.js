@@ -261,15 +261,15 @@ async function getFunnel(pool, dates, filters) {
       ss.StageOrder,
       COUNT(o.OpportunityID) AS count,
       ISNULL(SUM(o.ExpectedValue), 0) AS totalValue,
-      ISNULL(SUM(CASE WHEN o.TransactionID IS NOT NULL 
-        THEN (SELECT t.GrandTotal FROM Transactions t WHERE t.TransactionID = o.TransactionID) 
-        ELSE 0 END), 0) AS actualValue
+      ISNULL(SUM(t.GrandTotal), 0) AS actualValue
     FROM SalesStages ss
     LEFT JOIN SalesOpportunities o 
       ON ss.StageID = o.StageID 
       AND o.IsActive = 1 
       AND CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd
       ${extraFilters}
+    LEFT JOIN Transactions t 
+      ON o.TransactionID = t.TransactionID
     WHERE ss.IsActive = 1
     GROUP BY ss.StageID, ss.StageName, ss.StageNameAr, ss.StageColor, ss.StageOrder
     ORDER BY ss.StageOrder
@@ -298,9 +298,7 @@ async function getSources(pool, dates, filters) {
       COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS won,
       COUNT(CASE WHEN o.StageID IN (4,5) THEN 1 END) AS lost,
       ISNULL(SUM(CASE WHEN o.StageID = 3 THEN o.ExpectedValue ELSE 0 END), 0) AS expectedRevenue,
-      ISNULL(SUM(CASE WHEN o.StageID = 3 AND o.TransactionID IS NOT NULL 
-        THEN (SELECT t.GrandTotal FROM Transactions t WHERE t.TransactionID = o.TransactionID) 
-        ELSE 0 END), 0) AS actualRevenue,
+      ISNULL(SUM(CASE WHEN o.StageID = 3 THEN t.GrandTotal ELSE 0 END), 0) AS actualRevenue,
       CASE 
         WHEN COUNT(o.OpportunityID) = 0 THEN 0
         ELSE ROUND(CAST(COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS FLOAT) 
@@ -314,6 +312,8 @@ async function getSources(pool, dates, filters) {
       AND o.IsActive = 1 
       AND CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd
       ${extraFilters}
+    LEFT JOIN Transactions t 
+      ON o.TransactionID = t.TransactionID
     WHERE cs.IsActive = 1
     GROUP BY cs.SourceID, cs.SourceNameAr, cs.SourceIcon
     HAVING COUNT(o.OpportunityID) > 0
@@ -341,9 +341,7 @@ async function getAdTypes(pool, dates, filters) {
       COUNT(o.OpportunityID) AS total,
       COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS won,
       COUNT(CASE WHEN o.StageID IN (4,5) THEN 1 END) AS lost,
-      ISNULL(SUM(CASE WHEN o.StageID = 3 AND o.TransactionID IS NOT NULL 
-        THEN (SELECT t.GrandTotal FROM Transactions t WHERE t.TransactionID = o.TransactionID) 
-        ELSE 0 END), 0) AS actualRevenue,
+      ISNULL(SUM(CASE WHEN o.StageID = 3 THEN t.GrandTotal ELSE 0 END), 0) AS actualRevenue,
       CASE 
         WHEN COUNT(o.OpportunityID) = 0 THEN 0
         ELSE ROUND(CAST(COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS FLOAT) 
@@ -355,6 +353,8 @@ async function getAdTypes(pool, dates, filters) {
       AND o.IsActive = 1 
       AND CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd
       ${extraFilters}
+    LEFT JOIN Transactions t 
+      ON o.TransactionID = t.TransactionID
     WHERE at.IsActive = 1
     GROUP BY at.AdTypeID, at.AdTypeNameAr
     HAVING COUNT(o.OpportunityID) > 0
@@ -382,9 +382,7 @@ async function getCategories(pool, dates, filters) {
       COUNT(o.OpportunityID) AS total,
       COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS won,
       COUNT(CASE WHEN o.StageID IN (4,5) THEN 1 END) AS lost,
-      ISNULL(SUM(CASE WHEN o.StageID = 3 AND o.TransactionID IS NOT NULL 
-        THEN (SELECT t.GrandTotal FROM Transactions t WHERE t.TransactionID = o.TransactionID) 
-        ELSE 0 END), 0) AS actualRevenue,
+      ISNULL(SUM(CASE WHEN o.StageID = 3 THEN t.GrandTotal ELSE 0 END), 0) AS actualRevenue,
       CASE 
         WHEN COUNT(o.OpportunityID) = 0 THEN 0
         ELSE ROUND(CAST(COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS FLOAT) 
@@ -396,6 +394,8 @@ async function getCategories(pool, dates, filters) {
       AND o.IsActive = 1 
       AND CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd
       ${extraFilters}
+    LEFT JOIN Transactions t 
+      ON o.TransactionID = t.TransactionID
     WHERE ic.IsActive = 1
     GROUP BY ic.CategoryID, ic.CategoryNameAr
     HAVING COUNT(o.OpportunityID) > 0
@@ -414,10 +414,9 @@ async function getLeaderboard(pool, dates, filters) {
   request.input('cStart', sql.Date, dates.cStart);
   request.input('cEnd', sql.Date, dates.cEnd);
 
-  // حساب عدد أيام العمل في الفترة
   const diffDays = dates.diffDays || 30;
 
-    const srcFilter = filters.sourceId
+  const srcFilter = filters.sourceId
     ? 'AND o.SourceID = @srcId'
     : '';
   const stgFilter = filters.stageId
@@ -438,63 +437,46 @@ async function getLeaderboard(pool, dates, filters) {
     SELECT TOP 10
       e.EmployeeID,
       e.FullName,
-      
-      -- الفرص
       COUNT(o.OpportunityID) AS totalOpportunities,
       COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS wonDeals,
       COUNT(CASE WHEN o.StageID IN (4,5) THEN 1 END) AS lostDeals,
-      
-      -- الإيرادات
       ISNULL(SUM(CASE WHEN o.StageID = 3 THEN o.ExpectedValue ELSE 0 END), 0) AS expectedRevenue,
-      ISNULL(SUM(CASE WHEN o.StageID = 3 AND o.TransactionID IS NOT NULL 
-        THEN (SELECT t.GrandTotal FROM Transactions t WHERE t.TransactionID = o.TransactionID) 
-        ELSE 0 END), 0) AS actualRevenue,
-      
-      -- نسبة التحويل
+      ISNULL(SUM(CASE WHEN o.StageID = 3 THEN t.GrandTotal ELSE 0 END), 0) AS actualRevenue,
       CASE 
         WHEN COUNT(CASE WHEN o.StageID IN (3,4,5) THEN 1 END) = 0 THEN 0
         ELSE ROUND(CAST(COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS FLOAT) / 
           COUNT(CASE WHEN o.StageID IN (3,4,5) THEN 1 END) * 100, 1)
       END AS conversionRate,
-      
-      -- متوسط وقت الإغلاق
       ISNULL(AVG(CASE WHEN o.StageID = 3 
         THEN DATEDIFF(DAY, o.FirstContactDate, o.LastUpdatedAt) END), 0) AS avgCloseTime,
-      
-      -- عدد التفاعلات
       (SELECT COUNT(*) FROM CustomerInteractions ci 
         WHERE ci.EmployeeID = e.EmployeeID 
         AND CAST(ci.InteractionDate AS DATE) BETWEEN @cStart AND @cEnd
       ) AS totalInteractions,
-      
-      -- معدل النشاط اليومي
       ROUND(
         CAST((SELECT COUNT(*) FROM CustomerInteractions ci 
           WHERE ci.EmployeeID = e.EmployeeID 
           AND CAST(ci.InteractionDate AS DATE) BETWEEN @cStart AND @cEnd
         ) AS FLOAT) / ${diffDays}, 1
       ) AS dailyActivityRate,
-      
-      -- المهام المنجزة
-      (SELECT COUNT(*) FROM CRM_Tasks t 
-        WHERE t.AssignedTo = e.EmployeeID 
-        AND t.Status = 'Completed' 
-        AND CAST(t.CompletedDate AS DATE) BETWEEN @cStart AND @cEnd
+      (SELECT COUNT(*) FROM CRM_Tasks tk 
+        WHERE tk.AssignedTo = e.EmployeeID 
+        AND tk.Status = 'Completed' 
+        AND CAST(tk.CompletedDate AS DATE) BETWEEN @cStart AND @cEnd
       ) AS completedTasks,
-
-      -- المهام المتأخرة
-      (SELECT COUNT(*) FROM CRM_Tasks t 
-        WHERE t.AssignedTo = e.EmployeeID 
-        AND t.IsActive = 1 AND t.Status NOT IN ('Completed','Cancelled')
-        AND CAST(t.DueDate AS DATE) < CAST(GETDATE() AS DATE)
+      (SELECT COUNT(*) FROM CRM_Tasks tk 
+        WHERE tk.AssignedTo = e.EmployeeID 
+        AND tk.IsActive = 1 AND tk.Status NOT IN ('Completed','Cancelled')
+        AND CAST(tk.DueDate AS DATE) < CAST(GETDATE() AS DATE)
       ) AS overdueTasks
-
     FROM Employees e
     LEFT JOIN SalesOpportunities o 
       ON e.EmployeeID = o.EmployeeID 
       AND o.IsActive = 1 
       AND CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd
       ${srcFilter} ${stgFilter} ${adtFilter}
+    LEFT JOIN Transactions t 
+      ON o.TransactionID = t.TransactionID
     WHERE e.Status = N'نشط' AND e.Department = N'المبيعات'
     GROUP BY e.EmployeeID, e.FullName
     HAVING COUNT(o.OpportunityID) > 0
@@ -566,10 +548,9 @@ async function getTrend(pool, dates, filters) {
         COUNT(*) AS totalOpportunities,
         COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS wonDeals,
         COUNT(CASE WHEN o.StageID IN (4,5) THEN 1 END) AS lostDeals,
-        ISNULL(SUM(CASE WHEN o.StageID = 3 AND o.TransactionID IS NOT NULL 
-          THEN (SELECT t.GrandTotal FROM Transactions t WHERE t.TransactionID = o.TransactionID) 
-          ELSE 0 END), 0) AS revenue
+        ISNULL(SUM(CASE WHEN o.StageID = 3 THEN t.GrandTotal ELSE 0 END), 0) AS revenue
       FROM SalesOpportunities o
+      LEFT JOIN Transactions t ON o.TransactionID = t.TransactionID
       WHERE o.IsActive = 1 
         AND CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd
         ${extraFilters}
@@ -584,10 +565,9 @@ async function getTrend(pool, dates, filters) {
         COUNT(*) AS totalOpportunities,
         COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS wonDeals,
         COUNT(CASE WHEN o.StageID IN (4,5) THEN 1 END) AS lostDeals,
-        ISNULL(SUM(CASE WHEN o.StageID = 3 AND o.TransactionID IS NOT NULL 
-          THEN (SELECT t.GrandTotal FROM Transactions t WHERE t.TransactionID = o.TransactionID) 
-          ELSE 0 END), 0) AS revenue
+        ISNULL(SUM(CASE WHEN o.StageID = 3 THEN t.GrandTotal ELSE 0 END), 0) AS revenue
       FROM SalesOpportunities o
+      LEFT JOIN Transactions t ON o.TransactionID = t.TransactionID
       WHERE o.IsActive = 1 
         AND CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd
         ${extraFilters}
