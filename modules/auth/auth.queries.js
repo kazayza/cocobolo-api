@@ -65,6 +65,15 @@ async function getEmployeeByUserId(userId) {
   return result.recordset[0] || null;
 }
 
+async function getUserById(userId) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('uid', sql.Int, userId)
+    .query('SELECT * FROM Users WHERE UserID = @uid');
+  
+  return result.recordset[0];
+}
+
 async function updateUserPassword(userId, newPassword) {
   const pool = await connectDB();
   await pool.request()
@@ -80,5 +89,6 @@ module.exports = {
   saveFcmToken,
   getFcmTokenByUsername,
   getEmployeeByUserId,
+  getUserById,
   updateUserPassword
 };
