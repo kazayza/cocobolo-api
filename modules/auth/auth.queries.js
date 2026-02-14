@@ -7,7 +7,7 @@ async function findUserByCredentials(username, password) {
     .input('username', sql.NVarChar, username)
     .input('password', sql.NVarChar, password)
     .query(`
-      SELECT UserID, Username, FullName, Email, employeeID 
+      SELECT UserID, Username, FullName, Email, employeeID , Role
       FROM Users 
       WHERE Username = @username 
         AND Password = @password 

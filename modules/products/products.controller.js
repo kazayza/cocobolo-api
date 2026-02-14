@@ -1,4 +1,5 @@
 const productsQueries = require('./products.queries');
+const notificationsQueries = require('../notifications/notifications.queries');
 const { successResponse, errorResponse, notFoundResponse } = require('../../shared/response.helper');
 
 // جلب مجموعات المنتجات
@@ -51,6 +52,20 @@ async function create(req, res) {
     }
 
     const productId = await productsQueries.createProduct(req.body);
+    // 👇👇👇 كود الإشعار السحري 👇👇👇
+    // إرسال إشعار للمصنع للتسعير
+    try {
+      await notificationsQueries.createNotificationSmart({
+        title: 'منتج جديد للتسعير',
+        message: `تم إضافة منتج جديد: ${productName}، يرجى التسعير.`,
+        createdBy: createdBy || 'System', // اسم السيلز
+        relatedId: productId,             // رقم المنتج
+        formName: 'frm_Products'          // الشاشة اللي هتفتح
+      }, 'factory'); // 👈 ابعت لليوزر "Factory"
+    } catch (notifError) {
+      console.error('فشل إرسال الإشعار:', notifError);
+      // بنكمل عادي حتى لو الإشعار فشل، المهم المنتج اتضاف
+    }
 
     return res.json({
       success: true,
