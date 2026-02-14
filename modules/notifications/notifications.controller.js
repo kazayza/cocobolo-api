@@ -147,6 +147,28 @@ async function sendPush(req, res) {
   }
 }
 
+// إرسال إشعار ذكي
+async function createSmart(req, res) {
+  try {
+    const { title, message, target, createdBy, relatedId, formName } = req.body;
+
+    if (!title || !message || !target) {
+      return errorResponse(res, 'العنوان والرسالة والمستهدف (Target) مطلوبين', 400);
+    }
+
+    const count = await notificationsQueries.createNotificationSmart(req.body, target);
+
+    return res.json({
+      success: true,
+      message: `تم إرسال الإشعار لـ ${count} مستخدم`,
+      count: count
+    });
+  } catch (err) {
+    console.error('خطأ في إرسال الإشعار:', err);
+    return errorResponse(res, 'فشل إرسال الإشعار', 500, err.message);
+  }
+}
+
 // تصدير الدوال
 module.exports = {
   getUnread,
@@ -154,5 +176,6 @@ module.exports = {
   markAllAsRead,
   markAsRead,
   create,
+  createSmart,
   sendPush
 };

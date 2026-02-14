@@ -26,6 +26,9 @@ router.put('/:id/read', notificationsController.markAsRead);
 // POST /api/notifications
 router.post('/', notificationsController.create);
 
+// إرسال إشعار ذكي
+router.post('/smart', notificationsController.createSmart);
+
 // إرسال Push Notification
 // POST /api/notifications/send-push
 router.post('/send-push', notificationsController.sendPush);

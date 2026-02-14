@@ -86,6 +86,53 @@ async function createNotification(data) {
   return result.recordset[0].NotificationID;
 }
 
+// إرسال إشعار ذكي (لرول أو ليوزر محدد)
+async function createNotificationSmart(data, target) {
+  const pool = await connectDB();
+  
+  // 1. تحديد المستلمين
+  const usersResult = await pool.request()
+    .input('target', sql.NVarChar, target)
+    .query(`
+      SELECT Username 
+      FROM Users 
+      WHERE 
+         Role = @target        -- لو هو رول (زي SalesManager)
+         OR Username = @target -- لو هو يوزر محدد (زي Factory)
+         OR Role = 'Admin'     -- الأدمن بيشوف كل حاجة
+    `);
+
+  const recipients = usersResult.recordset;
+  if (recipients.length === 0) return 0;
+
+  let insertedCount = 0;
+  for (const user of recipients) {
+    // نتجنب إرسال الإشعار للشخص اللي عمل الإجراء
+    if (user.Username === data.createdBy) continue;
+
+    await pool.request()
+      .input('title', sql.NVarChar(200), data.title)
+      .input('message', sql.NVarChar(sql.MAX), data.message)
+      .input('recipientUser', sql.NVarChar(100), user.Username)
+      .input('relatedId', sql.Int, data.relatedId || null)
+      .input('formName', sql.NVarChar(100), data.formName || null)
+      .input('createdBy', sql.NVarChar(100), data.createdBy)
+      .query(`
+        INSERT INTO Notifications (
+          Title, Message, RecipientUser, RelatedID, FormName,
+          IsRead, CreatedBy, CreatedAt, ReminderEnabled
+        )
+        VALUES (
+          @title, @message, @recipientUser, @relatedId, @formName,
+          0, @createdBy, GETDATE(), 0
+        )
+      `);
+    insertedCount++;
+  }
+  return insertedCount;
+}
+
+
 // جلب FCM Token للمستخدم
 async function getFcmToken(username) {
   const pool = await connectDB();
@@ -102,5 +149,6 @@ module.exports = {
   markAllAsRead,
   markAsRead,
   createNotification,
+  createNotificationSmart,
   getFcmToken
 };
