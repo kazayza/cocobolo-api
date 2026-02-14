@@ -18,5 +18,7 @@ router.post('/save-token', authController.saveFcmToken);
 // GET /api/auth/users/:userId/employee
 router.get('/users/:userId/employee', authController.getEmployeeByUserId);
 
+router.post('/change-password', authController.changePassword);
+
 // تصدير الراوتر
 module.exports = router;

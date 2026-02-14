@@ -65,11 +65,20 @@ async function getEmployeeByUserId(userId) {
   return result.recordset[0] || null;
 }
 
+async function updateUserPassword(userId, newPassword) {
+  const pool = await connectDB();
+  await pool.request()
+    .input('uid', sql.Int, userId)
+    .input('pass', sql.NVarChar, newPassword)
+    .query('UPDATE Users SET Password = @pass WHERE UserID = @uid');
+}
+
 // تصدير الدوال
 module.exports = {
   findUserByCredentials,
   getUserPermissions,
   saveFcmToken,
   getFcmTokenByUsername,
-  getEmployeeByUserId
+  getEmployeeByUserId,
+  updateUserPassword
 };

@@ -87,9 +87,42 @@ async function getEmployeeByUserId(req, res) {
   }
 }
 
+async function changePassword(req, res) {
+  try {
+    const { userId, currentPassword, newPassword } = req.body;
+
+    if (!userId || !currentPassword || !newPassword) {
+      return res.status(400).json({ success: false, message: 'بيانات ناقصة' });
+    }
+
+    // 1. التحقق من كلمة المرور الحالية
+    const user = await authQueries.getUserById(userId);
+    
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'مستخدم غير موجود' });
+    }
+
+    // مقارنة مباشرة (بدون تشفير)
+    if (user.Password !== currentPassword) {
+      return res.status(400).json({ success: false, message: 'كلمة المرور الحالية غير صحيحة' });
+    }
+
+    // 2. تحديث كلمة المرور
+    await authQueries.updateUserPassword(userId, newPassword);
+
+    return res.json({ success: true, message: 'تم تغيير كلمة المرور بنجاح' });
+
+  } catch (err) {
+    console.error('Change Password Error:', err);
+    return res.status(500).json({ success: false, message: 'فشل تغيير كلمة المرور' });
+  }
+}
+
+// ولا تنسى تصدر الدالة في module.exports تحت
 // تصدير الدوال
 module.exports = {
   login,
   saveFcmToken,
-  getEmployeeByUserId
+  getEmployeeByUserId,
+  changePassword
 };
