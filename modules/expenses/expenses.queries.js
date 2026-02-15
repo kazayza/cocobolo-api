@@ -399,6 +399,19 @@ async function getExpenseGroupsByParent(parentGroupName = null) {
   return result.recordset;
 }
 
+// جلب مصروف واحد بالـ ID
+async function getExpenseById(id) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('id', sql.Int, id)
+    .query(`
+      SELECT * FROM Expenses WHERE ExpenseID = @id
+    `);
+  return result.recordset[0];
+}
+
+
+
 // تصدير الدوال
 module.exports = {
   getExpenseGroups,
@@ -408,5 +421,6 @@ module.exports = {
   createExpense,
   updateExpense,
   deleteExpense,
-  getExpenseGroupsByParent
+  getExpenseGroupsByParent,
+  getExpenseById
 };

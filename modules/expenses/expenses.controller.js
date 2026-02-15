@@ -143,6 +143,23 @@ async function getGroupsByParent(req, res) {
   }
 }
 
+// جلب مصروف بالـ ID
+async function getById(req, res) {
+  try {
+    const { id } = req.params;
+    const expense = await expensesQueries.getExpenseById(id);
+
+    if (!expense) {
+      return res.status(404).json({ success: false, message: 'المصروف غير موجود' });
+    }
+
+    return res.json(expense);
+  } catch (err) {
+    console.error('Error getting expense:', err);
+    return res.status(500).json({ success: false, message: 'خطأ في السيرفر' });
+  }
+}
+
 // تصدير الدوال
 module.exports = {
   getGroups,
@@ -152,5 +169,6 @@ module.exports = {
   create,
   update,
   remove,
-  getGroupsByParent
+  getGroupsByParent,
+  getById
 };

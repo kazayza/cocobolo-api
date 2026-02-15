@@ -38,5 +38,8 @@ router.delete('/:id', expensesController.remove);
 // GET /api/expenses/groups/by-parent?parentGroupName=xxx
 router.get('/groups/by-parent', expensesController.getGroupsByParent);
 
+// جلب مصروف بالـ ID
+router.get('/:id', expensesController.getById);
+
 // تصدير الراوتر
 module.exports = router;
