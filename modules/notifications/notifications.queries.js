@@ -114,7 +114,7 @@ async function createNotificationSmart(data, target) {
       .input('title', sql.NVarChar(200), data.title)
       .input('message', sql.NVarChar(sql.MAX), data.message)
       .input('recipientUser', sql.NVarChar(100), user.Username)
-      .input('relatedID', sql.Int, data.relatedId || null)
+      .input('relatedId', sql.Int, data.relatedId || null)
       .input('formName', sql.NVarChar(100), data.formName || null)
       .input('createdBy', sql.NVarChar(100), data.createdBy)
       .query(`
