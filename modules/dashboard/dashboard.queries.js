@@ -23,7 +23,7 @@ async function getDashboardStats(userId, username, role, employeeId) {
     query = `
       SELECT 
         (SELECT COUNT(*) FROM Parties WHERE CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE) AND CreatedBy = @username) as newClientsToday,
-        (SELECT COUNT(*) FROM SalesOpportunities WHERE IsActive = 1 AND StageID NOT IN (3,4,5) AND AssignedTo = @employeeId) as openOpportunities,
+        (SELECT COUNT(*) FROM SalesOpportunities WHERE IsActive = 1 AND StageID NOT IN (3,4,5) AND EmployeeID = @employeeId) as openOpportunities,
         (SELECT COUNT(*) FROM CRM_Tasks WHERE CAST(DueDate AS DATE) = CAST(GETDATE() AS DATE) AND Status != 'Completed' AND AssignedTo = @employeeId) as tasksToday,
         (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) AND TransactionType = 'Sale' AND CreatedBy = @username) as salesToday,
         (SELECT COUNT(*) FROM Notifications WHERE RecipientUser = @username AND IsRead = 0) as unreadCount
