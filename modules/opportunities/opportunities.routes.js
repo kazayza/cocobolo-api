@@ -58,6 +58,9 @@ router.get('/search-by-phone', opportunitiesController.searchByPhone);
 // GET /api/opportunities/summary
 router.get('/summary', opportunitiesController.getSummary);
 
+// ✅ ملخص الـ Pipeline - لازم يكون قبل /:id
+router.get('/pipeline-summary', opportunitiesController.getPipelineSummary);
+
 // ===================================
 // 🎯 الفرص - CRUD
 // ===================================
@@ -90,9 +93,6 @@ router.put('/:id/stage', opportunitiesController.updateStage);
 // DELETE /api/opportunities/:id
 router.delete('/:id', opportunitiesController.remove);
 
-// ملخص الـ Pipeline (مراحل البيع)
-// GET /api/opportunities/pipeline-summary
-router.get('/pipeline-summary', opportunitiesController.getPipelineSummary);
 
 // تصدير الراوتر
 module.exports = router;
