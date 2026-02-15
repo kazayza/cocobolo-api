@@ -1,4 +1,5 @@
 const expensesQueries = require('./expenses.queries');
+const notificationsQueries = require('../notifications/notifications.queries');
 const { successResponse, errorResponse } = require('../../shared/response.helper');
 
 // جلب مجموعات المصروفات
@@ -69,7 +70,17 @@ async function create(req, res) {
     }
 
     const expenseId = await expensesQueries.createExpense(req.body);
-
+        try {
+      await notificationsQueries.createNotificationSmart({
+        title: 'مصروف جديد',
+        message: `تم إضافة مصروف بقيمة ${amount} ج.م بواسطة ${createdBy || 'موظف'}. البيان: ${description || ''}`,
+        createdBy: createdBy || 'System',
+        relatedId: expenseId,        // رقم المصروف
+        formName: 'frm_Expenses'     // عشان يفتح شاشة المصروف
+      }, 'AccountManager');          // 👈 الرول المستهدف
+    } catch (notifError) {
+      console.error('فشل إرسال الإشعار:', notifError);
+    }
     return res.json({
       success: true,
       expenseId: expenseId,

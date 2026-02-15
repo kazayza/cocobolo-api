@@ -99,7 +99,7 @@ async function createRegularExpense(expenseData, transaction) {
           ExpenseName, ExpenseGroupID, CashBoxID, Amount, ExpenseDate,
           Notes, Torecipient, IsAdvance, AdvanceMonths, CreatedBy, CreatedAt
         )
-        OUTPUT INSERTED.ExpenseID
+        SELECT SCOPE_IDENTITY() AS ExpenseID;
         VALUES (
           @expenseName, @expenseGroupId, @cashBoxId, @amount, @expenseDate,
           @notes, @toRecipient, @isAdvance, @advanceMonths, @createdBy, GETDATE()
@@ -183,7 +183,7 @@ async function createAdvanceExpense(expenseData, transaction) {
             ExpenseName, ExpenseGroupID, CashBoxID, Amount, ExpenseDate,
             Notes, Torecipient, IsAdvance, AdvanceMonths, CreatedBy, CreatedAt
           )
-          OUTPUT INSERTED.ExpenseID
+          SELECT SCOPE_IDENTITY() AS ExpenseID;
           VALUES (
             @expenseName, @expenseGroupId, @cashBoxId, @amount, @expenseDate,
             @notes, @toRecipient, @isAdvance, @advanceMonths, @createdBy, GETDATE()
