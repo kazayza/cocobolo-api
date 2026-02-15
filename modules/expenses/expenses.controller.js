@@ -50,42 +50,37 @@ async function getAll(req, res) {
 // إضافة مصروف جديد
 async function create(req, res) {
   try {
-    const { expenseName, expenseGroupId, cashBoxId, amount } = req.body;
+    // 1. استخراج كل البيانات المطلوبة من الـ body
+    const { expenseName, expenseGroupId, cashBoxId, amount, notes, createdBy } = req.body;
 
-    // التحقق من البيانات المطلوبة
-    if (!expenseName) {
-      return errorResponse(res, 'اسم المصروف مطلوب', 400);
-    }
+    // 2. التحقق من البيانات
+    if (!expenseName) return errorResponse(res, 'اسم المصروف مطلوب', 400);
+    if (!expenseGroupId) return errorResponse(res, 'مجموعة المصروف مطلوبة', 400);
+    if (!cashBoxId) return errorResponse(res, 'الخزينة مطلوبة', 400);
+    if (!amount || amount <= 0) return errorResponse(res, 'المبلغ مطلوب ويجب أن يكون أكبر من صفر', 400);
 
-    if (!expenseGroupId) {
-      return errorResponse(res, 'مجموعة المصروف مطلوبة', 400);
-    }
-
-    if (!cashBoxId) {
-      return errorResponse(res, 'الخزينة مطلوبة', 400);
-    }
-
-    if (!amount || amount <= 0) {
-      return errorResponse(res, 'المبلغ مطلوب ويجب أن يكون أكبر من صفر', 400);
-    }
-
+    // 3. إضافة المصروف
     const expenseId = await expensesQueries.createExpense(req.body);
-        try {
+
+    // 4. إرسال الإشعار (الكود المصحح)
+    try {
       await notificationsQueries.createNotificationSmart({
         title: 'مصروف جديد',
-        message: `تم إضافة مصروف بقيمة ${amount} ج.م بواسطة ${createdBy || 'موظف'}. البيان: ${description || ''}`,
-        createdBy: req.body.createdBy || 'System',
-        relatedId: expenseId,        // رقم المصروف
-        formName: 'frm_Expenses'     // عشان يفتح شاشة المصروف
-      }, 'AccountManager');          // 👈 الرول المستهدف
+        message: `تم إضافة مصروف "${expenseName}" بقيمة ${amount} ج.م بواسطة ${createdBy || 'موظف'}. البيان: ${notes || ''}`,
+        createdBy: createdBy || 'System',
+        relatedId: expenseId,
+        formName: 'frm_Expenses'
+      }, 'AccountManager');
     } catch (notifError) {
       console.error('فشل إرسال الإشعار:', notifError);
     }
+
     return res.json({
       success: true,
       expenseId: expenseId,
       message: 'تم إضافة المصروف بنجاح'
     });
+
   } catch (err) {
     console.error('خطأ في إضافة المصروف:', err);
     return errorResponse(res, 'فشل إضافة المصروف', 500, err.message);
