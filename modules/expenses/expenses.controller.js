@@ -74,7 +74,7 @@ async function create(req, res) {
       await notificationsQueries.createNotificationSmart({
         title: 'مصروف جديد',
         message: `تم إضافة مصروف بقيمة ${amount} ج.م بواسطة ${createdBy || 'موظف'}. البيان: ${description || ''}`,
-        createdBy: createdBy || 'System',
+        createdBy: req.body.createdBy || 'System',
         relatedId: expenseId,        // رقم المصروف
         formName: 'frm_Expenses'     // عشان يفتح شاشة المصروف
       }, 'AccountManager');          // 👈 الرول المستهدف
