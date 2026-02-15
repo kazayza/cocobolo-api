@@ -2,11 +2,17 @@ const dashboardQueries = require('./dashboard.queries');
 const { successResponse, errorResponse } = require('../../shared/response.helper');
 
 // جلب إحصائيات لوحة التحكم
+// جلب إحصائيات لوحة التحكم
 async function getStats(req, res) {
   try {
-    const { userId, username } = req.query;
+    const { userId, username, role, employeeId } = req.query;
 
-    const stats = await dashboardQueries.getDashboardStats(userId, username);
+    const stats = await dashboardQueries.getDashboardStats(
+      userId, 
+      username, 
+      role || 'User', 
+      employeeId || null
+    );
 
     return res.json({
       summary: stats,

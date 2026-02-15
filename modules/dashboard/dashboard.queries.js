@@ -1,19 +1,58 @@
 const { sql, connectDB } = require('../../core/database');
 
 // جلب إحصائيات لوحة التحكم الرئيسية
-async function getDashboardStats(userId, username) {
+// جلب إحصائيات لوحة التحكم الرئيسية (حسب الـ Role)
+async function getDashboardStats(userId, username, role, employeeId) {
   const pool = await connectDB();
-  const result = await pool.request()
-    .input('userId', sql.Int, userId)
-    .input('username', sql.NVarChar, username)
-    .query(`
+  
+  let query = '';
+  
+  // تحديد الاستعلام حسب الـ Role
+  if (role === 'Admin' || role === 'SalesManager') {
+    // الأدمن ومدير المبيعات يشوفوا كل حاجة
+    query = `
       SELECT 
         (SELECT COUNT(*) FROM Parties WHERE CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE)) as newClientsToday,
         (SELECT COUNT(*) FROM SalesOpportunities WHERE IsActive = 1 AND StageID NOT IN (3,4,5)) as openOpportunities,
         (SELECT COUNT(*) FROM CRM_Tasks WHERE CAST(DueDate AS DATE) = CAST(GETDATE() AS DATE) AND Status != 'Completed') as tasksToday,
         (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) AND TransactionType = 'Sale') as salesToday,
         (SELECT COUNT(*) FROM Notifications WHERE RecipientUser = @username AND IsRead = 0) as unreadCount
-    `);
+    `;
+  } else if (role === 'Sales') {
+    // موظف المبيعات يشوف بتاعه بس
+    query = `
+      SELECT 
+        (SELECT COUNT(*) FROM Parties WHERE CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE) AND CreatedBy = @username) as newClientsToday,
+        (SELECT COUNT(*) FROM SalesOpportunities WHERE IsActive = 1 AND StageID NOT IN (3,4,5) AND AssignedTo = @employeeId) as openOpportunities,
+        (SELECT COUNT(*) FROM CRM_Tasks WHERE CAST(DueDate AS DATE) = CAST(GETDATE() AS DATE) AND Status != 'Completed' AND AssignedTo = @employeeId) as tasksToday,
+        (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) AND TransactionType = 'Sale' AND CreatedBy = @username) as salesToday,
+        (SELECT COUNT(*) FROM Notifications WHERE RecipientUser = @username AND IsRead = 0) as unreadCount
+    `;
+  } else if (role === 'AccountManager' || role === 'Account') {
+    // الحسابات يشوفوا إحصائيات مالية
+    query = `
+      SELECT 
+        (SELECT COUNT(*) FROM Transactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE)) as invoicesToday,
+        (SELECT COUNT(*) FROM Expenses WHERE CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE)) as expensesToday,
+        (SELECT ISNULL(SUM(Amount),0) FROM CashBoxTransactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) AND TransactionType = 'In') as collectionsToday,
+        (SELECT ISNULL(SUM(CASE WHEN TransactionType = 'In' THEN Amount ELSE -Amount END),0) FROM CashBoxTransactions) as cashBalance,
+        (SELECT COUNT(*) FROM Notifications WHERE RecipientUser = @username AND IsRead = 0) as unreadCount
+    `;
+  } else {
+    // باقي المستخدمين - إحصائيات عامة محدودة
+    query = `
+      SELECT 
+        (SELECT COUNT(*) FROM CRM_Tasks WHERE CAST(DueDate AS DATE) = CAST(GETDATE() AS DATE) AND Status != 'Completed' AND AssignedTo = @employeeId) as tasksToday,
+        (SELECT COUNT(*) FROM Notifications WHERE RecipientUser = @username AND IsRead = 0) as unreadCount
+    `;
+  }
+
+  const result = await pool.request()
+    .input('userId', sql.Int, userId)
+    .input('username', sql.NVarChar, username)
+    .input('employeeId', sql.Int, employeeId)
+    .query(query);
+    
   return result.recordset[0];
 }
 
