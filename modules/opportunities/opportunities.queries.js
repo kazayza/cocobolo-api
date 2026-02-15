@@ -784,7 +784,151 @@ async function getTotalOpportunitiesCount(filters = {}) {
   const result = await request.query(query);
   return result.recordset[0].total;
 }
+// ===================================
+// 📊 Pipeline Summary (ديناميكي)
+// ===================================
 
+async function getPipelineSummary(filters = {}) {
+  const pool = await connectDB();
+  const { employeeId, sourceId, adTypeId, dateFrom, dateTo } = filters;
+
+  // 1️⃣ بناء الفلاتر
+  let whereClause = `WHERE o.IsActive = 1`;
+  const request = pool.request();
+
+  if (employeeId && employeeId !== '0' && employeeId !== 'null') {
+    whereClause += ` AND o.EmployeeID = @employeeId`;
+    request.input('employeeId', sql.Int, employeeId);
+  }
+  if (sourceId && sourceId !== '0' && sourceId !== 'null') {
+    whereClause += ` AND o.SourceID = @sourceId`;
+    request.input('sourceId', sql.Int, sourceId);
+  }
+  if (adTypeId && adTypeId !== '0' && adTypeId !== 'null') {
+    whereClause += ` AND o.AdTypeID = @adTypeId`;
+    request.input('adTypeId', sql.Int, adTypeId);
+  }
+  if (dateFrom) {
+    whereClause += ` AND CAST(o.CreatedAt AS DATE) >= @dateFrom`;
+    request.input('dateFrom', sql.Date, dateFrom);
+  }
+  if (dateTo) {
+    whereClause += ` AND CAST(o.CreatedAt AS DATE) <= @dateTo`;
+    request.input('dateTo', sql.Date, dateTo);
+  }
+
+  // 2️⃣ جلب كل المراحل مع الأعداد والقيم ديناميكياً
+  const stagesQuery = `
+    SELECT 
+      s.StageID,
+      s.StageName,
+      s.StageNameAr,
+      s.StageColor,
+      s.StageOrder,
+      COUNT(o.OpportunityID) AS Count,
+      ISNULL(SUM(o.ExpectedValue), 0) AS ExpectedValue,
+      
+      -- عدد المتابعات المتأخرة في كل مرحلة
+      SUM(CASE 
+        WHEN o.NextFollowUpDate IS NOT NULL 
+          AND CAST(o.NextFollowUpDate AS DATE) < CAST(GETDATE() AS DATE) 
+          AND s.StageID NOT IN (3, 4, 5)
+        THEN 1 ELSE 0 
+      END) AS OverdueCount,
+      
+      -- عدد متابعات اليوم في كل مرحلة
+      SUM(CASE 
+        WHEN o.NextFollowUpDate IS NOT NULL 
+          AND CAST(o.NextFollowUpDate AS DATE) = CAST(GETDATE() AS DATE) 
+        THEN 1 ELSE 0 
+      END) AS TodayCount
+
+    FROM SalesStages s
+    LEFT JOIN SalesOpportunities o 
+      ON s.StageID = o.StageID AND o.IsActive = 1
+      ${whereClause.replace('WHERE o.IsActive = 1', '')}
+    WHERE s.IsActive = 1
+    GROUP BY s.StageID, s.StageName, s.StageNameAr, s.StageColor, s.StageOrder
+    ORDER BY s.StageOrder
+  `;
+
+  // 3️⃣ الإجماليات
+  const totalsQuery = `
+    SELECT 
+      COUNT(*) AS TotalOpportunities,
+      ISNULL(SUM(o.ExpectedValue), 0) AS TotalExpectedValue,
+      
+      -- الفرص المكسوبة
+      SUM(CASE WHEN o.StageID = 3 THEN 1 ELSE 0 END) AS WonCount,
+      ISNULL(SUM(CASE WHEN o.StageID = 3 THEN o.ExpectedValue ELSE 0 END), 0) AS WonValue,
+      
+      -- الفرص الخسرانة
+      SUM(CASE WHEN o.StageID IN (4, 5) THEN 1 ELSE 0 END) AS LostCount,
+      
+      -- إجمالي المتابعات المتأخرة
+      SUM(CASE 
+        WHEN o.NextFollowUpDate IS NOT NULL 
+          AND CAST(o.NextFollowUpDate AS DATE) < CAST(GETDATE() AS DATE)
+          AND o.StageID NOT IN (3, 4, 5)
+        THEN 1 ELSE 0 
+      END) AS OverdueCount,
+      
+      -- إجمالي متابعات اليوم
+      SUM(CASE 
+        WHEN o.NextFollowUpDate IS NOT NULL 
+          AND CAST(o.NextFollowUpDate AS DATE) = CAST(GETDATE() AS DATE) 
+        THEN 1 ELSE 0 
+      END) AS TodayFollowUps,
+
+      -- معدل التحويل
+      CASE 
+        WHEN COUNT(*) > 0 
+        THEN CAST(
+          ROUND(
+            (SUM(CASE WHEN o.StageID = 3 THEN 1.0 ELSE 0 END) / COUNT(*)) * 100
+          , 1) 
+        AS DECIMAL(5,1))
+        ELSE 0 
+      END AS ConversionRate
+
+    FROM SalesOpportunities o
+    ${whereClause}
+  `;
+
+  const stagesResult = await request.query(stagesQuery);
+
+  // Request جديد للـ totals عشان الـ inputs
+  const totalsRequest = pool.request();
+  if (employeeId && employeeId !== '0' && employeeId !== 'null') {
+    totalsRequest.input('employeeId', sql.Int, employeeId);
+  }
+  if (sourceId && sourceId !== '0' && sourceId !== 'null') {
+    totalsRequest.input('sourceId', sql.Int, sourceId);
+  }
+  if (adTypeId && adTypeId !== '0' && adTypeId !== 'null') {
+    totalsRequest.input('adTypeId', sql.Int, adTypeId);
+  }
+  if (dateFrom) {
+    totalsRequest.input('dateFrom', sql.Date, dateFrom);
+  }
+  if (dateTo) {
+    totalsRequest.input('dateTo', sql.Date, dateTo);
+  }
+
+  const totalsResult = await totalsRequest.query(totalsQuery);
+
+  // 4️⃣ حساب النسب المئوية
+  const totalCount = totalsResult.recordset[0].TotalOpportunities || 1;
+  const stages = stagesResult.recordset.map(stage => ({
+    ...stage,
+    Percentage: Math.round((stage.Count / totalCount) * 1000) / 10
+  }));
+
+  return {
+    stages: stages,
+    totals: totalsResult.recordset[0]
+  };
+}
 // ===================================
 // 📤 تصدير الدوال
 // ===================================
@@ -802,6 +946,7 @@ module.exports = {
   
   // Summary
   getOpportunitiesSummary,
+  getPipelineSummary,
   
   // CRUD
   getAllOpportunities,

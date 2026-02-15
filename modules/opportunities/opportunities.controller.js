@@ -323,6 +323,29 @@ async function searchByPhone(req, res) {
   }
 }
 
+// ===================================
+// 📊 Pipeline Summary
+// ===================================
+
+async function getPipelineSummary(req, res) {
+  try {
+    const { employeeId, sourceId, adTypeId, dateFrom, dateTo } = req.query;
+
+    const pipeline = await opportunitiesQueries.getPipelineSummary({
+      employeeId,
+      sourceId,
+      adTypeId,
+      dateFrom,
+      dateTo
+    });
+
+    return res.json(pipeline);
+  } catch (err) {
+    console.error('خطأ في جلب Pipeline Summary:', err);
+    return errorResponse(res, 'فشل تحميل ملخص المراحل', 500, err.message);
+  }
+}
+
 // تصدير الكل
 module.exports = {
   getStages,
@@ -334,6 +357,7 @@ module.exports = {
   getTaskTypes,
   getEmployees,
   getSummary,
+  getPipelineSummary,
   getAll,
   checkOpenOpportunity,
   getById,

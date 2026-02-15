@@ -90,5 +90,9 @@ router.put('/:id/stage', opportunitiesController.updateStage);
 // DELETE /api/opportunities/:id
 router.delete('/:id', opportunitiesController.remove);
 
+// ملخص الـ Pipeline (مراحل البيع)
+// GET /api/opportunities/pipeline-summary
+router.get('/pipeline-summary', opportunitiesController.getPipelineSummary);
+
 // تصدير الراوتر
 module.exports = router;
