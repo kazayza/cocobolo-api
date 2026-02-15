@@ -80,10 +80,11 @@ async function getAllExpenses(search = '', groupId = null, startDate = null, end
 }
 
 // ====================== مصروف عادي ======================
+// ====================== مصروف عادي (معدل) ======================
 async function createRegularExpense(expenseData, transaction) {
   try {
-    // إضافة المصروف
-    const expenseResult = await transaction.request()
+    // إضافة المصروف (بدون OUTPUT)
+    await transaction.request()
       .input('expenseName', sql.NVarChar(100), expenseData.expenseName)
       .input('expenseGroupId', sql.Int, expenseData.expenseGroupId)
       .input('cashBoxId', sql.Int, expenseData.cashBoxId)
@@ -91,7 +92,7 @@ async function createRegularExpense(expenseData, transaction) {
       .input('expenseDate', sql.DateTime, expenseData.expenseDate || new Date())
       .input('notes', sql.NVarChar(255), expenseData.notes || null)
       .input('toRecipient', sql.NVarChar(100), expenseData.toRecipient || null)
-      .input('isAdvance', sql.Bit, false) // مصروف عادي
+      .input('isAdvance', sql.Bit, false)
       .input('advanceMonths', sql.Int, null)
       .input('createdBy', sql.NVarChar(50), expenseData.createdBy)
       .query(`
@@ -99,14 +100,17 @@ async function createRegularExpense(expenseData, transaction) {
           ExpenseName, ExpenseGroupID, CashBoxID, Amount, ExpenseDate,
           Notes, Torecipient, IsAdvance, AdvanceMonths, CreatedBy, CreatedAt
         )
-        SELECT SCOPE_IDENTITY() AS ExpenseID;
         VALUES (
           @expenseName, @expenseGroupId, @cashBoxId, @amount, @expenseDate,
           @notes, @toRecipient, @isAdvance, @advanceMonths, @createdBy, GETDATE()
-        )
+        );
       `);
 
-    const expenseId = expenseResult.recordset[0].ExpenseID;
+    // جلب الـ ID بـ SCOPE_IDENTITY (آمن مع التريجر)
+    const idResult = await transaction.request()
+      .query('SELECT SCOPE_IDENTITY() AS ExpenseID');
+      
+    const expenseId = idResult.recordset[0].ExpenseID;
 
     // إضافة حركة الخزينة
     await transaction.request()
@@ -140,8 +144,8 @@ async function createAdvanceExpense(expenseData, transaction) {
     
     let firstExpenseId = null;
 
-    // 1. إضافة حركة الخزينة واحدة بالمبلغ الكامل أولاً
-    const cashTransResult = await transaction.request()
+    // 1. إضافة حركة الخزينة (بدون OUTPUT)
+    await transaction.request()
       .input('cashBoxId', sql.Int, expenseData.cashBoxId)
       .input('amount', sql.Decimal(18, 2), amount)
       .input('notes', sql.NVarChar(sql.MAX), 
@@ -152,21 +156,23 @@ async function createAdvanceExpense(expenseData, transaction) {
           CashBoxID, PaymentID, ReferenceID, ReferenceType, TransactionType,
           Amount, TransactionDate, Notes, CreatedBy, CreatedAt
         )
-        OUTPUT INSERTED.CashboxTransactionID
         VALUES (
           @cashBoxId, NULL, 0, 'AdvanceExpense', N'صرف',
           @amount, GETDATE(), @notes, @createdBy, GETDATE()
-        )
+        );
       `);
 
-    const cashTransId = cashTransResult.recordset[0].CashboxTransactionID;
+    // جلب ID الحركة
+    const transIdResult = await transaction.request()
+      .query('SELECT SCOPE_IDENTITY() AS CashboxTransactionID');
+    const cashTransId = transIdResult.recordset[0].CashboxTransactionID;
 
-    // 2. إضافة عدة مصروفات (قسط كل شهر)
+    // 2. إضافة الأقساط
     for (let i = 1; i <= advanceMonths; i++) {
       const monthDate = new Date(expenseDate || new Date());
       monthDate.setMonth(monthDate.getMonth() + (i - 1));
       
-      const expenseResult = await transaction.request()
+      await transaction.request()
         .input('expenseName', sql.NVarChar(100), `${expenseName} (قسط ${i}/${advanceMonths})`)
         .input('expenseGroupId', sql.Int, expenseData.expenseGroupId)
         .input('cashBoxId', sql.Int, expenseData.cashBoxId)
@@ -183,20 +189,22 @@ async function createAdvanceExpense(expenseData, transaction) {
             ExpenseName, ExpenseGroupID, CashBoxID, Amount, ExpenseDate,
             Notes, Torecipient, IsAdvance, AdvanceMonths, CreatedBy, CreatedAt
           )
-          SELECT SCOPE_IDENTITY() AS ExpenseID;
           VALUES (
             @expenseName, @expenseGroupId, @cashBoxId, @amount, @expenseDate,
             @notes, @toRecipient, @isAdvance, @advanceMonths, @createdBy, GETDATE()
-          )
+          );
         `);
 
-      const expenseId = expenseResult.recordset[0].ExpenseID;
+      // جلب ID المصروف
+      const expIdResult = await transaction.request()
+        .query('SELECT SCOPE_IDENTITY() AS ExpenseID');
+      const expenseId = expIdResult.recordset[0].ExpenseID;
       
-      // حفظ الـ ID الأول للربط
+      // حفظ الـ ID الأول
       if (i === 1) {
         firstExpenseId = expenseId;
         
-        // تحديث حركة الخزينة بالـ ReferenceID الصحيح
+        // تحديث حركة الخزينة
         await transaction.request()
           .input('cashTransId', sql.Int, cashTransId)
           .input('referenceId', sql.Int, expenseId)
@@ -208,7 +216,7 @@ async function createAdvanceExpense(expenseData, transaction) {
       }
     }
 
-    return firstExpenseId; // نرجع أول ID
+    return firstExpenseId;
   } catch (err) {
     throw err;
   }
