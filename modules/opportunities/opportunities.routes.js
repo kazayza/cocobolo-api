@@ -93,6 +93,10 @@ router.put('/:id/stage', opportunitiesController.updateStage);
 // DELETE /api/opportunities/:id
 router.delete('/:id', opportunitiesController.remove);
 
+// بحث عن عملاء
+// GET /api/opportunities/search-clients?q=أحمد
+router.get('/search-clients', opportunitiesController.searchClients);
+
 
 // تصدير الراوتر
 module.exports = router;

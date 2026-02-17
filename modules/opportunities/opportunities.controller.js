@@ -346,6 +346,26 @@ async function getPipelineSummary(req, res) {
   }
 }
 
+// ===================================
+// 🔍 بحث عن عملاء
+// ===================================
+
+async function searchClients(req, res) {
+  try {
+    const { q } = req.query;
+
+    if (!q || q.length < 2) {
+      return res.json([]);
+    }
+
+    const clients = await opportunitiesQueries.searchClients(q);
+    return res.json(clients);
+  } catch (err) {
+    console.error('خطأ في البحث عن العملاء:', err);
+    return errorResponse(res, 'فشل البحث', 500, err.message);
+  }
+}
+
 // تصدير الكل
 module.exports = {
   getStages,
@@ -366,5 +386,6 @@ module.exports = {
   updateStage,
   remove,
   createWithClient,
-  searchByPhone
+  searchByPhone,
+  searchClients
 };

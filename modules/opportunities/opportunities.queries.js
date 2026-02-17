@@ -929,6 +929,56 @@ async function getPipelineSummary(filters = {}) {
     totals: totalsResult.recordset[0]
   };
 }
+
+// ===================================
+// 🔍 بحث عن عملاء (مع تنظيف النص العربي)
+// ===================================
+
+async function searchClients(searchText) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('search', sql.NVarChar(200), searchText)
+    .query(`
+      SELECT TOP 20
+        p.PartyID,
+        p.PartyName,
+        p.Phone,
+        p.Phone2,
+        p.Address,
+        p.Email,
+        -- آخر فرصة مفتوحة
+        (SELECT TOP 1 o.OpportunityID 
+         FROM SalesOpportunities o 
+         WHERE o.PartyID = p.PartyID AND o.IsActive = 1 AND o.StageID NOT IN (3,4,5)
+         ORDER BY o.CreatedAt DESC
+        ) AS OpenOpportunityID,
+        -- اسم المرحلة
+        (SELECT TOP 1 ss.StageNameAr 
+         FROM SalesOpportunities o 
+         LEFT JOIN SalesStages ss ON o.StageID = ss.StageID
+         WHERE o.PartyID = p.PartyID AND o.IsActive = 1
+         ORDER BY o.CreatedAt DESC
+        ) AS CurrentStage,
+        -- لون المرحلة
+        (SELECT TOP 1 ss.StageColor 
+         FROM SalesOpportunities o 
+         LEFT JOIN SalesStages ss ON o.StageID = ss.StageID
+         WHERE o.PartyID = p.PartyID AND o.IsActive = 1
+         ORDER BY o.CreatedAt DESC
+        ) AS StageColor
+      FROM Parties p
+      WHERE p.IsActive = 1
+        AND p.PartyType = 1
+        AND (
+          dbo.CleanArabicText(p.PartyName) LIKE '%' + dbo.CleanArabicText(@search) + '%'
+          OR p.Phone LIKE '%' + @search + '%'
+          OR p.Phone2 LIKE '%' + @search + '%'
+        )
+      ORDER BY p.PartyName
+    `);
+  return result.recordset;
+}
+
 // ===================================
 // 📤 تصدير الدوال
 // ===================================
@@ -960,5 +1010,6 @@ module.exports = {
   
   // ✅ الجديد
   createOpportunityWithClient,
-  searchClientByPhone
+  searchClientByPhone,
+  searchClients
 };
