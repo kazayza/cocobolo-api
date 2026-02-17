@@ -73,6 +73,10 @@ router.get('/check-open/:partyId', opportunitiesController.checkOpenOpportunity)
 // GET /api/opportunities?search=xxx&stageId=xxx&sourceId=xxx&employeeId=xxx&followUpStatus=xxx
 router.get('/', opportunitiesController.getAll);
 
+// بحث عن عملاء
+//// GET /api/opportunities/search-clients?q=أحمد
+router.get('/search-clients', opportunitiesController.searchClients);
+
 // جلب فرصة بالـ ID
 // GET /api/opportunities/:id
 router.get('/:id', opportunitiesController.getById);
@@ -93,9 +97,7 @@ router.put('/:id/stage', opportunitiesController.updateStage);
 // DELETE /api/opportunities/:id
 router.delete('/:id', opportunitiesController.remove);
 
-// بحث عن عملاء
-//// GET /api/opportunities/search-clients?q=أحمد
-router.get('/search-clients', opportunitiesController.searchClients);
+
 
 
 // تصدير الراوتر
