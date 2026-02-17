@@ -197,6 +197,9 @@ app.use('/api/commissions', require('./modules/commissions/commissions.routes'))
 // Settings Module
 app.use('/api/settings', require('./modules/settings/settings.routes'));
 
+// Pricing Module
+app.use('/api/pricing', require('./modules/pricing/pricing.routes'));
+
 // في app.js
 app.use('/api/reports', require('./modules/reports/reports.routes'));
 

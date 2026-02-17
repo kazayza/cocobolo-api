@@ -58,7 +58,7 @@ async function create(req, res) {
       await notificationsQueries.createNotificationSmart({
         title: 'منتج جديد للتسعير',
         message: `تم إضافة منتج جديد: ${productName}، يرجى التسعير.`,
-        createdBy: createdBy || 'System', // اسم السيلز
+        createdBy: req.body.createdBy || 'System', // اسم السيلز
         relatedId: productId,             // رقم المنتج
         formName: 'frm_Products'          // الشاشة اللي هتفتح
       }, 'factory'); // 👈 ابعت لليوزر "Factory"
