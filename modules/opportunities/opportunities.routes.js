@@ -94,7 +94,7 @@ router.put('/:id/stage', opportunitiesController.updateStage);
 router.delete('/:id', opportunitiesController.remove);
 
 // بحث عن عملاء
-// GET /api/opportunities/search-clients?q=أحمد
+//// GET /api/opportunities/search-clients?q=أحمد
 router.get('/search-clients', opportunitiesController.searchClients);
 
 
