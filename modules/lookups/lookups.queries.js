@@ -1,13 +1,11 @@
 const { sql, connectDB } = require('../../core/database');
 
 // ===================================
-// 🔧 Generic CRUD للجداول المرجعية
+// 🔧 Generic CRUD
 // ===================================
 
 async function getAll(tableName, idColumn) {
   const pool = await connectDB();
-  
-  // تحديد الأعمدة حسب الجدول
   const columns = getColumnsForTable(tableName);
   
   const result = await pool.request()
@@ -28,12 +26,16 @@ async function create(tableName, data) {
   const values = Object.keys(data).map((_, i) => `@p${i}`).join(', ');
   
   const request = pool.request();
+  
+  // ✅ ضبط أنواع البيانات (نص، رقم، تاريخ)
   Object.keys(data).forEach((key, i) => {
     const value = data[key];
-    if (typeof value === 'number') {
+    if (value instanceof Date) {
+      request.input(`p${i}`, sql.DateTime, value);
+    } else if (typeof value === 'number') {
       request.input(`p${i}`, sql.Int, value);
     } else {
-      request.input(`p${i}`, sql.NVarChar(200), value);
+      request.input(`p${i}`, sql.NVarChar(sql.MAX), value);
     }
   });
   
@@ -49,25 +51,23 @@ async function create(tableName, data) {
 async function update(tableName, idColumn, id, data) {
   const pool = await connectDB();
   
-  // 1. تجهيز جملة SET
   const setClauses = Object.keys(data).map((key, i) => `${key} = @p${i}`).join(', ');
   
   const request = pool.request();
+  request.input('targetId', sql.Int, id); // ✅ اسم مميز للـ ID
   
-  // 2. إضافة القيم (p0, p1, ...)
+  // ✅ ضبط أنواع البيانات في التحديث أيضاً
   Object.keys(data).forEach((key, i) => {
     const value = data[key];
-    if (typeof value === 'number') {
+    if (value instanceof Date) {
+      request.input(`p${i}`, sql.DateTime, value);
+    } else if (typeof value === 'number') {
       request.input(`p${i}`, sql.Int, value);
     } else {
-      request.input(`p${i}`, sql.NVarChar(200), value);
+      request.input(`p${i}`, sql.NVarChar(sql.MAX), value);
     }
   });
   
-  // 3. إضافة الـ ID باسم مميز (targetId)
-  request.input('targetId', sql.Int, id);
-  
-  // 4. تنفيذ الاستعلام
   await request.query(`
     UPDATE ${tableName} 
     SET ${setClauses}
@@ -86,7 +86,7 @@ async function softDelete(tableName, idColumn, id) {
 }
 
 // ===================================
-// 📋 تحديد الأعمدة لكل جدول (مهم جداً!)
+// 📋 أسماء الجداول والأعمدة (بدون dbo_)
 // ===================================
 function getColumnsForTable(tableName) {
   const mapping = {

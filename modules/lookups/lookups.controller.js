@@ -9,6 +9,7 @@ async function getAdTypes(req, res) {
     const items = await lookupsQueries.getAll('AdTypes', 'AdTypeID');
     return res.json(items);
   } catch (err) {
+    console.error('getAdTypes Error:', err);
     return errorResponse(res, 'فشل تحميل البيانات', 500, err.message);
   }
 }
@@ -21,11 +22,13 @@ async function createAdType(req, res) {
     const id = await lookupsQueries.create('AdTypes', {
       AdTypeName: nameEn || nameAr,
       AdTypeNameAr: nameAr,
-      IsActive: 1, // ✅ تفعيل السجل
-      CreatedBy: createdBy
+      IsActive: 1,
+      CreatedBy: createdBy,
+      CreatedAt: new Date()
     });
     return res.json({ success: true, id, message: 'تم الإضافة بنجاح' });
   } catch (err) {
+    console.error('createAdType Error:', err);
     return errorResponse(res, 'فشل الإضافة', 500, err.message);
   }
 }
@@ -39,10 +42,12 @@ async function updateAdType(req, res) {
     await lookupsQueries.update('AdTypes', 'AdTypeID', id, {
       AdTypeName: nameEn || nameAr,
       AdTypeNameAr: nameAr,
-      UpdatedBy: updatedBy
+      LastUpdatedBy: updatedBy, // ✅ العمود الصحيح
+      LastUpdatedAt: new Date() // ✅ التاريخ
     });
     return res.json({ success: true, message: 'تم التعديل بنجاح' });
   } catch (err) {
+    console.error('updateAdType Error:', err);
     return errorResponse(res, 'فشل التعديل', 500, err.message);
   }
 }
@@ -50,10 +55,10 @@ async function updateAdType(req, res) {
 async function deleteAdType(req, res) {
   try {
     const { id } = req.params;
-    // ✅ Soft Delete: IsActive = 0
     await lookupsQueries.softDelete('AdTypes', 'AdTypeID', id);
     return res.json({ success: true, message: 'تم الحذف بنجاح' });
   } catch (err) {
+    console.error('deleteAdType Error:', err);
     return errorResponse(res, 'فشل الحذف', 500, err.message);
   }
 }
@@ -66,6 +71,7 @@ async function getSources(req, res) {
     const items = await lookupsQueries.getAll('ContactSources', 'SourceID');
     return res.json(items);
   } catch (err) {
+    console.error('getSources Error:', err);
     return errorResponse(res, 'فشل تحميل البيانات', 500, err.message);
   }
 }
@@ -79,11 +85,13 @@ async function createSource(req, res) {
       SourceName: nameEn || nameAr,
       SourceNameAr: nameAr,
       SourceIcon: icon || '📞',
-      IsActive: 1, // ✅ تفعيل
-      CreatedBy: createdBy
+      IsActive: 1,
+      CreatedBy: createdBy,
+      CreatedAt: new Date()
     });
     return res.json({ success: true, id, message: 'تم الإضافة بنجاح' });
   } catch (err) {
+    console.error('createSource Error:', err);
     return errorResponse(res, 'فشل الإضافة', 500, err.message);
   }
 }
@@ -98,10 +106,12 @@ async function updateSource(req, res) {
       SourceName: nameEn || nameAr,
       SourceNameAr: nameAr,
       SourceIcon: icon || '📞',
-      UpdatedBy: updatedBy
+      LastUpdatedBy: updatedBy,
+      LastUpdatedAt: new Date()
     });
     return res.json({ success: true, message: 'تم التعديل بنجاح' });
   } catch (err) {
+    console.error('updateSource Error:', err);
     return errorResponse(res, 'فشل التعديل', 500, err.message);
   }
 }
@@ -112,6 +122,7 @@ async function deleteSource(req, res) {
     await lookupsQueries.softDelete('ContactSources', 'SourceID', id);
     return res.json({ success: true, message: 'تم الحذف بنجاح' });
   } catch (err) {
+    console.error('deleteSource Error:', err);
     return errorResponse(res, 'فشل الحذف', 500, err.message);
   }
 }
@@ -124,6 +135,7 @@ async function getStages(req, res) {
     const items = await lookupsQueries.getAll('SalesStages', 'StageID');
     return res.json(items);
   } catch (err) {
+    console.error('getStages Error:', err);
     return errorResponse(res, 'فشل تحميل البيانات', 500, err.message);
   }
 }
@@ -137,11 +149,13 @@ async function createStage(req, res) {
       StageName: nameEn || nameAr,
       StageNameAr: nameAr,
       StageColor: color || '#3498db',
-      IsActive: 1, // ✅ تفعيل
-      CreatedBy: createdBy
+      IsActive: 1,
+      CreatedBy: createdBy,
+      CreatedAt: new Date()
     });
     return res.json({ success: true, id, message: 'تم الإضافة بنجاح' });
   } catch (err) {
+    console.error('createStage Error:', err);
     return errorResponse(res, 'فشل الإضافة', 500, err.message);
   }
 }
@@ -156,10 +170,12 @@ async function updateStage(req, res) {
       StageName: nameEn || nameAr,
       StageNameAr: nameAr,
       StageColor: color || '#3498db',
-      UpdatedBy: updatedBy
+      LastUpdatedBy: updatedBy,
+      LastUpdatedAt: new Date()
     });
     return res.json({ success: true, message: 'تم التعديل بنجاح' });
   } catch (err) {
+    console.error('updateStage Error:', err);
     return errorResponse(res, 'فشل التعديل', 500, err.message);
   }
 }
@@ -170,6 +186,7 @@ async function deleteStage(req, res) {
     await lookupsQueries.softDelete('SalesStages', 'StageID', id);
     return res.json({ success: true, message: 'تم الحذف بنجاح' });
   } catch (err) {
+    console.error('deleteStage Error:', err);
     return errorResponse(res, 'فشل الحذف', 500, err.message);
   }
 }
@@ -182,6 +199,7 @@ async function getCategories(req, res) {
     const items = await lookupsQueries.getAll('InterestCategories', 'CategoryID');
     return res.json(items);
   } catch (err) {
+    console.error('getCategories Error:', err);
     return errorResponse(res, 'فشل تحميل البيانات', 500, err.message);
   }
 }
@@ -194,11 +212,13 @@ async function createCategory(req, res) {
     const id = await lookupsQueries.create('InterestCategories', {
       CategoryName: nameEn || nameAr,
       CategoryNameAr: nameAr,
-      IsActive: 1, // ✅ تفعيل
-      CreatedBy: createdBy
+      IsActive: 1,
+      CreatedBy: createdBy,
+      CreatedAt: new Date()
     });
     return res.json({ success: true, id, message: 'تم الإضافة بنجاح' });
   } catch (err) {
+    console.error('createCategory Error:', err);
     return errorResponse(res, 'فشل الإضافة', 500, err.message);
   }
 }
@@ -212,10 +232,12 @@ async function updateCategory(req, res) {
     await lookupsQueries.update('InterestCategories', 'CategoryID', id, {
       CategoryName: nameEn || nameAr,
       CategoryNameAr: nameAr,
-      UpdatedBy: updatedBy
+      LastUpdatedBy: updatedBy,
+      LastUpdatedAt: new Date()
     });
     return res.json({ success: true, message: 'تم التعديل بنجاح' });
   } catch (err) {
+    console.error('updateCategory Error:', err);
     return errorResponse(res, 'فشل التعديل', 500, err.message);
   }
 }
@@ -226,6 +248,7 @@ async function deleteCategory(req, res) {
     await lookupsQueries.softDelete('InterestCategories', 'CategoryID', id);
     return res.json({ success: true, message: 'تم الحذف بنجاح' });
   } catch (err) {
+    console.error('deleteCategory Error:', err);
     return errorResponse(res, 'فشل الحذف', 500, err.message);
   }
 }
@@ -238,6 +261,7 @@ async function getStatuses(req, res) {
     const items = await lookupsQueries.getAll('ContactStatus', 'StatusID');
     return res.json(items);
   } catch (err) {
+    console.error('getStatuses Error:', err);
     return errorResponse(res, 'فشل تحميل البيانات', 500, err.message);
   }
 }
@@ -250,11 +274,13 @@ async function createStatus(req, res) {
     const id = await lookupsQueries.create('ContactStatus', {
       StatusName: nameEn || nameAr,
       StatusNameAr: nameAr,
-      IsActive: 1, // ✅ تفعيل
-      CreatedBy: createdBy
+      IsActive: 1,
+      CreatedBy: createdBy,
+      CreatedAt: new Date()
     });
     return res.json({ success: true, id, message: 'تم الإضافة بنجاح' });
   } catch (err) {
+    console.error('createStatus Error:', err);
     return errorResponse(res, 'فشل الإضافة', 500, err.message);
   }
 }
@@ -268,10 +294,12 @@ async function updateStatus(req, res) {
     await lookupsQueries.update('ContactStatus', 'StatusID', id, {
       StatusName: nameEn || nameAr,
       StatusNameAr: nameAr,
-      UpdatedBy: updatedBy
+      LastUpdatedBy: updatedBy,
+      LastUpdatedAt: new Date()
     });
     return res.json({ success: true, message: 'تم التعديل بنجاح' });
   } catch (err) {
+    console.error('updateStatus Error:', err);
     return errorResponse(res, 'فشل التعديل', 500, err.message);
   }
 }
@@ -282,6 +310,7 @@ async function deleteStatus(req, res) {
     await lookupsQueries.softDelete('ContactStatus', 'StatusID', id);
     return res.json({ success: true, message: 'تم الحذف بنجاح' });
   } catch (err) {
+    console.error('deleteStatus Error:', err);
     return errorResponse(res, 'فشل الحذف', 500, err.message);
   }
 }
@@ -294,6 +323,7 @@ async function getTaskTypes(req, res) {
     const items = await lookupsQueries.getAll('TaskTypes', 'TaskTypeID');
     return res.json(items);
   } catch (err) {
+    console.error('getTaskTypes Error:', err);
     return errorResponse(res, 'فشل تحميل البيانات', 500, err.message);
   }
 }
@@ -306,11 +336,13 @@ async function createTaskType(req, res) {
     const id = await lookupsQueries.create('TaskTypes', {
       TaskTypeName: nameEn || nameAr,
       TaskTypeNameAr: nameAr,
-      IsActive: 1, // ✅ تفعيل
-      CreatedBy: createdBy
+      IsActive: 1,
+      CreatedBy: createdBy,
+      CreatedAt: new Date()
     });
     return res.json({ success: true, id, message: 'تم الإضافة بنجاح' });
   } catch (err) {
+    console.error('createTaskType Error:', err);
     return errorResponse(res, 'فشل الإضافة', 500, err.message);
   }
 }
@@ -324,10 +356,12 @@ async function updateTaskType(req, res) {
     await lookupsQueries.update('TaskTypes', 'TaskTypeID', id, {
       TaskTypeName: nameEn || nameAr,
       TaskTypeNameAr: nameAr,
-      UpdatedBy: updatedBy
+      LastUpdatedBy: updatedBy,
+      LastUpdatedAt: new Date()
     });
     return res.json({ success: true, message: 'تم التعديل بنجاح' });
   } catch (err) {
+    console.error('updateTaskType Error:', err);
     return errorResponse(res, 'فشل التعديل', 500, err.message);
   }
 }
@@ -338,6 +372,7 @@ async function deleteTaskType(req, res) {
     await lookupsQueries.softDelete('TaskTypes', 'TaskTypeID', id);
     return res.json({ success: true, message: 'تم الحذف بنجاح' });
   } catch (err) {
+    console.error('deleteTaskType Error:', err);
     return errorResponse(res, 'فشل الحذف', 500, err.message);
   }
 }
@@ -350,6 +385,7 @@ async function getLostReasons(req, res) {
     const items = await lookupsQueries.getAll('LostReasons', 'LostReasonID');
     return res.json(items);
   } catch (err) {
+    console.error('getLostReasons Error:', err);
     return errorResponse(res, 'فشل تحميل البيانات', 500, err.message);
   }
 }
@@ -362,11 +398,13 @@ async function createLostReason(req, res) {
     const id = await lookupsQueries.create('LostReasons', {
       ReasonName: nameEn || nameAr,
       ReasonNameAr: nameAr,
-      IsActive: 1, // ✅ تفعيل
-      CreatedBy: createdBy
+      IsActive: 1,
+      CreatedBy: createdBy,
+      CreatedAt: new Date()
     });
     return res.json({ success: true, id, message: 'تم الإضافة بنجاح' });
   } catch (err) {
+    console.error('createLostReason Error:', err);
     return errorResponse(res, 'فشل الإضافة', 500, err.message);
   }
 }
@@ -380,10 +418,12 @@ async function updateLostReason(req, res) {
     await lookupsQueries.update('LostReasons', 'LostReasonID', id, {
       ReasonName: nameEn || nameAr,
       ReasonNameAr: nameAr,
-      UpdatedBy: updatedBy
+      LastUpdatedBy: updatedBy,
+      LastUpdatedAt: new Date()
     });
     return res.json({ success: true, message: 'تم التعديل بنجاح' });
   } catch (err) {
+    console.error('updateLostReason Error:', err);
     return errorResponse(res, 'فشل التعديل', 500, err.message);
   }
 }
@@ -394,6 +434,7 @@ async function deleteLostReason(req, res) {
     await lookupsQueries.softDelete('LostReasons', 'LostReasonID', id);
     return res.json({ success: true, message: 'تم الحذف بنجاح' });
   } catch (err) {
+    console.error('deleteLostReason Error:', err);
     return errorResponse(res, 'فشل الحذف', 500, err.message);
   }
 }
