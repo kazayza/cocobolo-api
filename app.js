@@ -203,6 +203,10 @@ app.use('/api/pricing', require('./modules/pricing/pricing.routes'));
 // في app.js
 app.use('/api/reports', require('./modules/reports/reports.routes'));
 
+app.use('/api/lookups', require('./modules/lookups/lookups.routes'));
+
+
+
 // ===================================
 // ⚠️ Error Handling
 // ===================================
