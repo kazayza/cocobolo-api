@@ -49,10 +49,12 @@ async function create(tableName, data) {
 async function update(tableName, idColumn, id, data) {
   const pool = await connectDB();
   
+  // 1. تجهيز جملة SET
   const setClauses = Object.keys(data).map((key, i) => `${key} = @p${i}`).join(', ');
   
   const request = pool.request();
-  request.input('id', sql.Int, id);
+  
+  // 2. إضافة القيم (p0, p1, ...)
   Object.keys(data).forEach((key, i) => {
     const value = data[key];
     if (typeof value === 'number') {
@@ -62,9 +64,14 @@ async function update(tableName, idColumn, id, data) {
     }
   });
   
+  // 3. إضافة الـ ID باسم مميز (targetId)
+  request.input('targetId', sql.Int, id);
+  
+  // 4. تنفيذ الاستعلام
   await request.query(`
-    UPDATE ${tableName} SET ${setClauses}
-    WHERE ${idColumn} = @id
+    UPDATE ${tableName} 
+    SET ${setClauses}
+    WHERE ${idColumn} = @targetId
   `);
   
   return true;
