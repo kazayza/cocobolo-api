@@ -358,7 +358,7 @@ async function getProductPriceHistory(productId) {
 async function _logPriceHistory(pool, productId, priceType, oldPrice, newPrice, changedBy, reason, clientTime) {
   await pool.request()
     .input('productId', sql.Int, productId)
-    .input('priceType', sql.NVarChar(10), priceType)
+    .input('priceType', sql.NVarChar(50), priceType)
     .input('oldPrice', sql.Decimal(18, 2), oldPrice || 0)
     .input('newPrice', sql.Decimal(18, 2), newPrice)
     .input('changedBy', sql.NVarChar(100), changedBy)
