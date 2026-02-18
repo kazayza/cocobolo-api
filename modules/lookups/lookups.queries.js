@@ -79,7 +79,7 @@ async function softDelete(tableName, idColumn, id) {
 }
 
 // ===================================
-// 📋 تحديد الأعمدة لكل جدول
+// 📋 تحديد الأعمدة لكل جدول (مهم جداً!)
 // ===================================
 function getColumnsForTable(tableName) {
   const mapping = {
