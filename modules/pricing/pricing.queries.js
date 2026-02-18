@@ -37,7 +37,7 @@ async function getMarginsHistory() {
 }
 
 // تحديث النسب (الأقدم يصير غير فعال + إضافة جديد)
-async function updateMargins(premiumMargin, eliteMargin, reason, changedBy) {
+async function updateMargins(premiumMargin, eliteMargin, reason, changedBy, clientTime) {
   const pool = await connectDB();
   
   // جلب النسب الحالية
@@ -78,7 +78,7 @@ async function updateMargins(premiumMargin, eliteMargin, reason, changedBy) {
 // =============================================
 
 // تسعير من المصنع (تكلفة فقط + حساب البيع تلقائي)
-async function updateProductPricing(productId, purchasePrice, purchasePriceElite, changedBy) {
+async function updateProductPricing(productId, purchasePrice, purchasePriceElite, changedBy, clientTime) {
   const pool = await connectDB();
   
   // 1. جلب النسب الحالية
@@ -121,18 +121,18 @@ async function updateProductPricing(productId, purchasePrice, purchasePriceElite
   
   // 5. تسجيل في PriceHistory - Premium
   if (purchasePrice !== (old.PurchasePrice || 0)) {
-    await _logPriceHistory(pool, productId, 'PurchasePrice', old.PurchasePrice, purchasePrice, changedBy, 'تسعير المصنع');
+    await _logPriceHistory(pool, productId, 'PurchasePrice', old.PurchasePrice, purchasePrice, changedBy, 'تسعير المصنع', clientTime);
   }
   if (salePricePremium !== (old.SuggestedSalePrice || 0)) {
-    await _logPriceHistory(pool, productId, 'SalePrice', old.SuggestedSalePrice, salePricePremium, changedBy, 'حساب تلقائي من التكلفة');
+    await _logPriceHistory(pool, productId, 'SalePrice', old.SuggestedSalePrice, salePricePremium, changedBy, 'حساب تلقائي من التكلفة', clientTime);
   }
   
   // 6. تسجيل في PriceHistory - Elite
   if (purchasePriceElite !== (old.PurchasePriceElite || 0)) {
-    await _logPriceHistory(pool, productId, 'PurchasePriceElite', old.PurchasePriceElite, purchasePriceElite, changedBy, 'تسعير المصنع');
+    await _logPriceHistory(pool, productId, 'PurchasePriceElite', old.PurchasePriceElite, purchasePriceElite, changedBy, 'تسعير المصنع', clientTime);
   }
   if (salePriceElite !== (old.SuggestedSalePriceElite || 0)) {
-    await _logPriceHistory(pool, productId, 'SalePriceElite', old.SuggestedSalePriceElite, salePriceElite, changedBy, 'حساب تلقائي من التكلفة');
+    await _logPriceHistory(pool, productId, 'SalePriceElite', old.SuggestedSalePriceElite, salePriceElite, changedBy, 'حساب تلقائي من التكلفة', clientTime);
   }
   
   return {
@@ -146,7 +146,7 @@ async function updateProductPricing(productId, purchasePrice, purchasePriceElite
 // 💵 تعديل سعر البيع (Admin / AccountManager)
 // =============================================
 
-async function updateSalePrice(productId, priceType, newSalePrice, changedBy, reason) {
+async function updateSalePrice(productId, priceType, newSalePrice, changedBy, reason, clientTime) {
   const pool = await connectDB();
   
   // 1. جلب الأسعار القديمة
@@ -170,14 +170,14 @@ async function updateSalePrice(productId, priceType, newSalePrice, changedBy, re
       .input('price', sql.Decimal(18, 2), newSalePrice)
       .query(`UPDATE Products SET SuggestedSalePrice = @price WHERE ProductID = @id`);
     
-    await _logPriceHistory(pool, productId, 'SalePrice', old.SuggestedSalePrice, newSalePrice, changedBy, reason);
+    await _logPriceHistory(pool, productId, 'SalePrice', old.SuggestedSalePrice, newSalePrice, changedBy, reason, clientTime);
   } else {
     await pool.request()
       .input('id', sql.Int, productId)
       .input('price', sql.Decimal(18, 2), newSalePrice)
       .query(`UPDATE Products SET SuggestedSalePriceElite = @price WHERE ProductID = @id`);
     
-    await _logPriceHistory(pool, productId, 'SalePriceElite', old.SuggestedSalePriceElite, newSalePrice, changedBy, reason);
+      await _logPriceHistory(pool, productId, 'SalePriceElite', old.SuggestedSalePriceElite, newSalePrice, changedBy, reason, clientTime);
   }
   
   return { createdBy: old.CreatedBy };
@@ -249,7 +249,7 @@ async function getAllRequests() {
 }
 
 // موافقة على طلب
-async function approveRequest(requestId, reviewedBy, reviewNotes) {
+async function approveRequest(requestId, reviewedBy, reviewNotes, clientTime) {
   const pool = await connectDB();
   
   // 1. جلب بيانات الطلب
@@ -277,12 +277,13 @@ async function approveRequest(requestId, reviewedBy, reviewNotes) {
     `);
   
   // 3. تحديث سعر البيع في المنتج
-  await updateSalePrice(
+ await updateSalePrice(
     request.ProductID, 
     request.PriceType, 
     request.RequestedPrice, 
     reviewedBy,
-    'موافقة على طلب تعديل #' + requestId + ': ' + (reviewNotes || '')
+    'موافقة على طلب تعديل #' + requestId + ': ' + (reviewNotes || ''),
+    clientTime
   );
   
   return {
@@ -295,7 +296,7 @@ async function approveRequest(requestId, reviewedBy, reviewNotes) {
 }
 
 // رفض طلب
-async function rejectRequest(requestId, reviewedBy, reviewNotes) {
+async function rejectRequest(requestId, reviewedBy, reviewNotes, clientTime) {
   const pool = await connectDB();
   
   // 1. جلب بيانات الطلب
@@ -354,7 +355,7 @@ async function getProductPriceHistory(productId) {
 // 🔧 دالة مساعدة - تسجيل PriceHistory
 // =============================================
 
-async function _logPriceHistory(pool, productId, priceType, oldPrice, newPrice, changedBy, reason) {
+async function _logPriceHistory(pool, productId, priceType, oldPrice, newPrice, changedBy, reason, clientTime) {
   await pool.request()
     .input('productId', sql.Int, productId)
     .input('priceType', sql.NVarChar(10), priceType)
