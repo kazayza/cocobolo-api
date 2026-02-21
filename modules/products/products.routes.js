@@ -38,5 +38,8 @@ router.delete('/images/:id', productsController.deleteImage);
 // POST /api/products/:id/components
 router.post('/:id/components', productsController.saveComponents);
 
+// GET /api/products/:id/pdf
+router.get('/:id/pdf', productsController.getProductPdf);
+
 // تصدير الراوتر
 module.exports = router;

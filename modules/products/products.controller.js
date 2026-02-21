@@ -160,6 +160,39 @@ async function saveComponents(req, res) {
     return errorResponse(res, 'فشل حفظ المكونات', 500, err.message);
   }
 }
+// دالة لجلب ملف PDF المنتج
+async function getProductPdf(req, res) {
+  try {
+    const { id } = req.params;
+    
+    // استعلام مباشر عشان نجيب الملف بس (عشان الأداء)
+    const pool = await connectDB(); // تأكد إنك مستدعي connectDB و sql
+    const result = await pool.request()
+      .input('id', sql.Int, id)
+      .query('SELECT PDFFile FROM Products WHERE ProductID = @id');
+
+    const product = result.recordset[0];
+
+    // لو المنتج مش موجود أو مفيش ملف
+    if (!product || !product.PDFFile) {
+      return res.status(404).send('لا يوجد ملف PDF لهذا المنتج');
+    }
+
+    // ✅ تحضير الـ Header عشان المتصفح/الموبايل يفهم إنه PDF
+    res.setHeader('Content-Type', 'application/pdf');
+    // inline: يفتح في المتصفح/التطبيق | attachment: ينزل تحميل
+    res.setHeader('Content-Disposition', `inline; filename="product_${id}.pdf"`);
+
+    // إرسال البيانات الثنائية (Binary Data)
+    res.send(product.PDFFile);
+
+  } catch (err) {
+    console.error('خطأ في جلب PDF:', err);
+    res.status(500).send('حدث خطأ أثناء جلب الملف');
+  }
+}
+
+
 
 // تصدير الدوال
 module.exports = {
@@ -170,5 +203,6 @@ module.exports = {
   update,
   addImage,
   deleteImage,
-  saveComponents
+  saveComponents,
+  getProductPdf
 };
