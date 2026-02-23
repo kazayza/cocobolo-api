@@ -6,47 +6,21 @@ const clientsController = require('./clients.controller');
 // 👥 Clients Routes
 // ===================================
 
-// ⚠️ مهم: الـ Routes الثابتة لازم تيجي قبل الـ :id
+// ✅ كل الـ Routes الثابتة أولاً (قبل أي :id)
 
-// جلب ملخص العملاء
-// GET /api/clients/summary
 router.get('/summary', clientsController.getSummary);
-
-// البحث عن عميل
-// GET /api/clients/search?q=xxx
 router.get('/search', clientsController.search);
-
-// جلب قائمة العملاء (مختصرة)
-// GET /api/clients/list
 router.get('/list', clientsController.getList);
-
-// جلب مصادر الإحالة
-// GET /api/clients/referral-sources
 router.get('/referral-sources', clientsController.getReferralSources);
-
-// ✅ التحقق من تكرار رقم الهاتف (لازم قبل :id)
-// GET /api/clients/check-phone?phone=xxx
 router.get('/check-phone', clientsController.checkPhone);
 
-// جلب كل العملاء
-// GET /api/clients
+// ✅ الـ Route الرئيسي
 router.get('/', clientsController.getAll);
-
-// جلب عميل بالـ ID (⚠️ لازم يكون آخر GET)
-// GET /api/clients/:id
-router.get('/:id', clientsController.getById);
-
-// إضافة عميل جديد
-// POST /api/clients
 router.post('/', clientsController.create);
 
-// تعديل عميل
-// PUT /api/clients/:id
-router.put('/:id', clientsController.update);
+// ✅ الـ Routes اللي فيها :id في الآخر خالص
+router.get('/:id([0-9]+)', clientsController.getById);  // فقط أرقام
+router.put('/:id([0-9]+)', clientsController.update);   // فقط أرقام
+router.delete('/:id([0-9]+)', clientsController.remove); // فقط أرقام
 
-// حذف عميل
-// DELETE /api/clients/:id
-router.delete('/:id', clientsController.remove);
-
-// تصدير الراوتر
 module.exports = router;
