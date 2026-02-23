@@ -6,6 +6,8 @@ const clientsController = require('./clients.controller');
 // 👥 Clients Routes
 // ===================================
 
+// ⚠️ مهم: الـ Routes الثابتة لازم تيجي قبل الـ :id
+
 // جلب ملخص العملاء
 // GET /api/clients/summary
 router.get('/summary', clientsController.getSummary);
@@ -22,15 +24,15 @@ router.get('/list', clientsController.getList);
 // GET /api/clients/referral-sources
 router.get('/referral-sources', clientsController.getReferralSources);
 
-// التحقق من تكرار رقم الهاتف
-// GET /api/clients/check-phone?phone=xxx&phone2=xxx&excludeId=xxx
+// ✅ التحقق من تكرار رقم الهاتف (لازم قبل :id)
+// GET /api/clients/check-phone?phone=xxx
 router.get('/check-phone', clientsController.checkPhone);
 
 // جلب كل العملاء
 // GET /api/clients
 router.get('/', clientsController.getAll);
 
-// جلب عميل بالـ ID
+// جلب عميل بالـ ID (⚠️ لازم يكون آخر GET)
 // GET /api/clients/:id
 router.get('/:id', clientsController.getById);
 
