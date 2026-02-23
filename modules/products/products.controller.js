@@ -165,30 +165,35 @@ async function getProductPdf(req, res) {
   try {
     const { id } = req.params;
     
-    // استعلام مباشر عشان نجيب الملف بس (عشان الأداء)
-    const pool = await connectDB(); // تأكد إنك مستدعي connectDB و sql
+    const pool = await connectDB();
     const result = await pool.request()
       .input('id', sql.Int, id)
       .query('SELECT PDFFile FROM Products WHERE ProductID = @id');
 
-    const product = result.recordset[0];
+    // 1. التأكد إن المنتج موجود
+    if (!result.recordset || result.recordset.length === 0) {
+      return res.status(404).send('المنتج غير موجود');
+    }
 
-    // لو المنتج مش موجود أو مفيش ملف
-    if (!product || !product.PDFFile) {
+    const fileData = result.recordset[0].PDFFile;
+
+    // 2. التأكد إن فيه ملف فعلاً ومش NULL
+    if (!fileData) {
       return res.status(404).send('لا يوجد ملف PDF لهذا المنتج');
     }
 
-    // ✅ تحضير الـ Header عشان المتصفح/الموبايل يفهم إنه PDF
+    // 3. إعداد الـ Headers
     res.setHeader('Content-Type', 'application/pdf');
-    // inline: يفتح في المتصفح/التطبيق | attachment: ينزل تحميل
+    res.setHeader('Content-Length', fileData.length); // مهم عشان التطبيق يعرف حجم الملف
     res.setHeader('Content-Disposition', `inline; filename="product_${id}.pdf"`);
 
-    // إرسال البيانات الثنائية (Binary Data)
-    res.send(product.PDFFile);
+    // 4. إرسال الملف (Buffer)
+    res.write(fileData);
+    res.end();
 
   } catch (err) {
-    console.error('خطأ في جلب PDF:', err);
-    res.status(500).send('حدث خطأ أثناء جلب الملف');
+    console.error('❌ خطأ في جلب PDF:', err);
+    res.status(500).send('خطأ في السيرفر');
   }
 }
 
