@@ -39,6 +39,7 @@ app.get('/api/activities/debug', dashboardController.getDebug);
 app.get('/api/clients', clientsController.getAll);
 app.get('/api/clients/summary', clientsController.getSummary);
 app.get('/api/clients/search', clientsController.search);
+app.get('/api/clients/check-phone', clientsController.checkPhone); 
 app.get('/api/customers-list', clientsController.getList);
 app.get('/api/clients/:id', clientsController.getById);
 app.post('/api/clients', clientsController.create);
