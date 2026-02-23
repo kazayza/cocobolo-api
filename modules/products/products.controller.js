@@ -1,6 +1,8 @@
+const { sql, connectDB } = require('../../core/database');
 const productsQueries = require('./products.queries');
 const notificationsQueries = require('../notifications/notifications.queries');
 const { successResponse, errorResponse, notFoundResponse } = require('../../shared/response.helper');
+
 
 // جلب مجموعات المنتجات
 async function getGroups(req, res) {
