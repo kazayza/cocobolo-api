@@ -6,21 +6,20 @@ const clientsController = require('./clients.controller');
 // 👥 Clients Routes
 // ===================================
 
-// ✅ كل الـ Routes الثابتة أولاً (قبل أي :id)
-
+// الـ Routes الثابتة أولاً
 router.get('/summary', clientsController.getSummary);
 router.get('/search', clientsController.search);
 router.get('/list', clientsController.getList);
 router.get('/referral-sources', clientsController.getReferralSources);
 router.get('/check-phone', clientsController.checkPhone);
 
-// ✅ الـ Route الرئيسي
+// الـ Route الرئيسي
 router.get('/', clientsController.getAll);
 router.post('/', clientsController.create);
 
-// ✅ الـ Routes اللي فيها :id في الآخر خالص
-router.get('/:id([0-9]+)', clientsController.getById);  // فقط أرقام
-router.put('/:id([0-9]+)', clientsController.update);   // فقط أرقام
-router.delete('/:id([0-9]+)', clientsController.remove); // فقط أرقام
+// الـ Routes اللي فيها :id
+router.get('/:id', clientsController.getById);
+router.put('/:id', clientsController.update);
+router.delete('/:id', clientsController.remove);
 
 module.exports = router;
