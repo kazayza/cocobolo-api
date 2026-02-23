@@ -1,6 +1,7 @@
 const { sql, connectDB } = require('../../core/database');
 
 // جلب كل العملاء
+// جلب كل العملاء
 async function getAllClients() {
   const pool = await connectDB();
   const result = await pool.request()
@@ -8,10 +9,12 @@ async function getAllClients() {
       SELECT 
         PartyID, PartyName, Phone, Phone2, Email,
         Address, TaxNumber, OpeningBalance, BalanceType,
-        ContactPerson, NationalID
+        ContactPerson, NationalID, FloorNumber, Notes,
+        ReferralSourceID, ReferralSourceClient,
+        CreatedBy, CreatedAt
       FROM Parties 
       WHERE PartyType = 1 AND IsActive = 1 
-      ORDER BY PartyName
+      ORDER BY CreatedAt DESC
     `);
   return result.recordset;
 }
