@@ -166,6 +166,35 @@ async function getReferralSources(req, res) {
   }
 }
 
+// التحقق من تكرار رقم الهاتف
+async function checkPhone(req, res) {
+  try {
+    const { phone, phone2, excludeId } = req.query;
+    
+    if (!phone && !phone2) {
+      return res.json({ exists: false });
+    }
+    
+    const existingClient = await clientsQueries.checkPhoneExists(
+      phone || null,
+      phone2 || null,
+      excludeId || null
+    );
+    
+    if (existingClient) {
+      return res.json({
+        exists: true,
+        client: existingClient
+      });
+    }
+    
+    return res.json({ exists: false });
+  } catch (err) {
+    console.error('خطأ في التحقق من الهاتف:', err);
+    return errorResponse(res, 'فشل التحقق من الهاتف', 500, err.message);
+  }
+}
+
 // تصدير الدوال
 module.exports = {
   getAll,
@@ -176,5 +205,6 @@ module.exports = {
   create,
   update,
   remove,
-  getReferralSources
+  getReferralSources,
+  checkPhone
 };

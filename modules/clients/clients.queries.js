@@ -194,6 +194,42 @@ async function getReferralSources() {
   return result.recordset;
 }
 
+// التحقق من وجود رقم الهاتف
+async function checkPhoneExists(phone, phone2 = null, excludeId = null) {
+  const pool = await connectDB();
+  const request = pool.request();
+  
+  let conditions = [];
+  
+  if (phone) {
+    request.input('phone', sql.NVarChar(50), phone);
+    conditions.push('(Phone = @phone OR Phone2 = @phone)');
+  }
+  
+  if (phone2) {
+    request.input('phone2', sql.NVarChar(50), phone2);
+    conditions.push('(Phone = @phone2 OR Phone2 = @phone2)');
+  }
+  
+  if (conditions.length === 0) {
+    return null;
+  }
+  
+  let query = `
+    SELECT PartyID, PartyName, Phone, Phone2 
+    FROM Parties 
+    WHERE IsActive = 1 AND PartyType = 1 AND (${conditions.join(' OR ')})
+  `;
+  
+  if (excludeId) {
+    request.input('excludeId', sql.Int, excludeId);
+    query += ` AND PartyID != @excludeId`;
+  }
+  
+  const result = await request.query(query);
+  return result.recordset.length > 0 ? result.recordset[0] : null;
+}
+
 // تصدير الدوال
 module.exports = {
   getAllClients,
@@ -202,6 +238,7 @@ module.exports = {
   getClientsSummary,
   getClientById,
   checkClientNameExists,
+  checkPhoneExists,
   createClient,
   updateClient,
   checkClientHasTransactions,

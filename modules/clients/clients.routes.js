@@ -22,6 +22,10 @@ router.get('/list', clientsController.getList);
 // GET /api/clients/referral-sources
 router.get('/referral-sources', clientsController.getReferralSources);
 
+// التحقق من تكرار رقم الهاتف
+// GET /api/clients/check-phone?phone=xxx&phone2=xxx&excludeId=xxx
+router.get('/check-phone', clientsController.checkPhone);
+
 // جلب كل العملاء
 // GET /api/clients
 router.get('/', clientsController.getAll);
