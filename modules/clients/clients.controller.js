@@ -52,10 +52,18 @@ async function getSummary(req, res) {
 }
 
 // جلب عميل بالـ ID
+// جلب عميل بالـ ID
 async function getById(req, res) {
   try {
     const { id } = req.params;
-    const client = await clientsQueries.getClientById(id);
+    
+    // ✅ التحقق من أن الـ id رقم صحيح
+    const numericId = parseInt(id, 10);
+    if (isNaN(numericId)) {
+      return errorResponse(res, 'معرف العميل غير صالح', 400);
+    }
+
+    const client = await clientsQueries.getClientById(numericId);
 
     if (!client) {
       return notFoundResponse(res, 'العميل غير موجود');
