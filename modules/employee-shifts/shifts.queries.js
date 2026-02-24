@@ -39,7 +39,7 @@ async function getCurrentShift(employeeId) {
 async function createShift(data) {
   const pool = await connectDB();
   
-  // 1. إنهاء أي شيفت ساري حالياً
+  // 1. إنهاء أي شيفت ساري
   await pool.request()
     .input('employeeId', sql.Int, data.employeeId)
     .input('newStartDate', sql.DateTime, data.effectiveFrom)
@@ -50,27 +50,30 @@ async function createShift(data) {
       AND (EffectiveTo IS NULL OR EffectiveTo >= @newStartDate)
     `);
 
-  // 2. إضافة الشيفت الجديد
+  // 2. إضافة الشيفت الجديد + كود البصمة
   const result = await pool.request()
     .input('employeeId', sql.Int, data.employeeId)
     .input('shiftType', sql.VarChar(20), data.shiftType)
-    // ✅ التعديل هنا: VarChar بدل Time
-    .input('startTime', sql.VarChar(8), data.startTime) 
+    .input('startTime', sql.VarChar(8), data.startTime)
     .input('endTime', sql.VarChar(8), data.endTime)
     .input('effectiveFrom', sql.DateTime, data.effectiveFrom)
     .input('effectiveTo', sql.DateTime, data.effectiveTo || null)
     .input('createdBy', sql.NVarChar(50), data.createdBy)
     .input('createdAt', sql.DateTime, data.createdAt)
     .query(`
+      -- ✅ أولاً: نجيب كود البصمة
+      DECLARE @BioCode INT;
+      SELECT @BioCode = BioEmployeeID FROM Employees WHERE EmployeeID = @employeeId;
+
+      -- ✅ ثانياً: نسجل الشيفت مع الكود
       INSERT INTO EmployeeShifts (
-        EmployeeID, ShiftType, StartTime, EndTime, 
+        EmployeeID, BiometricCode, ShiftType, StartTime, EndTime, 
         EffectiveFrom, EffectiveTo, CreatedBy, CreatedAt
       )
       OUTPUT INSERTED.EmployeeShiftID
       VALUES (
-        @employeeId, @shiftType, 
-        CAST(@startTime AS TIME), -- ✅ تحويل صريح
-        CAST(@endTime AS TIME),   -- ✅ تحويل صريح
+        @employeeId, @BioCode, @shiftType, 
+        CAST(@startTime AS TIME), CAST(@endTime AS TIME),
         @effectiveFrom, @effectiveTo, @createdBy, @createdAt
       )
     `);
@@ -88,14 +91,18 @@ async function deleteShift(shiftId) {
 }
 
 // جلب الموظفين (النشطين وغير المعفيين) مع شيفتاتهم الحالية
+// ✅ التعديل هنا: استخدام FORMAT لتحويل الوقت لنص
 async function getEmployeesWithCurrentShift() {
   const pool = await connectDB();
   const result = await pool.request().query(`
     SELECT 
       e.EmployeeID, e.FullName, e.JobTitle, e.Department,
       s.EmployeeShiftID, s.ShiftType, 
-      FORMAT(s.StartTime, 'hh:mm tt') as StartTime, 
-      FORMAT(s.EndTime, 'hh:mm tt') as EndTime,
+      
+      -- 👇 ده التعديل المهم عشان العرض يظبط
+      FORMAT(CAST(s.StartTime AS DATETIME), 'hh:mm tt') as StartTime,
+      FORMAT(CAST(s.EndTime AS DATETIME), 'hh:mm tt') as EndTime,
+      
       s.EffectiveFrom
     FROM Employees e
     LEFT JOIN EmployeeShifts s ON e.EmployeeID = s.EmployeeID 
