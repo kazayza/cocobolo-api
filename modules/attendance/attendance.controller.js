@@ -23,7 +23,7 @@ function isWithinRange(userLat, userLng) {
 async function notifyManagers(title, message, relatedId) {
   try {
     // ✅ ابعت الـ roles واحد واحد
-    const roles = ['admin', 'salesmanager', 'accountmanager'];
+    const roles = ['Admin', 'SlaesManager', 'AccountManager'];
     
     for (const role of roles) {
       await notificationsQueries.createNotificationSmart({
@@ -99,7 +99,7 @@ async function checkIn(req, res) {
     
     // ✅ 3. ابعت الإشعار
     await notifyManagers(
-      'تسجيل حضور 🟢',
+      'تسجيل حضور',
       `قام الموظف ${employeeName} بتسجيل الحضور الساعة ${timeFormatted}`,
       userId
     );
@@ -153,7 +153,7 @@ async function checkOut(req, res) {
     const timeFormatted = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
     await notifyManagers(
-      'تسجيل انصراف 🔴',
+      'تسجيل انصراف',
       `قام الموظف ${employeeName} بتسجيل الانصراف الساعة ${timeFormatted}`,
       userId
     );
