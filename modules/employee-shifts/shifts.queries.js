@@ -99,12 +99,11 @@ async function getEmployeesWithCurrentShift() {
       e.EmployeeID, e.FullName, e.JobTitle, e.Department,
       s.EmployeeShiftID, s.ShiftType, 
       
-      -- 👇 ده التعديل المهم عشان العرض يظبط
+      -- تنسيق الوقت والتاريخ
       FORMAT(CAST(s.StartTime AS DATETIME), 'hh:mm tt') as StartTime,
       FORMAT(CAST(s.EndTime AS DATETIME), 'hh:mm tt') as EndTime,
-      FORMAT(s.EffectiveFrom, 'yyyy-MM-dd') as StartDate
+      FORMAT(s.EffectiveFrom, 'yyyy-MM-dd') as StartDate -- ✅ الحقل الجديد
       
-      s.EffectiveFrom
     FROM Employees e
     LEFT JOIN EmployeeShifts s ON e.EmployeeID = s.EmployeeID 
       AND CAST(GETDATE() AS DATE) >= CAST(s.EffectiveFrom AS DATE)
