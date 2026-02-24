@@ -39,7 +39,7 @@ async function getCurrentShift(employeeId) {
 async function createShift(data) {
   const pool = await connectDB();
   
-  // 1. إنهاء أي شيفت ساري
+  // 1. إنهاء أي شيفت ساري حالياً
   await pool.request()
     .input('employeeId', sql.Int, data.employeeId)
     .input('newStartDate', sql.DateTime, data.effectiveFrom)
@@ -54,12 +54,13 @@ async function createShift(data) {
   const result = await pool.request()
     .input('employeeId', sql.Int, data.employeeId)
     .input('shiftType', sql.VarChar(20), data.shiftType)
-    .input('startTime', sql.Time, data.startTime)
-    .input('endTime', sql.Time, data.endTime)
+    // ✅ التعديل هنا: VarChar بدل Time
+    .input('startTime', sql.VarChar(8), data.startTime) 
+    .input('endTime', sql.VarChar(8), data.endTime)
     .input('effectiveFrom', sql.DateTime, data.effectiveFrom)
     .input('effectiveTo', sql.DateTime, data.effectiveTo || null)
     .input('createdBy', sql.NVarChar(50), data.createdBy)
-    .input('createdAt', sql.DateTime, data.createdAt) // ✅ نستقبل الوقت من الـ Controller
+    .input('createdAt', sql.DateTime, data.createdAt)
     .query(`
       INSERT INTO EmployeeShifts (
         EmployeeID, ShiftType, StartTime, EndTime, 
@@ -67,8 +68,10 @@ async function createShift(data) {
       )
       OUTPUT INSERTED.EmployeeShiftID
       VALUES (
-        @employeeId, @shiftType, @startTime, @endTime,
-        @effectiveFrom, @effectiveTo, @createdBy, @createdAt -- ✅ نستخدمه هنا
+        @employeeId, @shiftType, 
+        CAST(@startTime AS TIME), -- ✅ تحويل صريح
+        CAST(@endTime AS TIME),   -- ✅ تحويل صريح
+        @effectiveFrom, @effectiveTo, @createdBy, @createdAt
       )
     `);
     
