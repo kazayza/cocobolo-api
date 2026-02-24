@@ -22,17 +22,18 @@ function isWithinRange(userLat, userLng) {
 // ✅ دالة مساعدة لإرسال الإشعار للمديرين
 async function notifyManagers(title, message, relatedId) {
   try {
-    // تحديد الأدوار اللي هيوصلها الإشعار
+    // ✅ ابعت الـ roles واحد واحد
     const roles = ['admin', 'salesmanager', 'accountmanager'];
     
-    // إرسال الإشعار
-    await notificationsQueries.createNotificationSmart({
-      title,
-      message,
-      createdBy: 'System', // المرسل هو النظام
-      formName: 'frm_Attendance', // الشاشة المرتبطة
-      relatedId
-    }, roles);
+    for (const role of roles) {
+      await notificationsQueries.createNotificationSmart({
+        title,
+        message,
+        createdBy: 'System',
+        formName: 'frm_Attendance',
+        relatedId
+      }, role); // ✅ هنا بنبعت string
+    }
     
   } catch (err) {
     console.error('Failed to notify managers:', err);
