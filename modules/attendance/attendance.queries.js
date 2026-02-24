@@ -1,6 +1,75 @@
 const { sql, connectDB } = require('../../core/database');
 
-// جلب سجل الحضور لموظف معين
+// تسجيل بصمة خام (BiometricLog)
+async function logBiometric(bioCode, date, time) {
+  const pool = await connectDB();
+  await pool.request()
+    .input('bioCode', sql.Int, bioCode)
+    .input('logDate', sql.DateTime, date)
+    .input('logTime', sql.Time, time)
+    .query(`
+      INSERT INTO BiometricLog (BiometricCode, LogDate, LogTime)
+      VALUES (@bioCode, @logDate, @logTime)
+    `);
+}
+
+// التحقق من وجود سجل حضور لليوم
+async function getTodayAttendance(bioCode) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('bioCode', sql.Int, bioCode)
+    .query(`
+      SELECT TOP 1 * FROM Attendance 
+      WHERE BiometricCode = @bioCode 
+      AND CAST(LogDate AS DATE) = CAST(GETDATE() AS DATE)
+      ORDER BY AttendanceID DESC
+    `);
+  return result.recordset[0];
+}
+
+// تسجيل حضور (Attendance)
+async function checkIn(bioCode, time) {
+  const pool = await connectDB();
+  await pool.request()
+    .input('bioCode', sql.Int, bioCode)
+    .input('timeIn', sql.Time, time)
+    .query(`
+      INSERT INTO Attendance (BiometricCode, LogDate, TimeIn, Status)
+      VALUES (@bioCode, GETDATE(), @timeIn, N'حاضر')
+    `);
+}
+
+// تسجيل انصراف (Attendance)
+async function checkOut(attendanceId, timeOut) {
+  const pool = await connectDB();
+  
+  await pool.request()
+    .input('id', sql.Int, attendanceId)
+    .input('timeOut', sql.Time, timeOut)
+    .query(`
+      UPDATE Attendance 
+      SET TimeOut = @timeOut,
+          TotalHours = DATEDIFF(MINUTE, TimeIn, @timeOut) / 60.0
+      WHERE AttendanceID = @id
+    `);
+}
+
+// جلب كود البصمة للموظف عن طريق UserID
+async function getBioCodeByUserId(userId) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('userId', sql.Int, userId)
+    .query(`
+      SELECT e.BioEmployeeID 
+      FROM Employees e
+      JOIN Users u ON e.EmployeeID = u.employeeID
+      WHERE u.UserID = @userId
+    `);
+  return result.recordset[0]?.BioEmployeeID;
+}
+
+// --- الدوال القديمة (للتقارير) ---
+
 async function getAttendanceByEmployee(biometricCode, startDate, endDate) {
   const pool = await connectDB();
   const result = await pool.request()
@@ -23,7 +92,6 @@ async function getAttendanceByEmployee(biometricCode, startDate, endDate) {
   return result.recordset;
 }
 
-// جلب سجل الحضور لكل الموظفين في تاريخ معين
 async function getAttendanceByDate(date) {
   const pool = await connectDB();
   const result = await pool.request()
@@ -42,7 +110,6 @@ async function getAttendanceByDate(date) {
   return result.recordset;
 }
 
-// جلب ملخص الحضور الشهري
 async function getMonthlyAttendanceSummary(year, month) {
   const pool = await connectDB();
   const result = await pool.request()
@@ -67,7 +134,6 @@ async function getMonthlyAttendanceSummary(year, month) {
   return result.recordset;
 }
 
-// جلب سجلات البصمة الخام
 async function getBiometricLogs(biometricCode, date) {
   const pool = await connectDB();
   const result = await pool.request()
@@ -83,7 +149,6 @@ async function getBiometricLogs(biometricCode, date) {
   return result.recordset;
 }
 
-// جلب الإعفاءات اليومية
 async function getDailyExemptions(biometricCode, startDate, endDate) {
   const pool = await connectDB();
   const result = await pool.request()
@@ -103,7 +168,6 @@ async function getDailyExemptions(biometricCode, startDate, endDate) {
   return result.recordset;
 }
 
-// إضافة إعفاء يومي
 async function createExemption(data) {
   const pool = await connectDB();
   const result = await pool.request()
@@ -126,7 +190,6 @@ async function createExemption(data) {
   return result.recordset[0].ExemptionID;
 }
 
-// جلب التقويم (الإجازات الرسمية)
 async function getCalendar(year, month) {
   const pool = await connectDB();
   const result = await pool.request()
@@ -141,8 +204,12 @@ async function getCalendar(year, month) {
   return result.recordset;
 }
 
-// تصدير الدوال
 module.exports = {
+  logBiometric,
+  getTodayAttendance,
+  checkIn,
+  checkOut,
+  getBioCodeByUserId,
   getAttendanceByEmployee,
   getAttendanceByDate,
   getMonthlyAttendanceSummary,
