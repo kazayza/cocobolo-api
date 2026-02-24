@@ -99,7 +99,7 @@ async function createNotificationSmart(data, target) {
       WHERE 
          Role = @target        -- لو هو رول (زي SalesManager)
          OR Username = @target -- لو هو يوزر محدد (زي Factory)
-         OR Role = 'Admin'     -- الأدمن بيشوف كل حاجة
+         
     `);
 
   const recipients = usersResult.recordset;
