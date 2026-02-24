@@ -208,6 +208,8 @@ app.use('/api/reports', require('./modules/reports/reports.routes'));
 
 app.use('/api/lookups', require('./modules/lookups/lookups.routes'));
 
+app.use('/api/shifts', require('./modules/employee-shifts/shifts.routes'));
+
 
 
 // ===================================
