@@ -1,3 +1,4 @@
+const notificationsQueries = require('../notifications/notifications.queries');
 const attendanceQueries = require('./attendance.queries');
 const { successResponse, errorResponse } = require('../../shared/response.helper');
 const geolib = require('geolib');
@@ -17,6 +18,25 @@ function isWithinRange(userLat, userLng) {
     COMPANY_LOCATION
   );
   return distance <= ALLOWED_RADIUS;
+}
+// ✅ دالة مساعدة لإرسال الإشعار للمديرين
+async function notifyManagers(title, message, relatedId) {
+  try {
+    // تحديد الأدوار اللي هيوصلها الإشعار
+    const roles = ['admin', 'salesmanager', 'accountmanager'];
+    
+    // إرسال الإشعار
+    await notificationsQueries.createNotificationSmart({
+      title,
+      message,
+      createdBy: 'System', // المرسل هو النظام
+      formName: 'frm_Attendance', // الشاشة المرتبطة
+      relatedId
+    }, roles);
+    
+  } catch (err) {
+    console.error('Failed to notify managers:', err);
+  }
 }
 // الحصول على توقيت مصر
 function getEgyptTime() {
@@ -70,6 +90,19 @@ async function checkIn(req, res) {
     await attendanceQueries.logBiometric(bioCode, dateStr, timeStr);
     await attendanceQueries.checkIn(bioCode, dateStr, timeStr);
 
+        // ✅ 1. هات اسم الموظف
+    const employeeName = await attendanceQueries.getEmployeeNameByUserId(userId);
+    
+    // ✅ 2. جهز وقت مقروء (مثلاً 09:30 AM)
+    const timeFormatted = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    
+    // ✅ 3. ابعت الإشعار
+    await notifyManagers(
+      'تسجيل حضور 🟢',
+      `قام الموظف ${employeeName} بتسجيل الحضور الساعة ${timeFormatted}`,
+      userId
+    );
+
     return res.json({ success: true, message: 'تم تسجيل الحضور بنجاح ✅' });
 
   } catch (err) {
@@ -113,6 +146,16 @@ async function checkOut(req, res) {
     // 5. التسجيل
     await attendanceQueries.logBiometric(bioCode, dateStr, timeStr);
     await attendanceQueries.checkOut(today.AttendanceID, timeStr);
+
+        // ✅ نفس الخطوات بس العنوان والرسالة مختلفين
+    const employeeName = await attendanceQueries.getEmployeeNameByUserId(userId);
+    const timeFormatted = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+    await notifyManagers(
+      'تسجيل انصراف 🔴',
+      `قام الموظف ${employeeName} بتسجيل الانصراف الساعة ${timeFormatted}`,
+      userId
+    );
 
     return res.json({ success: true, message: 'تم تسجيل الانصراف بنجاح 👋' });
 

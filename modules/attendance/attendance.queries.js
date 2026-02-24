@@ -209,6 +209,20 @@ async function getCalendar(year, month) {
   return result.recordset;
 }
 
+// جلب اسم الموظف عن طريق UserID
+async function getEmployeeNameByUserId(userId) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('userId', sql.Int, userId)
+    .query(`
+      SELECT e.FullName 
+      FROM Employees e
+      JOIN Users u ON e.EmployeeID = u.employeeID
+      WHERE u.UserID = @userId
+    `);
+  return result.recordset[0]?.FullName || 'موظف';
+}
+
 module.exports = {
   logBiometric,
   getTodayAttendance,
@@ -221,5 +235,6 @@ module.exports = {
   getBiometricLogs,
   getDailyExemptions,
   createExemption,
-  getCalendar
+  getCalendar,
+  getEmployeeNameByUserId
 };
