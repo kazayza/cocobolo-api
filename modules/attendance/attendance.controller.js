@@ -5,8 +5,8 @@ const geolib = require('geolib');
 // إحداثيات الشركة (ثابتة مؤقتاً)
 // ⚠️ غيّر دي لإحداثياتك الحقيقية
 const COMPANY_LOCATION = {
-  latitude: 30.0444, 
-  longitude: 31.2357 
+  latitude: 30.055852, 
+  longitude: 31.0353408
 };
 const ALLOWED_RADIUS = 100; // متر
 
