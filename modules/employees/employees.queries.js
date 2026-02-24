@@ -10,7 +10,7 @@ async function getAllEmployees(filters = {}) {
       EmployeeID, FullName, JobTitle, Department, NationalID,
       Gender, BirthDate, qualification, Address, MobilePhone,
       MobilePhone2, EmailAddress, HireDate, EndDate,
-      BioEmployeeID, CurrentSalaryBase, Status, Notes,
+      BioEmployeeID, IsPermanentlyExempt, CurrentSalaryBase, Status, Notes,
       CreatedBy, CreatedAt
     FROM Employees
     WHERE 1=1
@@ -81,6 +81,7 @@ async function getEmployeeLookups() {
 }
 
 // إضافة موظف جديد
+// إضافة موظف جديد
 async function createEmployee(data) {
   const pool = await connectDB();
   const result = await pool.request()
@@ -96,7 +97,9 @@ async function createEmployee(data) {
     .input('mobilePhone2', sql.NVarChar(20), data.mobilePhone2 || null)
     .input('emailAddress', sql.NVarChar(50), data.emailAddress || null)
     .input('hireDate', sql.DateTime, data.hireDate || null)
-    .input('bioEmployeeId', sql.Int, data.bioEmployeeId || null)
+    .input('endDate', sql.DateTime, data.endDate || null) // ✅
+    .input('bioEmployeeId', sql.Int, data.bioEmployeeId || null) // ✅
+    .input('isPermanentlyExempt', sql.Bit, data.isPermanentlyExempt ? 1 : 0) // ✅
     .input('currentSalaryBase', sql.Decimal(18, 2), data.currentSalaryBase || 0)
     .input('status', sql.NVarChar(20), data.status || 'نشط')
     .input('notes', sql.NVarChar(150), data.notes || null)
@@ -105,20 +108,21 @@ async function createEmployee(data) {
       INSERT INTO Employees (
         FullName, JobTitle, Department, NationalID, Gender,
         BirthDate, qualification, Address, MobilePhone, MobilePhone2,
-        EmailAddress, HireDate, BioEmployeeID, CurrentSalaryBase,
-        Status, Notes, CreatedBy, CreatedAt
+        EmailAddress, HireDate, EndDate, BioEmployeeID, IsPermanentlyExempt,
+        CurrentSalaryBase, Status, Notes, CreatedBy, CreatedAt
       )
       OUTPUT INSERTED.EmployeeID
       VALUES (
         @fullName, @jobTitle, @department, @nationalId, @gender,
         @birthDate, @qualification, @address, @mobilePhone, @mobilePhone2,
-        @emailAddress, @hireDate, @bioEmployeeId, @currentSalaryBase,
-        @status, @notes, @createdBy, GETDATE()
+        @emailAddress, @hireDate, @endDate, @bioEmployeeId, @isPermanentlyExempt,
+        @currentSalaryBase, @status, @notes, @createdBy, GETDATE()
       )
     `);
   return result.recordset[0].EmployeeID;
 }
 
+// تعديل موظف
 // تعديل موظف
 async function updateEmployee(id, data) {
   const pool = await connectDB();
@@ -136,7 +140,9 @@ async function updateEmployee(id, data) {
     .input('mobilePhone2', sql.NVarChar(20), data.mobilePhone2 || null)
     .input('emailAddress', sql.NVarChar(50), data.emailAddress || null)
     .input('hireDate', sql.DateTime, data.hireDate || null)
-    .input('bioEmployeeId', sql.Int, data.bioEmployeeId || null)
+    .input('endDate', sql.DateTime, data.endDate || null) // ✅
+    .input('bioEmployeeId', sql.Int, data.bioEmployeeId || null) // ✅
+    .input('isPermanentlyExempt', sql.Bit, data.isPermanentlyExempt ? 1 : 0) // ✅
     .input('currentSalaryBase', sql.Decimal(18, 2), data.currentSalaryBase || 0)
     .input('status', sql.NVarChar(20), data.status || 'نشط')
     .input('notes', sql.NVarChar(150), data.notes || null)
@@ -146,9 +152,9 @@ async function updateEmployee(id, data) {
         NationalID = @nationalId, Gender = @gender, BirthDate = @birthDate,
         qualification = @qualification, Address = @address,
         MobilePhone = @mobilePhone, MobilePhone2 = @mobilePhone2,
-        EmailAddress = @emailAddress, HireDate = @hireDate,
-        BioEmployeeID = @bioEmployeeId, CurrentSalaryBase = @currentSalaryBase,
-        Status = @status, Notes = @notes
+        EmailAddress = @emailAddress, HireDate = @hireDate, EndDate = @endDate,
+        BioEmployeeID = @bioEmployeeId, IsPermanentlyExempt = @isPermanentlyExempt,
+        CurrentSalaryBase = @currentSalaryBase, Status = @status, Notes = @notes
       WHERE EmployeeID = @id
     `);
   return true;
