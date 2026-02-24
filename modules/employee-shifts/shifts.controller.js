@@ -60,8 +60,18 @@ async function remove(req, res) {
   }
 }
 
+async function getEmployeesShiftsStatus(req, res) {
+  try {
+    const data = await shiftsQueries.getEmployeesWithCurrentShift();
+    return res.json(data);
+  } catch (err) {
+    return errorResponse(res, 'فشل جلب بيانات الموظفين', 500);
+  }
+}
+
 module.exports = {
   getByEmployee,
   create,
-  remove
+  remove,
+  getEmployeesShiftsStatus
 };

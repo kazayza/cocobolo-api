@@ -6,6 +6,8 @@ const shiftsController = require('./shifts.controller');
 // 📅 Employee Shifts Routes
 // ===================================
 
+router.get('/status', shiftsController.getEmployeesShiftsStatus);
+
 // جلب شيفتات موظف
 // GET /api/shifts/employee/:id
 router.get('/employee/:id', shiftsController.getByEmployee);

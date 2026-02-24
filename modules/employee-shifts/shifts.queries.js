@@ -84,9 +84,31 @@ async function deleteShift(shiftId) {
   return true;
 }
 
+// جلب الموظفين (النشطين وغير المعفيين) مع شيفتاتهم الحالية
+async function getEmployeesWithCurrentShift() {
+  const pool = await connectDB();
+  const result = await pool.request().query(`
+    SELECT 
+      e.EmployeeID, e.FullName, e.JobTitle, e.Department,
+      s.EmployeeShiftID, s.ShiftType, 
+      FORMAT(s.StartTime, 'hh:mm tt') as StartTime, 
+      FORMAT(s.EndTime, 'hh:mm tt') as EndTime,
+      s.EffectiveFrom
+    FROM Employees e
+    LEFT JOIN EmployeeShifts s ON e.EmployeeID = s.EmployeeID 
+      AND CAST(GETDATE() AS DATE) >= CAST(s.EffectiveFrom AS DATE)
+      AND (s.EffectiveTo IS NULL OR CAST(GETDATE() AS DATE) <= CAST(s.EffectiveTo AS DATE))
+    WHERE e.Status = N'نشط' 
+    AND (e.IsPermanentlyExempt = 0 OR e.IsPermanentlyExempt IS NULL)
+    ORDER BY e.FullName
+  `);
+  return result.recordset;
+}
+
 module.exports = {
   getShiftsByEmployee,
   getCurrentShift,
   createShift,
-  deleteShift
+  deleteShift,
+  getEmployeesWithCurrentShift
 };
