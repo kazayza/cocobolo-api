@@ -49,8 +49,8 @@ async function checkIn(req, res) {
     
     const timeString = now.toTimeString().split(' ')[0]; // HH:MM:SS
 
-    await attendanceQueries.logBiometric(bioCode, now, timeString);
-    await attendanceQueries.checkIn(bioCode, timeString);
+   await attendanceQueries.logBiometric(bioCode, now, now);
+   await attendanceQueries.checkIn(bioCode, now);
 
     return res.json({ success: true, message: 'تم تسجيل الحضور بنجاح ✅' });
 
@@ -83,8 +83,8 @@ async function checkOut(req, res) {
     const now = new Date();
     const timeString = now.toTimeString().split(' ')[0];
 
-    await attendanceQueries.logBiometric(bioCode, now, timeString);
-    await attendanceQueries.checkOut(today.AttendanceID, timeString);
+    await attendanceQueries.logBiometric(bioCode, now, now);
+    await attendanceQueries.checkOut(today.AttendanceID, now);
 
     return res.json({ success: true, message: 'تم تسجيل الانصراف بنجاح 👋' });
 

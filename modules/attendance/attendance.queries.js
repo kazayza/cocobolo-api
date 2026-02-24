@@ -6,10 +6,10 @@ async function logBiometric(bioCode, date, time) {
   await pool.request()
     .input('bioCode', sql.Int, bioCode)
     .input('logDate', sql.DateTime, date)
-    .input('logTime', sql.Time, time)
+    .input('logTime', sql.DateTime, time) 
     .query(`
       INSERT INTO BiometricLog (BiometricCode, LogDate, LogTime)
-      VALUES (@bioCode, @logDate, @logTime)
+      VALUES (@bioCode, @logDate, CAST(@logTime AS TIME))
     `);
 }
 
@@ -32,10 +32,10 @@ async function checkIn(bioCode, time) {
   const pool = await connectDB();
   await pool.request()
     .input('bioCode', sql.Int, bioCode)
-    .input('timeIn', sql.Time, time)
+    .input('timeIn', sql.DateTime, time)
     .query(`
       INSERT INTO Attendance (BiometricCode, LogDate, TimeIn, Status)
-      VALUES (@bioCode, GETDATE(), @timeIn, N'حاضر')
+      VALUES (@bioCode, GETDATE(), CAST(@timeIn AS TIME), N'حاضر')
     `);
 }
 
@@ -45,10 +45,10 @@ async function checkOut(attendanceId, timeOut) {
   
   await pool.request()
     .input('id', sql.Int, attendanceId)
-    .input('timeOut', sql.Time, timeOut)
+    .input('timeOut', sql.DateTime, timeOut)
     .query(`
       UPDATE Attendance 
-      SET TimeOut = @timeOut,
+      SET TimeOut = CAST(@timeOut AS TIME),
           TotalHours = DATEDIFF(MINUTE, TimeIn, @timeOut) / 60.0
       WHERE AttendanceID = @id
     `);
