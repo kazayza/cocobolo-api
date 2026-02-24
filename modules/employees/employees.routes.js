@@ -6,6 +6,10 @@ const employeesController = require('./employees.controller');
 // 👨‍💼 Employees Routes
 // ===================================
 
+// جلب القوائم (الأقسام والوظائف)
+// GET /api/employees/lookups
+router.get('/lookups', employeesController.getLookups);
+
 // جلب الموظفين النشطين
 // GET /api/employees/active
 router.get('/active', employeesController.getActive);

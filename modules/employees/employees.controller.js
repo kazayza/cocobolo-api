@@ -1,10 +1,16 @@
 const employeesQueries = require('./employees.queries');
 const { successResponse, errorResponse, notFoundResponse } = require('../../shared/response.helper');
 
-// جلب كل الموظفين
+// جلب كل الموظفين (مع فلترة)
 async function getAll(req, res) {
   try {
-    const employees = await employeesQueries.getAllEmployees();
+    const filters = {
+      search: req.query.search,
+      status: req.query.status,
+      department: req.query.department
+    };
+    
+    const employees = await employeesQueries.getAllEmployees(filters);
     return res.json(employees);
   } catch (err) {
     console.error('خطأ في جلب الموظفين:', err);
@@ -20,6 +26,17 @@ async function getActive(req, res) {
   } catch (err) {
     console.error('خطأ في جلب الموظفين:', err);
     return errorResponse(res, 'فشل تحميل الموظفين', 500, err.message);
+  }
+}
+
+// جلب القوائم (الأقسام والوظائف)
+async function getLookups(req, res) {
+  try {
+    const lookups = await employeesQueries.getEmployeeLookups();
+    return res.json(lookups);
+  } catch (err) {
+    console.error('خطأ في جلب القوائم:', err);
+    return errorResponse(res, 'فشل تحميل القوائم', 500, err.message);
   }
 }
 
@@ -126,6 +143,7 @@ async function getSalaryHistory(req, res) {
 module.exports = {
   getAll,
   getActive,
+  getLookups,
   getById,
   create,
   update,

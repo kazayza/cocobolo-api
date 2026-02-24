@@ -1,19 +1,40 @@
 const { sql, connectDB } = require('../../core/database');
 
-// جلب كل الموظفين
-async function getAllEmployees() {
+// جلب كل الموظفين (مع البحث والفلترة)
+async function getAllEmployees(filters = {}) {
   const pool = await connectDB();
-  const result = await pool.request()
-    .query(`
-      SELECT 
-        EmployeeID, FullName, JobTitle, Department, NationalID,
-        Gender, BirthDate, qualification, Address, MobilePhone,
-        MobilePhone2, EmailAddress, HireDate, EndDate,
-        BioEmployeeID, CurrentSalaryBase, Status, Notes,
-        CreatedBy, CreatedAt
-      FROM Employees
-      ORDER BY FullName
-    `);
+  const request = pool.request();
+  
+  let query = `
+    SELECT 
+      EmployeeID, FullName, JobTitle, Department, NationalID,
+      Gender, BirthDate, qualification, Address, MobilePhone,
+      MobilePhone2, EmailAddress, HireDate, EndDate,
+      BioEmployeeID, CurrentSalaryBase, Status, Notes,
+      CreatedBy, CreatedAt
+    FROM Employees
+    WHERE 1=1
+  `;
+
+  // الفلترة
+  if (filters.status) {
+    request.input('status', sql.NVarChar(20), filters.status);
+    query += ` AND Status = @status`;
+  }
+
+  if (filters.department) {
+    request.input('department', sql.NVarChar(100), filters.department);
+    query += ` AND Department = @department`;
+  }
+
+  if (filters.search) {
+    request.input('search', sql.NVarChar(100), `%${filters.search}%`);
+    query += ` AND (FullName LIKE @search OR MobilePhone LIKE @search OR NationalID LIKE @search)`;
+  }
+
+  query += ` ORDER BY FullName`;
+
+  const result = await request.query(query);
   return result.recordset;
 }
 
@@ -39,6 +60,24 @@ async function getEmployeeById(id) {
       SELECT * FROM Employees WHERE EmployeeID = @id
     `);
   return result.recordset[0] || null;
+}
+
+// جلب قوائم الأقسام والوظائف (Dropdowns)
+async function getEmployeeLookups() {
+  const pool = await connectDB();
+  
+  const departments = await pool.request().query(`
+    SELECT DISTINCT Department FROM Employees WHERE Department IS NOT NULL AND Department != ''
+  `);
+  
+  const jobTitles = await pool.request().query(`
+    SELECT DISTINCT JobTitle FROM Employees WHERE JobTitle IS NOT NULL AND JobTitle != ''
+  `);
+  
+  return {
+    departments: departments.recordset.map(r => r.Department),
+    jobTitles: jobTitles.recordset.map(r => r.JobTitle)
+  };
 }
 
 // إضافة موظف جديد
@@ -143,6 +182,7 @@ module.exports = {
   getAllEmployees,
   getActiveEmployees,
   getEmployeeById,
+  getEmployeeLookups,
   createEmployee,
   updateEmployee,
   updateEmployeeStatus,
