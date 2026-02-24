@@ -1,19 +1,21 @@
 const { sql, connectDB } = require('../../core/database');
 
 // تسجيل بصمة خام (BiometricLog)
-async function logBiometric(bioCode, date, time) {
+// تسجيل بصمة خام
+async function logBiometric(bioCode, dateStr, timeStr) {
   const pool = await connectDB();
   await pool.request()
     .input('bioCode', sql.Int, bioCode)
-    .input('logDate', sql.DateTime, date)
-    .input('logTime', sql.DateTime, time) 
+    .input('logDate', sql.VarChar(10), dateStr) // ✅ نستقبل كنص YYYY-MM-DD
+    .input('logTime', sql.VarChar(8), timeStr)  // ✅ نستقبل كنص HH:MM:SS
     .query(`
       INSERT INTO BiometricLog (BiometricCode, LogDate, LogTime)
-      VALUES (@bioCode, @logDate, CAST(@logTime AS TIME))
+      VALUES (@bioCode, CAST(@logDate AS DATE), CAST(@logTime AS TIME))
     `);
 }
 
 // التحقق من وجود سجل حضور لليوم
+// التحقق من وجود سجل حضور لليوم (بتوقيت مصر)
 async function getTodayAttendance(bioCode) {
   const pool = await connectDB();
   const result = await pool.request()
@@ -21,35 +23,38 @@ async function getTodayAttendance(bioCode) {
     .query(`
       SELECT TOP 1 * FROM Attendance 
       WHERE BiometricCode = @bioCode 
-      AND CAST(LogDate AS DATE) = CAST(GETDATE() AS DATE)
+      -- ✅ تحويل وقت السيرفر لتوقيت مصر (+02:00) ومقارنة التاريخ فقط
+      AND CAST(SWITCHOFFSET(SYSDATETIMEOFFSET(), '+02:00') AS DATE) = CAST(LogDate AS DATE)
       ORDER BY AttendanceID DESC
     `);
   return result.recordset[0];
 }
 
 // تسجيل حضور (Attendance)
-async function checkIn(bioCode, time) {
+// تسجيل حضور
+async function checkIn(bioCode, dateStr, timeStr) {
   const pool = await connectDB();
   await pool.request()
     .input('bioCode', sql.Int, bioCode)
-    .input('timeIn', sql.DateTime, time)
+    .input('dateIn', sql.VarChar(10), dateStr) // ✅
+    .input('timeIn', sql.VarChar(8), timeStr)  // ✅
     .query(`
       INSERT INTO Attendance (BiometricCode, LogDate, TimeIn, Status)
-      VALUES (@bioCode, GETDATE(), CAST(@timeIn AS TIME), N'حاضر')
+      VALUES (@bioCode, CAST(@dateIn AS DATE), CAST(@timeIn AS TIME), N'حاضر')
     `);
 }
 
 // تسجيل انصراف (Attendance)
-async function checkOut(attendanceId, timeOut) {
+// تسجيل انصراف
+async function checkOut(attendanceId, timeStr) {
   const pool = await connectDB();
-  
   await pool.request()
     .input('id', sql.Int, attendanceId)
-    .input('timeOut', sql.DateTime, timeOut)
+    .input('timeOut', sql.VarChar(8), timeStr) // ✅
     .query(`
       UPDATE Attendance 
       SET TimeOut = CAST(@timeOut AS TIME),
-          TotalHours = DATEDIFF(MINUTE, TimeIn, @timeOut) / 60.0
+          TotalHours = DATEDIFF(MINUTE, TimeIn, CAST(@timeOut AS TIME)) / 60.0
       WHERE AttendanceID = @id
     `);
 }

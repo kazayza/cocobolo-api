@@ -18,7 +18,20 @@ function isWithinRange(userLat, userLng) {
   );
   return distance <= ALLOWED_RADIUS;
 }
+// الحصول على توقيت مصر
+function getEgyptTime() {
+  // إنشاء تاريخ بتوقيت السيرفر
+  const date = new Date();
+  
+  // تحويله لتوقيت مصر (UTC+2)
+  // ملاحظة: لو التوقيت الصيفي شغال يبقى +3
+  // الأفضل نستخدم toLocaleString
+  
+  const egyptTime = new Date(date.toLocaleString("en-US", { timeZone: "Africa/Cairo" }));
+  return egyptTime;
+}
 
+// تسجيل الحضور
 // تسجيل الحضور
 async function checkIn(req, res) {
   try {
@@ -26,7 +39,7 @@ async function checkIn(req, res) {
 
     // 1. التحقق من الموقع
     if (!isWithinRange(latitude, longitude)) {
-      return errorResponse(res, 'أنت خارج نطاق الشركة. يرجى الاقتراب والتجربة مرة أخرى.', 403);
+      return errorResponse(res, 'أنت خارج نطاق الشركة', 403);
     }
 
     // 2. جلب كود البصمة
@@ -41,35 +54,45 @@ async function checkIn(req, res) {
       return errorResponse(res, 'تم تسجيل الحضور مسبقاً لهذا اليوم', 400);
     }
 
-    // 4. التسجيل
-    const now = new Date();
-    // ضبط الوقت بتوقيت مصر (UTC+2 أو UTC+3)
-    // لكن الـ Server غالباً UTC، فـ new Date() مناسب لو الـ DB بتخزن UTC
-    // لو الـ DB بتخزن Local، ممكن نحتاج تعديل بسيط
+    // 4. تجهيز التوقيت (مصر)
+    const now = getEgyptTime();
     
-    const timeString = now.toTimeString().split(' ')[0]; // HH:MM:SS
+    // استخراج التاريخ: YYYY-MM-DD
+    const dateStr = now.toISOString().split('T')[0];
+    
+    // استخراج الوقت: HH:MM:SS
+    // toTimeString() بيرجع "HH:MM:SS GMT+0200..." هناخد أول جزء بس
+    const timeStr = now.toTimeString().split(' ')[0];
 
-   await attendanceQueries.logBiometric(bioCode, now, now);
-   await attendanceQueries.checkIn(bioCode, now);
+    console.log(`CheckIn: Bio=${bioCode}, Date=${dateStr}, Time=${timeStr}`); // للتشخيص
+
+    // 5. التسجيل
+    await attendanceQueries.logBiometric(bioCode, dateStr, timeStr);
+    await attendanceQueries.checkIn(bioCode, dateStr, timeStr);
 
     return res.json({ success: true, message: 'تم تسجيل الحضور بنجاح ✅' });
 
   } catch (err) {
-    console.error(err);
+    console.error('CheckIn Error:', err);
     return errorResponse(res, 'فشل تسجيل الحضور', 500, err.message);
   }
 }
 
 // تسجيل الانصراف
+// تسجيل الانصراف
 async function checkOut(req, res) {
   try {
     const { userId, latitude, longitude } = req.body;
 
+    // 1. التحقق من الموقع
     if (!isWithinRange(latitude, longitude)) {
       return errorResponse(res, 'أنت خارج نطاق الشركة', 403);
     }
 
+    // 2. جلب كود البصمة
     const bioCode = await attendanceQueries.getBioCodeByUserId(userId);
+    
+    // 3. التحقق من تسجيل الحضور
     const today = await attendanceQueries.getTodayAttendance(bioCode);
 
     if (!today) {
@@ -80,16 +103,21 @@ async function checkOut(req, res) {
       return errorResponse(res, 'تم تسجيل الانصراف مسبقاً', 400);
     }
 
-    const now = new Date();
-    const timeString = now.toTimeString().split(' ')[0];
+    // 4. تجهيز التوقيت (مصر)
+    const now = getEgyptTime();
+    const dateStr = now.toISOString().split('T')[0];
+    const timeStr = now.toTimeString().split(' ')[0];
 
-    await attendanceQueries.logBiometric(bioCode, now, now);
-    await attendanceQueries.checkOut(today.AttendanceID, now);
+    console.log(`CheckOut: Bio=${bioCode}, Date=${dateStr}, Time=${timeStr}`); // للتشخيص
+
+    // 5. التسجيل
+    await attendanceQueries.logBiometric(bioCode, dateStr, timeStr);
+    await attendanceQueries.checkOut(today.AttendanceID, timeStr);
 
     return res.json({ success: true, message: 'تم تسجيل الانصراف بنجاح 👋' });
 
   } catch (err) {
-    console.error(err);
+    console.error('CheckOut Error:', err);
     return errorResponse(res, 'فشل تسجيل الانصراف', 500, err.message);
   }
 }
