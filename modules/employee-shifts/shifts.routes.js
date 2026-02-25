@@ -8,6 +8,8 @@ const shiftsController = require('./shifts.controller');
 
 router.get('/status', shiftsController.getEmployeesShiftsStatus);
 
+router.get('/search', shiftsController.search);
+
 // جلب شيفتات موظف
 // GET /api/shifts/employee/:id
 router.get('/employee/:id', shiftsController.getByEmployee);

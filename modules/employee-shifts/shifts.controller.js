@@ -69,9 +69,30 @@ async function getEmployeesShiftsStatus(req, res) {
   }
 }
 
+// البحث في الشيفتات
+async function search(req, res) {
+  try {
+    const filters = {
+      fromDate: req.query.fromDate,
+      toDate: req.query.toDate,
+      shiftType: req.query.shiftType,
+      employeeName: req.query.employeeName
+    };
+
+    const shifts = await shiftsQueries.searchShifts(filters);
+    return res.json(shifts);
+  } catch (err) {
+    console.error(err);
+    return errorResponse(res, 'فشل البحث في الشيفتات', 500);
+  }
+}
+
+
+
 module.exports = {
   getByEmployee,
   create,
   remove,
-  getEmployeesShiftsStatus
+  getEmployeesShiftsStatus,
+  search
 };

@@ -115,10 +115,57 @@ async function getEmployeesWithCurrentShift() {
   return result.recordset;
 }
 
+async function searchShifts(filters) {
+  const pool = await connectDB();
+  const request = pool.request();
+  
+  let query = `
+    SELECT 
+      s.EmployeeShiftID, s.ShiftType,
+      FORMAT(CAST(s.StartTime AS DATETIME), 'hh:mm tt') as StartTime,
+      FORMAT(CAST(s.EndTime AS DATETIME), 'hh:mm tt') as EndTime,
+      FORMAT(s.EffectiveFrom, 'yyyy-MM-dd') as StartDate,
+      FORMAT(s.EffectiveTo, 'yyyy-MM-dd') as EndDate,
+      e.FullName, e.Department, e.JobTitle
+    FROM EmployeeShifts s
+    JOIN Employees e ON s.EmployeeID = e.EmployeeID
+    WHERE 1=1
+  `;
+
+  // فلترة بالتاريخ (الشيفت الساري في الفترة دي)
+  if (filters.fromDate && filters.toDate) {
+    request.input('fromDate', sql.Date, filters.fromDate);
+    request.input('toDate', sql.Date, filters.toDate);
+    // شرط التداخل الزمني (Overlap)
+    query += ` AND (
+      s.EffectiveFrom <= @toDate 
+      AND (s.EffectiveTo IS NULL OR s.EffectiveTo >= @fromDate)
+    )`;
+  }
+
+  // فلترة بنوع الشيفت
+  if (filters.shiftType && filters.shiftType !== 'الكل') {
+    request.input('shiftType', sql.VarChar(20), filters.shiftType);
+    query += ` AND s.ShiftType = @shiftType`;
+  }
+
+  // فلترة باسم الموظف
+  if (filters.employeeName) {
+    request.input('empName', sql.NVarChar(100), `%${filters.employeeName}%`);
+    query += ` AND e.FullName LIKE @empName`;
+  }
+
+  query += ` ORDER BY s.EffectiveFrom DESC, e.FullName`;
+
+  const result = await request.query(query);
+  return result.recordset;
+}
+
 module.exports = {
   getShiftsByEmployee,
   getCurrentShift,
   createShift,
   deleteShift,
-  getEmployeesWithCurrentShift
+  getEmployeesWithCurrentShift,
+  searchShifts
 };
