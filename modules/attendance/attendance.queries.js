@@ -223,6 +223,42 @@ async function getEmployeeNameByUserId(userId) {
   return result.recordset[0]?.FullName || 'موظف';
 }
 
+// جلب الاستثناءات (بفلاتر)
+async function getAllExemptions(filters = {}) {
+  const pool = await connectDB();
+  let query = `
+    SELECT 
+      x.ExemptionID, x.ExemptionDate, x.ReasonCode, x.Description,
+      e.FullName as EmployeeName, e.Department
+    FROM DailyExemptions x
+    JOIN Employees e ON x.BioEmployeeID = e.BioEmployeeID
+    WHERE 1=1
+  `;
+
+  if (filters.date) {
+    query += ` AND CAST(x.ExemptionDate AS DATE) = '${filters.date}'`;
+  }
+  
+  if (filters.employeeName) {
+    query += ` AND e.FullName LIKE N'%${filters.employeeName}%'`;
+  }
+
+  query += ` ORDER BY x.ExemptionDate DESC`;
+
+  const result = await pool.request().query(query);
+  return result.recordset;
+}
+
+// حذف استثناء
+async function deleteExemption(id) {
+  const pool = await connectDB();
+  await pool.request()
+    .input('id', sql.Int, id)
+    .query('DELETE FROM DailyExemptions WHERE ExemptionID = @id');
+  return true;
+}
+
+
 module.exports = {
   logBiometric,
   getTodayAttendance,
@@ -236,5 +272,7 @@ module.exports = {
   getDailyExemptions,
   createExemption,
   getCalendar,
-  getEmployeeNameByUserId
+  getEmployeeNameByUserId,
+  getAllExemptions,
+  deleteExemption 
 };

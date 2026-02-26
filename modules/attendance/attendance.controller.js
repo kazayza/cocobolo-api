@@ -272,6 +272,37 @@ async function getCalendar(req, res) {
   }
 }
 
+// جلب كل الاستثناءات
+async function getExemptionsList(req, res) {
+  try {
+    const filters = {
+      date: req.query.date,
+      employeeName: req.query.employeeName
+    };
+    const data = await attendanceQueries.getAllExemptions(filters);
+    return res.json(data);
+  } catch (err) {
+    return errorResponse(res, 'فشل تحميل الاستثناءات', 500);
+  }
+}
+
+// حذف استثناء
+async function removeExemption(req, res) {
+  try {
+    const { id } = req.params;
+    await attendanceQueries.deleteExemption(id);
+    return res.json({ success: true, message: 'تم الحذف بنجاح' });
+  } catch (err) {
+    return errorResponse(res, 'فشل الحذف', 500);
+  }
+}
+
+// تصدير
+module.exports = {
+  // ... الدوال القديمة
+  // ✅
+};
+
 module.exports = {
   checkIn,
   checkOut,
@@ -282,5 +313,7 @@ module.exports = {
   getBiometricLogs,
   getExemptions,
   createExemption,
-  getCalendar
+  getCalendar,
+  getExemptionsList,
+  removeExemption  
 };
