@@ -87,6 +87,23 @@ async function search(req, res) {
   }
 }
 
+// جلب جدول الموظف
+async function getMySchedule(req, res) {
+  try {
+    const { userId } = req.params;
+    const { year, month } = req.query;
+
+    if (!year || !month) {
+      return errorResponse(res, 'السنة والشهر مطلوبين', 400);
+    }
+
+    const data = await shiftsQueries.getMySchedule(userId, year, month);
+    return res.json(data);
+  } catch (err) {
+    return errorResponse(res, 'فشل جلب الجدول', 500, err.message);
+  }
+}
+
 
 
 module.exports = {
@@ -94,5 +111,6 @@ module.exports = {
   create,
   remove,
   getEmployeesShiftsStatus,
-  search
+  search,
+  getMySchedule
 };

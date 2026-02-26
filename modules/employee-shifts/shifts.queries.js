@@ -161,11 +161,66 @@ async function searchShifts(filters) {
   return result.recordset;
 }
 
+// جلب جدول الموظف (شيفتات + حضور) لشهر معين
+async function getMySchedule(userId, year, month) {
+  const pool = await connectDB();
+  
+  // 1. الشيفتات السارية في هذا الشهر
+  const shiftsResult = await pool.request()
+    .input('userId', sql.Int, userId)
+    .input('year', sql.Int, year)
+    .input('month', sql.Int, month)
+    .query(`
+      SELECT 
+        s.ShiftType,
+        FORMAT(CAST(s.StartTime AS DATETIME), 'hh:mm tt') as StartTime,
+        FORMAT(CAST(s.EndTime AS DATETIME), 'hh:mm tt') as EndTime,
+        FORMAT(s.EffectiveFrom, 'yyyy-MM-dd') as StartDate,
+        FORMAT(s.EffectiveTo, 'yyyy-MM-dd') as EndDate
+      FROM EmployeeShifts s
+      JOIN Employees e ON s.EmployeeID = e.EmployeeID
+      JOIN Users u ON e.EmployeeID = u.employeeID
+      WHERE u.UserID = @userId
+      AND (
+        YEAR(s.EffectiveFrom) <= @year AND 
+        (s.EffectiveTo IS NULL OR YEAR(s.EffectiveTo) >= @year)
+      )
+    `);
+
+  // 2. الحضور الفعلي في هذا الشهر
+  const attendanceResult = await pool.request()
+    .input('userId', sql.Int, userId)
+    .input('year', sql.Int, year)
+    .input('month', sql.Int, month)
+    .query(`
+      SELECT 
+        FORMAT(a.LogDate, 'yyyy-MM-dd') as LogDate,
+        FORMAT(CAST(a.TimeIn AS DATETIME), 'hh:mm tt') as CheckIn,
+        FORMAT(CAST(a.TimeOut AS DATETIME), 'hh:mm tt') as CheckOut,
+        a.Status,
+        a.LateMinutes,
+        a.EarlyLeaveMinutes
+      FROM Attendance a
+      JOIN Employees e ON a.BiometricCode = e.BioEmployeeID
+      JOIN Users u ON e.EmployeeID = u.employeeID
+      WHERE u.UserID = @userId
+      AND YEAR(a.LogDate) = @year AND MONTH(a.LogDate) = @month
+    `);
+
+  return {
+    shifts: shiftsResult.recordset,
+    attendance: attendanceResult.recordset
+  };
+}
+
+
+
 module.exports = {
   getShiftsByEmployee,
   getCurrentShift,
   createShift,
   deleteShift,
   getEmployeesWithCurrentShift,
-  searchShifts
+  searchShifts,
+  getMySchedule
 };

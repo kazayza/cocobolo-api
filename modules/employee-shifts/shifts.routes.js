@@ -10,6 +10,10 @@ router.get('/status', shiftsController.getEmployeesShiftsStatus);
 
 router.get('/search', shiftsController.search);
 
+// جلب جدول الموظف (للتقويم)
+// GET /api/shifts/my-schedule/:userId?year=2025&month=2
+router.get('/my-schedule/:userId', shiftsController.getMySchedule);
+
 // جلب شيفتات موظف
 // GET /api/shifts/employee/:id
 router.get('/employee/:id', shiftsController.getByEmployee);
