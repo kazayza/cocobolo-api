@@ -43,7 +43,7 @@ async function getActiveEmployees() {
   const pool = await connectDB();
   const result = await pool.request()
     .query(`
-      SELECT EmployeeID, FullName, JobTitle, Department, MobilePhone
+      SELECT EmployeeID, FullName, JobTitle, Department, MobilePhone, BioEmployeeID
       FROM Employees 
       WHERE Status = N'نشط'
       ORDER BY FullName
