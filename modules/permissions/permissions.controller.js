@@ -43,9 +43,9 @@ async function notifyEmployee(targetUserId, title, message, relatedId) {
     // 1. نجيب EmployeeID من UserID (عشان الإشعار يتربط بالموظف)
     const empRes = await pool.request()
       .input('uid', sql.Int, targetUserId)
-      .query('SELECT EmployeeID FROM Users WHERE UserID = @uid');
+      .query('SELECT employeeID FROM Users WHERE UserID = @uid'); 
       
-    const empId = empRes.recordset[0]?.EmployeeID;
+    const empId = empRes.recordset[0]?.employeeID;
 
     if (!empId) return; // لو مفيش موظف، متبعتش
 
