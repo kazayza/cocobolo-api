@@ -1,18 +1,18 @@
 const { sql, connectDB } = require('../../core/database');
 
 // 1. إضافة طلب إذن جديد
+// 1. إضافة طلب إذن جديد (مع حساب المدة أوتوماتيك)
 async function createPermission(data) {
   const pool = await connectDB();
   
   const result = await pool.request()
     .input('employeeId', sql.Int, data.employeeId)
     .input('permDate', sql.Date, data.permissionDate)
-    .input('type', sql.NVarChar(50), data.type) // (LateIn, EarlyOut, Errands)
-    .input('fromTime', sql.VarChar(8), data.fromTime || null)
-    .input('toTime', sql.VarChar(8), data.toTime || null)
-    .input('duration', sql.Int, data.duration || 0)
+    .input('type', sql.NVarChar(50), data.type)
+    .input('fromTime', sql.VarChar(8), data.fromTime) // بنستقبل الوقت كنص "09:00"
+    .input('toTime', sql.VarChar(8), data.toTime)     // بنستقبل الوقت كنص "11:00"
     .input('reason', sql.NVarChar(255), data.reason)
-    .input('createdAt', sql.DateTime, data.createdAt) // توقيت الموبايل
+    .input('createdAt', sql.DateTime, data.createdAt)
     .query(`
       INSERT INTO ShortPermissions (
         EmployeeID, PermissionDate, PermissionType, 
@@ -22,7 +22,12 @@ async function createPermission(data) {
       OUTPUT INSERTED.PermissionID
       VALUES (
         @employeeId, @permDate, @type, 
-        CAST(@fromTime AS TIME), CAST(@toTime AS TIME), @duration, 
+        CAST(@fromTime AS TIME), 
+        CAST(@toTime AS TIME), 
+        
+        -- 🔥🔥 التعديل هنا: السيرفر هو اللي يحسب الفرق بالدقائق 🔥🔥
+        DATEDIFF(MINUTE, CAST(@fromTime AS TIME), CAST(@toTime AS TIME)), 
+        
         @reason, 'Pending', @createdAt
       )
     `);

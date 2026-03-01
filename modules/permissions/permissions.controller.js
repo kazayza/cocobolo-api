@@ -35,12 +35,44 @@ async function notifyManagers(title, message, relatedId) {
 }
 
 // 🔔 إشعار للموظف
+// ✅ دالة إشعار الموظف (تم التعديل لضمان الوصول)
 async function notifyEmployee(targetUserId, title, message, relatedId) {
   try {
-    await notificationsQueries.createNotificationSmart({
-      title, message, createdBy: 'System', formName: 'frm_MyPermissions', relatedId
-    }, null, targetUserId);
-  } catch (err) { console.error('Notify Employee Error:', err); }
+    const pool = await connectDB();
+    
+    // 1. نجيب EmployeeID من UserID (عشان الإشعار يتربط بالموظف)
+    const empRes = await pool.request()
+      .input('uid', sql.Int, targetUserId)
+      .query('SELECT EmployeeID FROM Users WHERE UserID = @uid');
+      
+    const empId = empRes.recordset[0]?.EmployeeID;
+
+    if (!empId) return; // لو مفيش موظف، متبعتش
+
+    // 2. إرسال الإشعار للموظف مباشرة (Direct Insert)
+    // لاحظ: بنحط Role = NULL وبنحدد TargetEmployeeID
+    await pool.request()
+      .input('title', sql.NVarChar(255), title)
+      .input('msg', sql.NVarChar(MAX), message)
+      .input('form', sql.VarChar(50), 'frm_MyPermissions')
+      .input('relId', sql.Int, relatedId)
+      .input('empId', sql.Int, empId) // 👈 ده المهم
+      .query(`
+        INSERT INTO Notifications (
+          Title, Message, CreatedBy, FormName, RelatedId, 
+          TargetEmployeeID, IsRead, CreatedAt
+        )
+        VALUES (
+          @title, @msg, 'System', @form, @relId, 
+          @empId, 0, GETDATE()
+        )
+      `);
+      
+    console.log(`Notification sent to User ${targetUserId} (Emp ${empId})`);
+
+  } catch (err) {
+    console.error('Notify Employee Error:', err);
+  }
 }
 
 // --- الدوال الرئيسية ---
