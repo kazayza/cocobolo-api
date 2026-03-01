@@ -312,7 +312,21 @@ async function removeExemption(req, res) {
   }
 }
 
-
+// ✅ دالة لاستقبال طلب الإحصائيات من الموبايل
+async function getStatistics(req, res) {
+  try {
+    const { userId } = req.params;
+    
+    // بننادي على الدالة اللي عملناها في الخطوة الأولى
+    const stats = await attendanceQueries.getEmployeeStatistics(userId);
+    
+    // بنرد على الموبايل بالبيانات
+    return res.json(stats);
+  } catch (err) {
+    console.error('Stats Error:', err);
+    return errorResponse(res, 'فشل جلب الإحصائيات', 500);
+  }
+}
 
 module.exports = {
   checkIn,
@@ -326,5 +340,6 @@ module.exports = {
   createExemption,
   getCalendar,
   getExemptionsList,
-  removeExemption  
+  removeExemption,
+  getStatistics
 };

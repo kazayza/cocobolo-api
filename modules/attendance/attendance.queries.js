@@ -269,7 +269,66 @@ async function getActiveLocations() {
   return result.recordset;
 }
 
+// ✅ دالة جديدة: جلب إحصائيات الموظف (أيام الحضور، التأخير، ساعات اليوم)
+async function getEmployeeStatistics(userId) {
+  const pool = await connectDB();
 
+  // 1. نجيب كود البصمة الخاص بالموظف
+  const bioResult = await pool.request()
+    .input('userId', sql.Int, userId)
+    .query(`
+      SELECT e.BioEmployeeID 
+      FROM Employees e
+      JOIN Users u ON e.EmployeeID = u.employeeID
+      WHERE u.UserID = @userId
+    `);
+
+  const bioCode = bioResult.recordset[0]?.BioEmployeeID;
+
+  // لو مفيش كود بصمة، نرجع أصفار
+  if (!bioCode) {
+    return { daysThisMonth: 0, lateMinutes: 0, hoursToday: 0 };
+  }
+
+  // 2. نحسب الإحصائيات
+  const statsResult = await pool.request()
+    .input('bioCode', sql.Int, bioCode)
+    .query(`
+      SELECT 
+        -- عدد أيام الحضور في الشهر الحالي
+        (SELECT COUNT(*) FROM Attendance 
+         WHERE BiometricCode = @bioCode 
+         AND MONTH(LogDate) = MONTH(GETDATE()) 
+         AND YEAR(LogDate) = YEAR(GETDATE())
+         AND Status = N'حاضر') as DaysThisMonth,
+
+        -- دقائق التأخير اليوم (لو موجودة)
+        (SELECT TOP 1 ISNULL(LateMinutes, 0)
+         FROM Attendance
+         WHERE BiometricCode = @bioCode 
+         AND CAST(LogDate AS DATE) = CAST(SWITCHOFFSET(SYSDATETIMEOFFSET(), '+02:00') AS DATE)
+        ) as TodayLate,
+
+        -- ساعات العمل اليوم (سواء خلص ولا لسه شغال)
+        (SELECT TOP 1 
+            CASE 
+                WHEN TimeOut IS NOT NULL THEN TotalHours
+                ELSE DATEDIFF(MINUTE, TimeIn, CAST(SWITCHOFFSET(SYSDATETIMEOFFSET(), '+02:00') AS TIME)) / 60.0
+            END
+         FROM Attendance
+         WHERE BiometricCode = @bioCode 
+         AND CAST(LogDate AS DATE) = CAST(SWITCHOFFSET(SYSDATETIMEOFFSET(), '+02:00') AS DATE)
+        ) as TodayHours
+    `);
+
+  const data = statsResult.recordset[0];
+
+  return {
+    daysThisMonth: data.DaysThisMonth || 0,
+    lateMinutes: data.TodayLate || 0,
+    hoursToday: data.TodayHours || 0.0
+  };
+}
 
 
 module.exports = {
@@ -288,5 +347,6 @@ module.exports = {
   getEmployeeNameByUserId,
   getAllExemptions,
   deleteExemption,
-  getActiveLocations
+  getActiveLocations,
+  getEmployeeStatistics
 };

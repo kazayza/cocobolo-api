@@ -10,6 +10,7 @@ const attendanceController = require('./attendance.controller');
 router.post('/check-in', attendanceController.checkIn);
 router.post('/check-out', attendanceController.checkOut);
 router.get('/status/:userId', attendanceController.getStatus);
+router.get('/statistics/:userId', attendanceController.getStatistics); 
 
 // التقارير (قديم)
 router.get('/summary', attendanceController.getMonthlySummary);
