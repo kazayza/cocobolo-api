@@ -34,7 +34,7 @@ async function isLocationValid(userLat, userLng) {
 async function notifyManagers(title, message, relatedId) {
   try {
     // ✅ ابعت الـ roles واحد واحد
-    const roles = ['Admin', 'SlaesManager', 'AccountManager'];
+    const roles = ['Admin', 'SalesManager', 'AccountManager'];
     
     for (const role of roles) {
       await notificationsQueries.createNotificationSmart({
@@ -335,7 +335,7 @@ async function getReport(req, res) {
     const { startDate, endDate, employeeName, userId, role } = req.query;
 
     // 2. تحديد الصلاحيات (مين المدير؟)
-    const managerRoles = ['Admin', 'SlaesManager', 'AccountManager', 'Account']; 
+    const managerRoles = ['Admin', 'SalesManager', 'AccountManager', 'Account']; 
     // ^^^ ضيف أي رول تانية هنا لو نسيت حاجة
     
     // هل المستخدم الحالي مدير؟

@@ -8,7 +8,7 @@ const { successResponse, errorResponse } = require('../../shared/response.helper
 // 🔔 إشعار للمديرين (طلب جديد)
 async function notifyManagers(title, message, relatedId) {
   try {
-    const roles = ['Admin', 'HR', 'AccountManager', 'SlaesManager'];
+    const roles = ['Admin', 'HR', 'AccountManager', 'SalesManager'];
     for (const role of roles) {
       await notificationsQueries.createNotificationSmart({
         title,
@@ -82,7 +82,7 @@ async function listPermissions(req, res) {
     const { role, status, employeeName, employeeId } = req.query;
     
     // تحديد الصلاحيات
-    const managerRoles = ['Admin', 'HR', 'AccountManager', 'SlaesManager'];
+    const managerRoles = ['Admin', 'HR', 'AccountManager', 'SalesManager'];
     const isManager = managerRoles.some(r => r.toLowerCase() === (role || '').toLowerCase());
 
     let filters = { status, employeeName };
