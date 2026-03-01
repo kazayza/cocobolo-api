@@ -3,21 +3,32 @@ const attendanceQueries = require('./attendance.queries');
 const { successResponse, errorResponse } = require('../../shared/response.helper');
 const geolib = require('geolib');
 
-// إحداثيات الشركة (ثابتة مؤقتاً)
-// ⚠️ غيّر دي لإحداثياتك الحقيقية
-const COMPANY_LOCATION = {
-  latitude: 30.055852 , //30.055852
-  longitude: 31.0353408  //31.0353408
-};
-const ALLOWED_RADIUS = 100; // متر
+// ✅ دالة التحقق من الموقع (متعدد الفروع)
+async function isLocationValid(userLat, userLng) {
+  if (!userLat || !userLng) return null;
 
-function isWithinRange(userLat, userLng) {
-  if (!userLat || !userLng) return false;
-  const distance = geolib.getDistance(
-    { latitude: parseFloat(userLat), longitude: parseFloat(userLng) },
-    COMPANY_LOCATION
-  );
-  return distance <= ALLOWED_RADIUS;
+  // 1. جلب الفروع من الداتابيز
+  const locations = await attendanceQueries.getActiveLocations();
+  
+  if (!locations || locations.length === 0) {
+    // لو مفيش فروع مسجلة، نرفض العملية للأمان
+    return null;
+  }
+
+  // 2. التحقق من كل فرع
+  for (const loc of locations) {
+    const distance = geolib.getDistance(
+      { latitude: parseFloat(userLat), longitude: parseFloat(userLng) },
+      { latitude: loc.Latitude, longitude: loc.Longitude }
+    );
+
+    // لو المسافة أقل من أو تساوي المسموح (أو 100 متر افتراضي)
+    if (distance <= (loc.AllowedRadius || 100)) {
+      return loc; // ✅ نرجع الفرع اللي هو فيه
+    }
+  }
+
+  return null; // ❌ بعيد عن كل الفروع
 }
 // ✅ دالة مساعدة لإرسال الإشعار للمديرين
 async function notifyManagers(title, message, relatedId) {
@@ -59,8 +70,10 @@ async function checkIn(req, res) {
     const { userId, latitude, longitude } = req.body;
 
     // 1. التحقق من الموقع
-    if (!isWithinRange(latitude, longitude)) {
-      return errorResponse(res, 'أنت خارج نطاق الشركة', 403);
+     const validLocation = await isLocationValid(latitude, longitude);
+    
+    if (!validLocation) {
+      return errorResponse(res, 'أنت خارج نطاق فروع الشركة المصرح بها.', 403);
     }
 
     // 2. جلب كود البصمة
@@ -119,8 +132,10 @@ async function checkOut(req, res) {
     const { userId, latitude, longitude } = req.body;
 
     // 1. التحقق من الموقع
-    if (!isWithinRange(latitude, longitude)) {
-      return errorResponse(res, 'أنت خارج نطاق الشركة', 403);
+     const validLocation = await isLocationValid(latitude, longitude);
+    
+    if (!validLocation) {
+      return errorResponse(res, 'أنت خارج نطاق فروع الشركة المصرح بها.', 403);
     }
 
     // 2. جلب كود البصمة

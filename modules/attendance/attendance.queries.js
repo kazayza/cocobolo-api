@@ -258,6 +258,19 @@ async function deleteExemption(id) {
   return true;
 }
 
+// جلب الفروع النشطة
+async function getActiveLocations() {
+  const pool = await connectDB();
+  const result = await pool.request().query(`
+    SELECT LocationID, LocationName, Latitude, Longitude, AllowedRadius 
+    FROM CompanyLocations 
+    WHERE IsActive = 1
+  `);
+  return result.recordset;
+}
+
+
+
 
 module.exports = {
   logBiometric,
@@ -274,5 +287,6 @@ module.exports = {
   getCalendar,
   getEmployeeNameByUserId,
   getAllExemptions,
-  deleteExemption 
+  deleteExemption,
+  getActiveLocations
 };
