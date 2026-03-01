@@ -328,6 +328,49 @@ async function getStatistics(req, res) {
   }
 }
 
+// ✅ دالة استقبال طلب التقرير من الموبايل
+async function getReport(req, res) {
+  try {
+    // 1. استلام المدخلات من الرابط (Query Parameters)
+    const { startDate, endDate, employeeName, userId, role } = req.query;
+
+    // 2. تحديد الصلاحيات (مين المدير؟)
+    const managerRoles = ['Admin', 'SlaesManager', 'AccountManager', 'Account']; 
+    // ^^^ ضيف أي رول تانية هنا لو نسيت حاجة
+    
+    // هل المستخدم الحالي مدير؟
+    // (بنحول الرول لـ lowercase احتياطي عشان لو مكتوبة admin أو Admin)
+    const isManager = managerRoles.some(r => r.toLowerCase() === (role || '').toLowerCase());
+
+    // 3. تجهيز الفلاتر
+    let filters = { startDate, endDate };
+
+    if (isManager) {
+      // ✅ لو مدير: يقدر يبحث بأي اسم موظف
+      if (employeeName) filters.employeeName = employeeName;
+    } else {
+      // ⛔ لو موظف عادي: 
+      // أولاً: نتجاهل أي employeeName باعتها (عشان ميشوفش غيره)
+      // ثانياً: نجيب كود البصمة بتاعه هو ونفلتر بيه إجباري
+      const bioCode = await attendanceQueries.getBioCodeByUserId(userId);
+      
+      if (!bioCode) {
+        return res.json([]); // لو مش مربوط بموظف، نرجع قايمة فاضية
+      }
+      filters.biometricCode = bioCode;
+    }
+
+    // 4. تنفيذ الاستعلام
+    const data = await attendanceQueries.getAdvancedReport(filters);
+    
+    return res.json(data);
+
+  } catch (err) {
+    console.error('Report Error:', err);
+    return errorResponse(res, 'فشل جلب التقرير', 500);
+  }
+}
+
 module.exports = {
   checkIn,
   checkOut,
@@ -341,5 +384,6 @@ module.exports = {
   getCalendar,
   getExemptionsList,
   removeExemption,
-  getStatistics
+  getStatistics,
+  getReport
 };

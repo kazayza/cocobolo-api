@@ -407,6 +407,58 @@ async function getEmployeeStatistics(userId) {
   };
 }
 
+// ✅ دالة تقرير الحضور المتقدم (للمدير والموظف)
+async function getAdvancedReport(filters) {
+  const pool = await connectDB();
+  const request = pool.request(); // بنعمل ريكويست فاضي عشان نضيف عليه المدخلات
+
+  let query = `
+    SELECT 
+      a.AttendanceID,
+      -- تنسيق التاريخ والوقت عشان يظهروا مظبوط في الموبايل
+      FORMAT(a.LogDate, 'yyyy-MM-dd') as LogDate,
+      FORMAT(CAST(a.TimeIn AS DATETIME), 'hh:mm tt') as TimeIn,
+      FORMAT(CAST(a.TimeOut AS DATETIME), 'hh:mm tt') as TimeOut,
+      
+      a.Status,
+      ISNULL(a.LateMinutes, 0) as LateMinutes,
+      ISNULL(a.EarlyLeaveMinutes, 0) as EarlyLeaveMinutes,
+      ISNULL(a.TotalHours, 0) as TotalHours,
+      
+      -- بيانات الموظف (عشان لو مدير بيعرض الكل)
+      e.FullName,
+      e.Department,
+      e.JobTitle
+    FROM Attendance a
+    JOIN Employees e ON a.BiometricCode = e.BioEmployeeID
+    WHERE 1=1
+  `;
+
+  // 1️⃣ فلتر التاريخ (من - إلى)
+  if (filters.startDate && filters.endDate) {
+    request.input('startDate', sql.Date, filters.startDate);
+    request.input('endDate', sql.Date, filters.endDate);
+    query += ` AND CAST(a.LogDate AS DATE) BETWEEN @startDate AND @endDate`;
+  }
+
+  // 2️⃣ فلتر البحث بالاسم (للمدير)
+  if (filters.employeeName) {
+    request.input('empName', sql.NVarChar(100), `%${filters.employeeName}%`); // % للبحث الجزئي
+    query += ` AND e.FullName LIKE @empName`;
+  }
+
+  // 3️⃣ فلتر الموظف المحدد (لو موظف عادي، بنجيب بياناته هو بس)
+  if (filters.biometricCode) {
+    request.input('bioCode', sql.Int, filters.biometricCode);
+    query += ` AND a.BiometricCode = @bioCode`;
+  }
+
+  // الترتيب: الأحدث أولاً، ثم أبجدياً بالاسم
+  query += ` ORDER BY a.LogDate DESC, e.FullName ASC`;
+
+  const result = await request.query(query);
+  return result.recordset;
+}
 
 module.exports = {
   logBiometric,
@@ -425,5 +477,6 @@ module.exports = {
   getAllExemptions,
   deleteExemption,
   getActiveLocations,
-  getEmployeeStatistics
+  getEmployeeStatistics,
+  getAdvancedReport
 };

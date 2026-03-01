@@ -11,6 +11,7 @@ router.post('/check-in', attendanceController.checkIn);
 router.post('/check-out', attendanceController.checkOut);
 router.get('/status/:userId', attendanceController.getStatus);
 router.get('/statistics/:userId', attendanceController.getStatistics); 
+router.get('/report', attendanceController.getReport); 
 
 // التقارير (قديم)
 router.get('/summary', attendanceController.getMonthlySummary);
