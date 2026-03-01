@@ -1,43 +1,44 @@
 const permissionsQueries = require('./permissions.queries');
 const notificationsQueries = require('../notifications/notifications.queries');
-const { getBioCodeByUserId } = require('../attendance/attendance.queries'); 
+const { sql, connectDB } = require('../../core/database'); // ✅ ضفنا دي عشان الاستعلام
 const { successResponse, errorResponse } = require('../../shared/response.helper');
 
-// --- دوال مساعدة للإشعارات ---
+// --- دوال مساعدة ---
 
-// 🔔 إشعار للمديرين (طلب جديد)
+// ✅ دالة بتجيب رقم الموظف من رقم اليوزر
+async function getEmployeeIdFromUser(userId) {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .input('uid', sql.Int, userId)
+      .query('SELECT EmployeeID FROM Users WHERE UserID = @uid');
+    
+    return result.recordset[0]?.EmployeeID;
+  } catch (err) {
+    console.error('Error fetching EmployeeID:', err);
+    return null;
+  }
+}
+
+// 🔔 إشعار للمديرين
 async function notifyManagers(title, message, relatedId) {
   try {
     const roles = ['Admin', 'HR', 'AccountManager', 'SalesManager'];
     for (const role of roles) {
       await notificationsQueries.createNotificationSmart({
-        title,
-        message,
-        createdBy: 'System',
-        formName: 'frm_PermissionsList', // الشاشة اللي المدير هيفتحها
-        relatedId
+        title, message, createdBy: 'System', formName: 'frm_PermissionsList', relatedId
       }, role);
     }
-  } catch (err) {
-    console.error('Notify Managers Error:', err);
-  }
+  } catch (err) { console.error('Notify Managers Error:', err); }
 }
 
-// 🔔 إشعار للموظف (تم الرد)
+// 🔔 إشعار للموظف
 async function notifyEmployee(targetUserId, title, message, relatedId) {
   try {
-    // نفترض دالة createNotification تقبل UserID مباشرة
-    // لو معندكش، استخدم المنطق المتاح في notificationsQueries
     await notificationsQueries.createNotificationSmart({
-      title,
-      message,
-      createdBy: 'System',
-      formName: 'frm_MyPermissions',
-      relatedId
-    }, null, targetUserId); // نبعت لليوزر ده تحديداً
-  } catch (err) {
-    console.error('Notify Employee Error:', err);
-  }
+      title, message, createdBy: 'System', formName: 'frm_MyPermissions', relatedId
+    }, null, targetUserId);
+  } catch (err) { console.error('Notify Employee Error:', err); }
 }
 
 // --- الدوال الرئيسية ---
@@ -45,14 +46,19 @@ async function notifyEmployee(targetUserId, title, message, relatedId) {
 // 1. تقديم طلب إذن
 async function requestPermission(req, res) {
   try {
-    const { userId, employeeId, permissionDate, type, reason, createdAt, fromTime, toTime } = req.body;
+    // ⚠️ مش بناخد employeeId من الموبايل هنا
+    const { userId, permissionDate, type, reason, createdAt, fromTime, toTime } = req.body;
 
-    // لو الموبايل مبعتش employeeId، نحاول نجيبه (اختياري)
-    // بس الأفضل الموبايل يبعته لأنه مخزنه
-    if (!employeeId) return errorResponse(res, 'رقم الموظف مطلوب', 400);
+    // ✅ 1. الباك اند بيجيب رقم الموظف بنفسه
+    const empId = await getEmployeeIdFromUser(userId);
 
+    if (!empId) {
+      return errorResponse(res, 'هذا المستخدم غير مرتبط بموظف، لا يمكن تقديم طلب.', 400);
+    }
+
+    // ✅ 2. بنستخدم الرقم اللي جبناه من الداتابيز
     const permissionId = await permissionsQueries.createPermission({
-      employeeId,
+      employeeId: empId, 
       permissionDate,
       type,
       fromTime,
@@ -61,10 +67,10 @@ async function requestPermission(req, res) {
       createdAt: createdAt || new Date()
     });
 
-    // إرسال إشعار للمديرين
+    // 3. إشعار للمديرين
     await notifyManagers(
       'طلب إذن جديد 📩',
-      `يوجد طلب إذن ${type} جديد، يرجى المراجعة.`,
+      `يوجد طلب إذن ${type} جديد.`,
       permissionId
     );
 
@@ -79,17 +85,18 @@ async function requestPermission(req, res) {
 // 2. عرض الطلبات
 async function listPermissions(req, res) {
   try {
-    const { role, status, employeeName, employeeId } = req.query;
+    const { userId, role, status, employeeName } = req.query;
     
-    // تحديد الصلاحيات
     const managerRoles = ['Admin', 'HR', 'AccountManager', 'SalesManager'];
     const isManager = managerRoles.some(r => r.toLowerCase() === (role || '').toLowerCase());
 
     let filters = { status, employeeName };
 
     if (!isManager) {
-      // موظف عادي -> يشوف طلباته بس
-      filters.employeeId = employeeId;
+      // ✅ لو موظف عادي: الباك اند يجيب رقمه ويفلتر بيه
+      const empId = await getEmployeeIdFromUser(userId);
+      if (!empId) return res.json([]); // لو مش موظف ملوش بيانات
+      filters.employeeId = empId;
     }
 
     const data = await permissionsQueries.getPermissionsList(filters);
@@ -100,7 +107,7 @@ async function listPermissions(req, res) {
   }
 }
 
-// 3. اتخاذ إجراء (موافقة/رفض)
+// 3. اتخاذ إجراء (زي ما هي)
 async function takeAction(req, res) {
   try {
     const { permissionId, status, comment, userId } = req.body;
@@ -109,23 +116,15 @@ async function takeAction(req, res) {
       return errorResponse(res, 'حالة غير صحيحة', 400);
     }
 
-    // تنفيذ التحديث
     await permissionsQueries.updatePermissionStatus({ permissionId, status, comment, userId });
     
-    // إشعار الموظف بالنتيجة
     const permDetails = await permissionsQueries.getPermissionById(permissionId);
     if (permDetails && permDetails.RequesterUserID) {
         const msg = status === 'Approved' ? 'تمت الموافقة على طلبك ✅' : 'تم رفض طلبك ❌';
-        await notifyEmployee(
-            permDetails.RequesterUserID, 
-            'تحديث حالة الطلب', 
-            msg, 
-            permissionId
-        );
+        await notifyEmployee(permDetails.RequesterUserID, 'تحديث حالة الطلب', msg, permissionId);
     }
 
     return res.json({ success: true, message: 'تم تنفيذ الإجراء بنجاح' });
-
   } catch (err) {
     console.error(err);
     return errorResponse(res, 'فشل تنفيذ الإجراء', 500);
