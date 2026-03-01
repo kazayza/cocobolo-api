@@ -32,30 +32,107 @@ async function getTodayAttendance(bioCode) {
 
 // تسجيل حضور (Attendance)
 // تسجيل حضور
+// تسجيل حضور (ذكي: بيجيب المواعيد من جدول الشيفتات)
 async function checkIn(bioCode, dateStr, timeStr) {
   const pool = await connectDB();
+
   await pool.request()
     .input('bioCode', sql.Int, bioCode)
-    .input('dateIn', sql.VarChar(10), dateStr) // ✅
-    .input('timeIn', sql.VarChar(8), timeStr)  // ✅
+    .input('dateIn', sql.VarChar(10), dateStr) // تاريخ اليوم YYYY-MM-DD
+    .input('timeIn', sql.VarChar(8), timeStr)  // وقت الحضور HH:MM:SS
     .query(`
-      INSERT INTO Attendance (BiometricCode, LogDate, TimeIn, Status)
-      VALUES (@bioCode, CAST(@dateIn AS DATE), CAST(@timeIn AS TIME), N'حاضر')
+      -- 1️⃣ متغيرات لتخزين ميعاد الشيفت
+      DECLARE @ShiftStart TIME;
+      DECLARE @LateMinutes INT = 0;
+
+      -- 2️⃣ نجيب بداية شيفت الموظف الساري النهاردة
+      -- بنربط جدول الموظفين بجدول الشيفتات باستخدام BioCode
+      SELECT TOP 1 @ShiftStart = s.StartTime
+      FROM EmployeeShifts s
+      JOIN Employees e ON s.EmployeeID = e.EmployeeID
+      WHERE e.BioEmployeeID = @bioCode
+      -- التاريخ الحالي لازم يكون جوه فترة الشيفت (من EffectiveFrom لحد EffectiveTo)
+      AND CAST(@dateIn AS DATE) >= CAST(s.EffectiveFrom AS DATE)
+      AND (s.EffectiveTo IS NULL OR CAST(@dateIn AS DATE) <= CAST(s.EffectiveTo AS DATE))
+      ORDER BY s.EffectiveFrom DESC;
+
+      -- 3️⃣ حساب التأخير (لو لقينا شيفت)
+      IF @ShiftStart IS NOT NULL
+      BEGIN
+        -- لو وقت الحضور أكبر من وقت بداية الشيفت
+        IF CAST(@timeIn AS TIME) > @ShiftStart
+        BEGIN
+           -- نحسب الفرق بالدقائق
+           SET @LateMinutes = DATEDIFF(MINUTE, @ShiftStart, CAST(@timeIn AS TIME));
+           
+           -- 💡 (اختياري) لو عايز تعمل سماحية 15 دقيقة مثلاً، شيل الـ Comment من السطرين دول:
+           -- IF @LateMinutes <= 15 SET @LateMinutes = 0;
+           -- ELSE SET @LateMinutes = @LateMinutes - 15;
+        END
+      END
+
+      -- 4️⃣ التسجيل في جدول الحضور
+      INSERT INTO Attendance (BiometricCode, LogDate, TimeIn, Status, LateMinutes)
+      VALUES (
+        @bioCode, 
+        CAST(@dateIn AS DATE), 
+        CAST(@timeIn AS TIME), 
+        N'حاضر',
+        @LateMinutes
+      );
     `);
 }
 
 // تسجيل انصراف (Attendance)
 // تسجيل انصراف
+// تسجيل انصراف (ذكي: بيحسب الانصراف المبكر + ساعات العمل)
 async function checkOut(attendanceId, timeStr) {
   const pool = await connectDB();
+
   await pool.request()
     .input('id', sql.Int, attendanceId)
-    .input('timeOut', sql.VarChar(8), timeStr) // ✅
+    .input('timeOut', sql.VarChar(8), timeStr) // وقت الانصراف HH:MM:SS
     .query(`
+      -- 1️⃣ متغيرات لتخزين ميعاد الانصراف الرسمي ووقت الحضور
+      DECLARE @ShiftEnd TIME;
+      DECLARE @EarlyLeaveMinutes INT = 0;
+      DECLARE @TimeIn TIME;
+      DECLARE @LogDate DATE;
+
+      -- 2️⃣ نجيب تاريخ اليوم ووقت الحضور من السجل الحالي
+      SELECT @TimeIn = TimeIn, @LogDate = LogDate 
+      FROM Attendance 
+      WHERE AttendanceID = @id;
+
+      -- 3️⃣ نجيب ميعاد انتهاء شيفت الموظف الساري النهاردة
+      -- بنربط جدول الموظفين بجدول الشيفتات باستخدام BioCode
+      SELECT TOP 1 @ShiftEnd = s.EndTime
+      FROM EmployeeShifts s
+      JOIN Employees e ON s.EmployeeID = e.EmployeeID
+      JOIN Attendance a ON a.BiometricCode = e.BioEmployeeID
+      WHERE a.AttendanceID = @id
+      AND CAST(@LogDate AS DATE) >= CAST(s.EffectiveFrom AS DATE)
+      AND (s.EffectiveTo IS NULL OR CAST(@LogDate AS DATE) <= CAST(s.EffectiveTo AS DATE))
+      ORDER BY s.EffectiveFrom DESC;
+
+      -- 4️⃣ حساب الانصراف المبكر (لو لقينا شيفت)
+      IF @ShiftEnd IS NOT NULL
+      BEGIN
+        -- لو وقت الانصراف أقل من وقت انتهاء الشيفت (يعني مشي بدري)
+        IF CAST(@timeOut AS TIME) < @ShiftEnd
+        BEGIN
+           -- نحسب الفرق بالدقائق
+           SET @EarlyLeaveMinutes = DATEDIFF(MINUTE, CAST(@timeOut AS TIME), @ShiftEnd);
+        END
+      END
+
+      -- 5️⃣ تحديث سجل الحضور (انصراف + ساعات عمل + انصراف مبكر)
       UPDATE Attendance 
       SET TimeOut = CAST(@timeOut AS TIME),
-          TotalHours = DATEDIFF(MINUTE, TimeIn, CAST(@timeOut AS TIME)) / 60.0
-      WHERE AttendanceID = @id
+          TotalHours = DATEDIFF(MINUTE, TimeIn, CAST(@timeOut AS TIME)) / 60.0,
+          EarlyLeaveMinutes = @EarlyLeaveMinutes,
+          Status = N'حاضر' -- بنأكد الحالة
+      WHERE AttendanceID = @id;
     `);
 }
 
