@@ -11,9 +11,11 @@ async function getEmployeeIdFromUser(userId) {
     const pool = await connectDB();
     const result = await pool.request()
       .input('uid', sql.Int, userId)
-      .query('SELECT EmployeeID FROM Users WHERE UserID = @uid');
+      // 👇👇 غيرنا EmployeeID لـ employeeID (أو الاسم الصح عندك)
+      .query('SELECT employeeID FROM Users WHERE UserID = @uid'); 
     
-    return result.recordset[0]?.EmployeeID;
+    // 👇👇 وهنا كمان خليها زي اسم العمود بالظبط
+    return result.recordset[0]?.employeeID; 
   } catch (err) {
     console.error('Error fetching EmployeeID:', err);
     return null;
