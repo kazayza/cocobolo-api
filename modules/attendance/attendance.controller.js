@@ -111,11 +111,11 @@ async function checkIn(req, res) {
     const timeFormatted = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
     
     // ✅ 3. ابعت الإشعار
-    await notifyManagers(
-      'تسجيل حضور',
-      `قام الموظف ${employeeName} بتسجيل الحضور الساعة ${timeFormatted}`,
-      userId
-    );
+    //await notifyManagers(
+     // 'تسجيل حضور',
+      //`قام الموظف ${employeeName} بتسجيل الحضور الساعة ${timeFormatted}`,
+      //userId
+    //);
 
     return res.json({ success: true, message: 'تم تسجيل الحضور بنجاح ✅' });
 
@@ -167,11 +167,11 @@ async function checkOut(req, res) {
     const employeeName = await attendanceQueries.getEmployeeNameByUserId(userId);
     const timeFormatted = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
-    await notifyManagers(
-      'تسجيل انصراف',
-      `قام الموظف ${employeeName} بتسجيل الانصراف الساعة ${timeFormatted}`,
-      userId
-    );
+    //await notifyManagers(
+      //'تسجيل انصراف',
+      //`قام الموظف ${employeeName} بتسجيل الانصراف الساعة ${timeFormatted}`,
+      //userId
+    //);
 
     return res.json({ success: true, message: 'تم تسجيل الانصراف بنجاح 👋' });
 
