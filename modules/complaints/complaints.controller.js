@@ -2,10 +2,16 @@ const complaintsQueries = require('./complaints.queries');
 const { successResponse, errorResponse, notFoundResponse } = require('../../shared/response.helper');
 
 // ===================================
-// دالة مساعدة لضبط الوقت بتوقيت مصر
+// دوال مساعدة لضبط الوقت بتوقيت مصر
 // ===================================
 function getEgyptTime() {
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'Africa/Cairo' }));
+}
+
+function getEgyptDateOnly() {
+  const now = new Date();
+  const egyptTime = new Date(now.toLocaleString('en-US', { timeZone: 'Africa/Cairo' }));
+  return new Date(egyptTime.getFullYear(), egyptTime.getMonth(), egyptTime.getDate());
 }
 
 // ===================================
@@ -21,7 +27,8 @@ async function create(req, res) {
       details,
       priority,
       status,
-      assignedTo
+      assignedTo,
+      complaintDate  // 👈 تمت الإضافة هنا
     } = req.body;
 
     // التحقق من الحقول المطلوبة
@@ -55,7 +62,8 @@ async function create(req, res) {
       priority,
       status: status || 1, // 1 = جديدة
       assignedTo: assignedTo || null,
-      createdBy: req.body.createdBy || req.user?.Username || req.user?.FullName || 'System', // هنا هنحتاج نضبطها حسب نظام الـ auth بتاعك
+      complaintDate: complaintDate || getEgyptDateOnly(), // 👈 استخدام التاريخ المرسل أو تاريخ اليوم
+      createdBy: req.body.createdBy || req.user?.Username || req.user?.FullName || 'System',
       createdAt: getEgyptTime()
     };
 
@@ -217,7 +225,7 @@ async function escalate(req, res) {
     const escalateData = {
       escalated: true,
       escalatedTo,
-      escalatedBy: req.user?.employeeID || null, // هنا محتاج نضبطها حسب نظامك
+      escalatedBy: req.user?.employeeID || null,
       escalatedAt: getEgyptTime(),
       escalationReason: reason,
       status: 6 // 6 = مصعدة
