@@ -212,6 +212,8 @@ app.use('/api/shifts', require('./modules/employee-shifts/shifts.routes'));
 
 app.use('/api/permissions', require('./modules/permissions/permissions.routes'));
 
+app.use('/api/complaints', require('./modules/complaints/complaints.routes'));
+
 
 
 // ===================================
