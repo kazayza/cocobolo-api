@@ -36,27 +36,28 @@ async function notifyManagers(title, message, relatedId) {
 
 // 🔔 إشعار للموظف
 // ✅ دالة إشعار الموظف (تم التعديل لضمان الوصول)
+// ✅ دالة إشعار الموظف (تم تصحيح خطأ MAX)
 async function notifyEmployee(targetUserId, title, message, relatedId) {
   try {
     const pool = await connectDB();
     
-    // 1. نجيب EmployeeID من UserID (عشان الإشعار يتربط بالموظف)
+    // 1. نجيب رقم الموظف (تأكدنا من اسم العمود employeeID)
     const empRes = await pool.request()
       .input('uid', sql.Int, targetUserId)
-      .query('SELECT employeeID FROM Users WHERE UserID = @uid'); 
+      .query('SELECT employeeID FROM Users WHERE UserID = @uid');
       
     const empId = empRes.recordset[0]?.employeeID;
 
-    if (!empId) return; // لو مفيش موظف، متبعتش
+    if (!empId) return; 
 
-    // 2. إرسال الإشعار للموظف مباشرة (Direct Insert)
-    // لاحظ: بنحط Role = NULL وبنحدد TargetEmployeeID
+    // 2. إرسال الإشعار
     await pool.request()
       .input('title', sql.NVarChar(255), title)
-      .input('msg', sql.NVarChar(MAX), message)
+      // 👇👇 التعديل هنا: خليناها sql.MAX بدل MAX لوحدها
+      .input('msg', sql.NVarChar(sql.MAX), message) 
       .input('form', sql.VarChar(50), 'frm_MyPermissions')
       .input('relId', sql.Int, relatedId)
-      .input('empId', sql.Int, empId) // 👈 ده المهم
+      .input('empId', sql.Int, empId)
       .query(`
         INSERT INTO Notifications (
           Title, Message, CreatedBy, FormName, RelatedId, 
