@@ -13,20 +13,20 @@ async function createComplaint(complaintData) {
     .input('subject', sql.NVarChar(255), complaintData.subject)
     .input('details', sql.NVarChar(sql.MAX), complaintData.details)
     .input('priority', sql.TinyInt, complaintData.priority)
-    .input('status', sql.TinyInt, complaintData.status || 1) // 1 = جديدة
+    .input('status', sql.TinyInt, complaintData.status || 1)
     .input('assignedTo', sql.Int, complaintData.assignedTo || null)
+    .input('complaintDate', sql.Date, complaintData.complaintDate) // 👈 تاريخ فقط
     .input('createdBy', sql.NVarChar(100), complaintData.createdBy)
     .input('createdAt', sql.DateTime, complaintData.createdAt)
-    .input('escalated', sql.Bit, false)
     .query(`
       INSERT INTO Complaints (
         PartyID, OpportunityID, TypeID, Subject, Details,
-        Priority, Status, AssignedTo, CreatedBy, CreatedAt, Escalated
+        Priority, Status, AssignedTo, ComplaintDate, CreatedBy, CreatedAt
       )
       OUTPUT INSERTED.ComplaintID
       VALUES (
         @partyId, @opportunityId, @typeId, @subject, @details,
-        @priority, @status, @assignedTo, @createdBy, @createdAt, @escalated
+        @priority, @status, @assignedTo, @complaintDate, @createdBy, @createdAt
       )
     `);
   
@@ -54,9 +54,10 @@ async function getAllComplaints(filters = {}) {
       c.Status,
       c.AssignedTo,
       e.FullName AS AssignedToName,
+      CAST(c.ComplaintDate AS DATE) AS ComplaintDate,  -- 👈 تاريخ فقط
       c.CreatedBy,
       c.CreatedAt,
-      c.Escalated
+      ISNULL(c.Escalated, 0) AS Escalated
     FROM Complaints c
     LEFT JOIN Parties p ON c.PartyID = p.PartyID
     LEFT JOIN ComplaintTypes ct ON c.TypeID = ct.TypeID
@@ -87,7 +88,7 @@ async function getAllComplaints(filters = {}) {
   
   if (filters.escalated !== undefined) {
     request.input('escalated', sql.Bit, filters.escalated);
-    query += ` AND c.Escalated = @escalated`;
+    query += ` AND ISNULL(c.Escalated, 0) = @escalated`;
   }
   
   query += ` ORDER BY c.CreatedAt DESC`;
@@ -122,9 +123,10 @@ async function getComplaintById(id) {
         c.AssignedTo,
         e.FullName AS AssignedToName,
         e.MobilePhone AS AssignedToPhone,
+        CAST(c.ComplaintDate AS DATE) AS ComplaintDate,
         c.CreatedBy,
         c.CreatedAt,
-        c.Escalated,
+        ISNULL(c.Escalated, 0) AS Escalated,
         c.EscalatedTo,
         e2.FullName AS EscalatedToName,
         c.EscalatedBy,
@@ -154,7 +156,6 @@ async function updateComplaint(id, complaintData) {
   
   let setClauses = [];
   
-  // بناء جملة SET ديناميكياً حسب الحقول المرسلة
   if (complaintData.typeId !== undefined) {
     request.input('typeId', sql.Int, complaintData.typeId);
     setClauses.push('TypeID = @typeId');
@@ -185,7 +186,36 @@ async function updateComplaint(id, complaintData) {
     setClauses.push('AssignedTo = @assignedTo');
   }
   
-  // لو مفيش حاجة اتغيرت، نرجع false
+  if (complaintData.complaintDate !== undefined) {
+    request.input('complaintDate', sql.Date, complaintData.complaintDate);
+    setClauses.push('ComplaintDate = @complaintDate');
+  }
+  
+  if (complaintData.escalated !== undefined) {
+    request.input('escalated', sql.Bit, complaintData.escalated);
+    setClauses.push('Escalated = @escalated');
+  }
+  
+  if (complaintData.escalatedTo !== undefined) {
+    request.input('escalatedTo', sql.Int, complaintData.escalatedTo);
+    setClauses.push('EscalatedTo = @escalatedTo');
+  }
+  
+  if (complaintData.escalatedBy !== undefined) {
+    request.input('escalatedBy', sql.Int, complaintData.escalatedBy);
+    setClauses.push('EscalatedBy = @escalatedBy');
+  }
+  
+  if (complaintData.escalatedAt !== undefined) {
+    request.input('escalatedAt', sql.DateTime, complaintData.escalatedAt);
+    setClauses.push('EscalatedAt = @escalatedAt');
+  }
+  
+  if (complaintData.escalationReason !== undefined) {
+    request.input('escalationReason', sql.NVarChar(500), complaintData.escalationReason);
+    setClauses.push('EscalationReason = @escalationReason');
+  }
+  
   if (setClauses.length === 0) {
     return false;
   }
@@ -224,7 +254,7 @@ async function getComplaintTypes() {
     .query(`
       SELECT TypeID, TypeName, TypeNameAr
       FROM ComplaintTypes
-      WHERE IsActive = -1
+      WHERE IsActive = 1  -- 👈 True مش -1
       ORDER BY TypeNameAr
     `);
   return result.recordset;

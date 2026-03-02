@@ -55,7 +55,7 @@ async function create(req, res) {
       priority,
       status: status || 1, // 1 = جديدة
       assignedTo: assignedTo || null,
-      createdBy: req.user?.Username || req.user?.FullName || 'System', // هنا هنحتاج نضبطها حسب نظام الـ auth بتاعك
+      createdBy: req.body.createdBy || req.user?.Username || req.user?.FullName || 'System', // هنا هنحتاج نضبطها حسب نظام الـ auth بتاعك
       createdAt: getEgyptTime()
     };
 
