@@ -37,39 +37,41 @@ async function notifyManagers(title, message, relatedId) {
 // 🔔 إشعار للموظف
 // ✅ دالة إشعار الموظف (تم التعديل لضمان الوصول)
 // ✅ دالة إشعار الموظف (تم تصحيح خطأ MAX)
+// ✅ دالة إشعار الموظف (متوافقة مع جدول Notifications بتاعك)
 async function notifyEmployee(targetUserId, title, message, relatedId) {
   try {
     const pool = await connectDB();
     
-    // 1. نجيب رقم الموظف (تأكدنا من اسم العمود employeeID)
-    const empRes = await pool.request()
+    // 1. محتاجين نجيب Username بتاع الموظف (لأن RecipientUser غالباً بياخد اسم المستخدم)
+    // لو الجدول بياخد UserID (رقم)، يبقى نبعت targetUserId علطول
+    // بس للأمان، هنجيب الـ Username
+    const userRes = await pool.request()
       .input('uid', sql.Int, targetUserId)
-      .query('SELECT employeeID FROM Users WHERE UserID = @uid');
+      .query('SELECT Username FROM Users WHERE UserID = @uid');
       
-    const empId = empRes.recordset[0]?.employeeID;
+    const username = userRes.recordset[0]?.Username;
 
-    if (!empId) return; 
+    if (!username) return; 
 
     // 2. إرسال الإشعار
     await pool.request()
       .input('title', sql.NVarChar(255), title)
-      // 👇👇 التعديل هنا: خليناها sql.MAX بدل MAX لوحدها
-      .input('msg', sql.NVarChar(sql.MAX), message) 
-      .input('form', sql.VarChar(50), 'frm_MyPermissions')
+      .input('msg', sql.NVarChar(sql.MAX), message)
+      .input('form', sql.VarChar(50), 'frm_MyPermissions') // اسم الشاشة
       .input('relId', sql.Int, relatedId)
-      .input('empId', sql.Int, empId)
+      .input('recipient', sql.NVarChar(50), username) // 👈 بنبعت للـ Username
       .query(`
         INSERT INTO Notifications (
-          Title, Message, CreatedBy, FormName, RelatedId, 
-          TargetEmployeeID, IsRead, CreatedAt
+          Title, Message, CreatedBy, FormName, RelatedID, 
+          RecipientUser, IsRead, CreatedAt
         )
         VALUES (
           @title, @msg, 'System', @form, @relId, 
-          @empId, 0, GETDATE()
+          @recipient, 0, GETDATE()
         )
       `);
       
-    console.log(`Notification sent to User ${targetUserId} (Emp ${empId})`);
+    console.log(`Notification sent to ${username}`);
 
   } catch (err) {
     console.error('Notify Employee Error:', err);
