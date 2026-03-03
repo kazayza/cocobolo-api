@@ -226,7 +226,7 @@ async function escalate(req, res) {
       escalated: true,
       escalatedTo,
       escalatedBy: req.user?.employeeID || null,
-      escalatedAt: getEgyptTime(),
+      escalatedDate: getEgyptTime(),
       escalationReason: reason,
       status: 6 // 6 = مصعدة
     };

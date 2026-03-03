@@ -131,7 +131,7 @@ async function getComplaintById(id) {
         e2.FullName AS EscalatedToName,
         c.EscalatedBy,
         e3.FullName AS EscalatedByName,
-        c.EscalatedAt,
+        c.EscalatedDate,
         c.EscalationReason
       FROM Complaints c
       LEFT JOIN Parties p ON c.PartyID = p.PartyID
@@ -206,10 +206,10 @@ async function updateComplaint(id, complaintData) {
     setClauses.push('EscalatedBy = @escalatedBy');
   }
   
-  if (complaintData.escalatedAt !== undefined) {
-    request.input('escalatedAt', sql.DateTime, complaintData.escalatedAt);
-    setClauses.push('EscalatedAt = @escalatedAt');
-  }
+  if (complaintData.escalatedDate !== undefined) {
+  request.input('escalatedDate', sql.DateTime, complaintData.escalatedDate);
+  setClauses.push('EscalatedDate = @escalatedDate');
+}
   
   if (complaintData.escalationReason !== undefined) {
     request.input('escalationReason', sql.NVarChar(500), complaintData.escalationReason);
