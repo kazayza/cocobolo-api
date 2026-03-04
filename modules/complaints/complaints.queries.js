@@ -215,6 +215,21 @@ async function updateComplaint(id, complaintData) {
     request.input('escalationReason', sql.NVarChar(500), complaintData.escalationReason);
     setClauses.push('EscalationReason = @escalationReason');
   }
+
+  if (complaintData.solution !== undefined) {
+  request.input('solution', sql.NVarChar(sql.MAX), complaintData.solution);
+  setClauses.push('Solution = @solution');
+}
+
+if (complaintData.solvedDate !== undefined) {
+  request.input('solvedDate', sql.DateTime, complaintData.solvedDate);
+  setClauses.push('SolvedDate = @solvedDate');
+}
+
+if (complaintData.satisfactionLevel !== undefined) {
+  request.input('satisfactionLevel', sql.Int, complaintData.satisfactionLevel);
+  setClauses.push('SatisfactionLevel = @satisfactionLevel');
+}
   
   if (setClauses.length === 0) {
     return false;
