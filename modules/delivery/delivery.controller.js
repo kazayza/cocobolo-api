@@ -41,8 +41,20 @@ async function getDeliveryStats(req, res) {
   }
 }
 
+// جلب الفواتير القريبة للإشعارات
+async function getUpcomingDeliveries(req, res) {
+  try {
+    const deliveries = await deliveryQueries.getUpcomingDeliveries();
+    return res.json(deliveries);
+  } catch (err) {
+    console.error('خطأ في جلب الفواتير القريبة:', err);
+    return errorResponse(res, 'فشل تحميل البيانات', 500, err.message);
+  }
+}
+
 module.exports = {
   getPendingDeliveries,
   markAsDelivered,
-  getDeliveryStats
+  getDeliveryStats,
+  getUpcomingDeliveries
 };

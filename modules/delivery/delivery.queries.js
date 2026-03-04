@@ -77,9 +77,34 @@ async function getDeliveryStats() {
   
   return result.recordset[0];
 }
+// جلب الفواتير اللي فاضل عليها 7 أيام أو أقل
+async function getUpcomingDeliveries() {
+  const pool = await connectDB();
+  
+  const result = await pool.request().query(`
+    SELECT 
+      t.TransactionID,
+      t.DueDate,
+      t.PartyID,
+      p.PartyName AS ClientName,
+      p.Phone,
+      DATEDIFF(DAY, GETDATE(), t.DueDate) AS DaysRemaining
+    FROM Transactions t
+    LEFT JOIN Parties p ON t.PartyID = p.PartyID
+    WHERE t.TransactionType = 'Sale'
+      AND (t.IsDelivered = 0 OR t.IsDelivered IS NULL)
+      AND t.DueDate IS NOT NULL
+      AND DATEDIFF(DAY, GETDATE(), t.DueDate) BETWEEN 0 AND 7
+    ORDER BY t.DueDate ASC
+  `);
+  
+  return result.recordset;
+}
 
 module.exports = {
   getPendingDeliveries,
   markAsDelivered,
-  getDeliveryStats
+  getDeliveryStats,
+  getUpcomingDeliveries 
 };
+
