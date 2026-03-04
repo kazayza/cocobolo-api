@@ -214,6 +214,8 @@ app.use('/api/permissions', require('./modules/permissions/permissions.routes'))
 
 app.use('/api/complaints', require('./modules/complaints/complaints.routes'));
 
+app.use('/api/delivery', require('./modules/delivery/delivery.routes'));
+
 
 
 // ===================================
