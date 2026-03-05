@@ -18,6 +18,10 @@ router.get('/transactions', cashboxController.getTransactions);
 // POST /api/cashbox/transactions
 router.post('/transactions', cashboxController.createTransaction);
 
+// تحويل بين خزينتين
+// POST /api/cashbox/transfer
+router.post('/transfer', cashboxController.transfer);
+
 // جلب كل الخزائن
 // GET /api/cashbox
 router.get('/', cashboxController.getAll);

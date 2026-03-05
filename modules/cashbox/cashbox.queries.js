@@ -9,7 +9,7 @@ async function getAllCashboxes() {
         c.CashBoxID, c.CashBoxName, c.Description,
         c.CreatedBy, c.CreatedAt,
         ISNULL((
-          SELECT SUM(CASE WHEN TransactionType = N'إيداع' OR TransactionType = N'تحصيل' THEN Amount ELSE -Amount END)
+          SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE -Amount END)
           FROM CashboxTransactions WHERE CashBoxID = c.CashBoxID
         ), 0) AS CurrentBalance
       FROM CashBoxes c
@@ -28,7 +28,7 @@ async function getCashboxById(id) {
       SELECT 
         c.*,
         ISNULL((
-          SELECT SUM(CASE WHEN TransactionType = N'إيداع' OR TransactionType = N'تحصيل' THEN Amount ELSE -Amount END)
+          SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE -Amount END)
           FROM CashboxTransactions WHERE CashBoxID = c.CashBoxID
         ), 0) AS CurrentBalance
       FROM CashBoxes c
@@ -38,7 +38,7 @@ async function getCashboxById(id) {
 }
 
 // جلب حركات الخزينة
-async function getCashboxTransactions(cashboxId = null, startDate = null, endDate = null, transactionType = null) {
+async function getCashboxTransactions(cashboxId = null, startDate = null, endDate = null, transactionType = null, referenceType = null) {
   const pool = await connectDB();
 
   let query = `
@@ -74,6 +74,11 @@ async function getCashboxTransactions(cashboxId = null, startDate = null, endDat
     query += ` AND ct.TransactionType = @transactionType`;
     request.input('transactionType', sql.NVarChar(20), transactionType);
   }
+  
+  if (referenceType) {
+  query += ` AND ct.ReferenceType = @referenceType`;
+  request.input('referenceType', sql.NVarChar(20), referenceType);
+  }
 
   query += ` ORDER BY ct.TransactionDate DESC, ct.CashboxTransactionID DESC`;
 
@@ -94,9 +99,9 @@ async function getCashboxSummary(cashboxId = null) {
 
   const result = await request.query(`
     SELECT 
-      ISNULL(SUM(CASE WHEN TransactionType = N'إيداع' OR TransactionType = N'تحصيل' THEN Amount ELSE 0 END), 0) AS TotalIn,
-      ISNULL(SUM(CASE WHEN TransactionType = N'صرف' OR TransactionType = N'سحب' THEN Amount ELSE 0 END), 0) AS TotalOut,
-      ISNULL(SUM(CASE WHEN TransactionType = N'إيداع' OR TransactionType = N'تحصيل' THEN Amount ELSE -Amount END), 0) AS Balance
+      ISNULL(SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE 0 END), 0) AS TotalIn,
+      ISNULL(SUM(CASE WHEN TransactionType = N'صرف' THEN Amount ELSE 0 END), 0) AS TotalOut,
+      ISNULL(SUM(CASE WHEN TransactionType = N'قبض' THEN Amount WHEN TransactionType = N'صرف' THEN -Amount ELSE 0 END), 0) AS Balance
     FROM CashboxTransactions
     ${whereClause}
   `);
@@ -163,6 +168,67 @@ async function createTransaction(data) {
   return result.recordset[0].CashboxTransactionID;
 }
 
+// تحويل بين خزينتين
+async function createTransfer(data) {
+  const pool = await connectDB();
+  const transaction = pool.transaction();
+  
+  try {
+    await transaction.begin();
+    
+    // صرف من الخزنة المصدر
+    const result1 = await transaction.request()
+      .input('cashBoxIdFrom', sql.Int, data.cashBoxIdFrom)
+      .input('referenceType', sql.NVarChar(20), 'Transfer')
+      .input('transactionType', sql.NVarChar(20), 'صرف')
+      .input('amount', sql.Decimal(18, 2), data.amount)
+      .input('notesFrom', sql.NVarChar(sql.MAX), data.notes + ' (تحويل إلى خزنة: ' + data.cashBoxToName + ')')
+      .input('createdBy', sql.NVarChar(50), data.createdBy)
+      .query(`
+        INSERT INTO CashboxTransactions (
+          CashBoxID, ReferenceType, TransactionType, Amount, 
+          TransactionDate, Notes, CreatedBy, CreatedAt
+        )
+        OUTPUT INSERTED.CashboxTransactionID
+        VALUES (
+          @cashBoxIdFrom, @referenceType, @transactionType, @amount,
+          GETDATE(), @notesFrom, @createdBy, GETDATE()
+        )
+      `);
+    
+    // قبض في الخزنة المستقبلة
+    const result2 = await transaction.request()
+      .input('cashBoxIdTo', sql.Int, data.cashBoxIdTo)
+      .input('referenceType', sql.NVarChar(20), 'Transfer')
+      .input('transactionType', sql.NVarChar(20), 'قبض')
+      .input('amount', sql.Decimal(18, 2), data.amount)
+      .input('notesTo', sql.NVarChar(sql.MAX), data.notes + ' (تحويل من خزنة: ' + data.cashBoxFromName + ')')
+      .input('createdBy', sql.NVarChar(50), data.createdBy)
+      .query(`
+        INSERT INTO CashboxTransactions (
+          CashBoxID, ReferenceType, TransactionType, Amount,
+          TransactionDate, Notes, CreatedBy, CreatedAt
+        )
+        OUTPUT INSERTED.CashboxTransactionID
+        VALUES (
+          @cashBoxIdTo, @referenceType, @transactionType, @amount,
+          GETDATE(), @notesTo, @createdBy, GETDATE()
+        )
+      `);
+    
+    await transaction.commit();
+    
+    return {
+      transactionIdFrom: result1.recordset[0].CashboxTransactionID,
+      transactionIdTo: result2.recordset[0].CashboxTransactionID
+    };
+    
+  } catch (err) {
+    await transaction.rollback();
+    throw err;
+  }
+}
+
 // تصدير الدوال
 module.exports = {
   getAllCashboxes,
@@ -171,5 +237,6 @@ module.exports = {
   getCashboxSummary,
   createCashbox,
   updateCashbox,
-  createTransaction
+  createTransaction,
+  createTransfer
 };

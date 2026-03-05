@@ -46,10 +46,10 @@ async function getSummary(req, res) {
 // جلب حركات الخزينة
 async function getTransactions(req, res) {
   try {
-    const { cashboxId, startDate, endDate, transactionType } = req.query;
+    const { cashboxId, startDate, endDate, transactionType, referenceType } = req.query;
     const transactions = await cashboxQueries.getCashboxTransactions(
-      cashboxId, startDate, endDate, transactionType
-    );
+    cashboxId, startDate, endDate, transactionType, referenceType
+);
     return res.json(transactions);
   } catch (err) {
     console.error('خطأ في جلب الحركات:', err);
@@ -123,6 +123,36 @@ async function createTransaction(req, res) {
   }
 }
 
+// تحويل بين خزينتين
+async function transfer(req, res) {
+  try {
+    const { cashBoxIdFrom, cashBoxIdTo, cashBoxFromName, cashBoxToName, amount, notes, createdBy } = req.body;
+
+    if (!cashBoxIdFrom || !cashBoxIdTo || !amount) {
+      return errorResponse(res, 'البيانات غير مكتملة', 400);
+    }
+
+    if (cashBoxIdFrom === cashBoxIdTo) {
+      return errorResponse(res, 'الخزنة المصدر والمستقبلة يجب أن تكونا مختلفتين', 400);
+    }
+
+    if (amount <= 0) {
+      return errorResponse(res, 'المبلغ يجب أن يكون أكبر من صفر', 400);
+    }
+
+    const result = await cashboxQueries.createTransfer(req.body);
+
+    return res.json({
+      success: true,
+      ...result,
+      message: 'تم التحويل بنجاح'
+    });
+  } catch (err) {
+    console.error('خطأ في التحويل:', err);
+    return errorResponse(res, 'فشل التحويل', 500, err.message);
+  }
+}
+
 // تصدير الدوال
 module.exports = {
   getAll,
@@ -131,5 +161,6 @@ module.exports = {
   getTransactions,
   create,
   update,
-  createTransaction
+  createTransaction,
+  transfer
 };
