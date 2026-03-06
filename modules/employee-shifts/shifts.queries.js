@@ -99,10 +99,10 @@ async function getEmployeesWithCurrentShift() {
       e.EmployeeID, e.FullName, e.JobTitle, e.Department,
       s.EmployeeShiftID, s.ShiftType, 
       
-      -- تنسيق الوقت والتاريخ
       FORMAT(CAST(s.StartTime AS DATETIME), 'hh:mm tt') as StartTime,
       FORMAT(CAST(s.EndTime AS DATETIME), 'hh:mm tt') as EndTime,
-      FORMAT(s.EffectiveFrom, 'yyyy-MM-dd') as StartDate -- ✅ الحقل الجديد
+      FORMAT(s.EffectiveFrom, 'yyyy-MM-dd') as EffectiveFrom,
+      FORMAT(s.EffectiveTo, 'yyyy-MM-dd') as EffectiveTo
       
     FROM Employees e
     LEFT JOIN EmployeeShifts s ON e.EmployeeID = s.EmployeeID 
