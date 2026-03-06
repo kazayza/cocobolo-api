@@ -153,6 +153,80 @@ async function transfer(req, res) {
   }
 }
 
+// ══════════════════════════════════════════
+// ✅ دوال داشبورد الخزينة
+// ══════════════════════════════════════════
+
+// إحصائيات عامة
+async function getDashboardStats(req, res) {
+  try {
+    const { period } = req.query;
+    const stats = await cashboxQueries.getDashboardStats(period || 'month');
+    return res.json(stats);
+  } catch (err) {
+    console.error('خطأ في جلب الإحصائيات:', err);
+    return errorResponse(res, 'فشل تحميل الإحصائيات', 500, err.message);
+  }
+}
+
+// بيانات الرسم البياني
+async function getChartData(req, res) {
+  try {
+    const { days } = req.query;
+    const data = await cashboxQueries.getChartData(parseInt(days) || 7);
+    return res.json(data);
+  } catch (err) {
+    console.error('خطأ في جلب بيانات الرسم:', err);
+    return errorResponse(res, 'فشل تحميل بيانات الرسم', 500, err.message);
+  }
+}
+
+// توزيع المصروفات
+async function getDistribution(req, res) {
+  try {
+    const { period } = req.query;
+    const data = await cashboxQueries.getDistribution(period || 'month');
+    return res.json(data);
+  } catch (err) {
+    console.error('خطأ في جلب التوزيع:', err);
+    return errorResponse(res, 'فشل تحميل التوزيع', 500, err.message);
+  }
+}
+
+// رصيد كل خزنة
+async function getCashboxBalances(req, res) {
+  try {
+    const data = await cashboxQueries.getCashboxBalances();
+    return res.json(data);
+  } catch (err) {
+    console.error('خطأ في جلب الأرصدة:', err);
+    return errorResponse(res, 'فشل تحميل الأرصدة', 500, err.message);
+  }
+}
+
+// آخر الحركات
+async function getRecentTransactions(req, res) {
+  try {
+    const { limit } = req.query;
+    const data = await cashboxQueries.getRecentTransactions(parseInt(limit) || 5);
+    return res.json(data);
+  } catch (err) {
+    console.error('خطأ في جلب آخر الحركات:', err);
+    return errorResponse(res, 'فشل تحميل آخر الحركات', 500, err.message);
+  }
+}
+
+// مقارنة شهرية
+async function getMonthlyComparison(req, res) {
+  try {
+    const data = await cashboxQueries.getMonthlyComparison();
+    return res.json(data);
+  } catch (err) {
+    console.error('خطأ في جلب المقارنة:', err);
+    return errorResponse(res, 'فشل تحميل المقارنة', 500, err.message);
+  }
+}
+
 // تصدير الدوال
 module.exports = {
   getAll,
@@ -162,5 +236,11 @@ module.exports = {
   create,
   update,
   createTransaction,
-  transfer
+  transfer,
+   getDashboardStats,
+  getChartData,
+  getDistribution,
+  getCashboxBalances,
+  getRecentTransactions,
+  getMonthlyComparison
 };

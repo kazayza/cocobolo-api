@@ -22,6 +22,30 @@ router.post('/transactions', cashboxController.createTransaction);
 // POST /api/cashbox/transfer
 router.post('/transfer', cashboxController.transfer);
 
+// إحصائيات الداشبورد
+// GET /api/cashbox/dashboard/stats?period=today|week|month|year
+router.get('/dashboard/stats', cashboxController.getDashboardStats);
+
+// بيانات الرسم البياني
+// GET /api/cashbox/dashboard/chart?days=7
+router.get('/dashboard/chart', cashboxController.getChartData);
+
+// توزيع المصروفات
+// GET /api/cashbox/dashboard/distribution?period=month
+router.get('/dashboard/distribution', cashboxController.getDistribution);
+
+// أرصدة الخزائن
+// GET /api/cashbox/dashboard/balances
+router.get('/dashboard/balances', cashboxController.getCashboxBalances);
+
+// آخر الحركات
+// GET /api/cashbox/dashboard/recent?limit=5
+router.get('/dashboard/recent', cashboxController.getRecentTransactions);
+
+// مقارنة شهرية
+// GET /api/cashbox/dashboard/comparison
+router.get('/dashboard/comparison', cashboxController.getMonthlyComparison);
+
 // جلب كل الخزائن
 // GET /api/cashbox
 router.get('/', cashboxController.getAll);
