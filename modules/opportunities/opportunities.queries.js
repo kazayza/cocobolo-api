@@ -407,6 +407,8 @@ async function createOpportunity(data) {
     notes,
     guidance,
     nextFollowUpDate,
+    lostReasonId,      // ✅ جديد
+    lostNotes,         // ✅ جديد
     createdBy
   } = data;
 
@@ -424,12 +426,15 @@ async function createOpportunity(data) {
     .input('notes', sql.NVarChar(sql.MAX), notes || null)
     .input('guidance', sql.NVarChar(sql.MAX), guidance || null)
     .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate ? new Date(nextFollowUpDate) : null)
+    .input('lostReasonId', sql.Int, lostReasonId || null)          // ✅ جديد
+    .input('lostNotes', sql.NVarChar(sql.MAX), lostNotes || null)  // ✅ جديد
     .input('createdBy', sql.NVarChar(50), createdBy)
     .query(`
       INSERT INTO SalesOpportunities (
         PartyID, EmployeeID, SourceID, AdTypeID, CategoryID,
         StageID, StatusID, InterestedProduct, ExpectedValue, Location,
         Notes, Guidance, NextFollowUpDate, FirstContactDate,
+        LostReasonID, LostNotes,
         CreatedBy, CreatedAt, IsActive
       ) 
       OUTPUT INSERTED.OpportunityID
@@ -437,6 +442,7 @@ async function createOpportunity(data) {
         @partyId, @employeeId, @sourceId, @adTypeId, @categoryId,
         @stageId, @statusId, @interestedProduct, @expectedValue, @location,
         @notes, @guidance, @nextFollowUpDate, GETDATE(),
+        @lostReasonId, @lostNotes,
         @createdBy, GETDATE(), 1
       )
     `);
