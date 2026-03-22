@@ -370,7 +370,9 @@ async function getOpportunityById(id) {
         cst.StatusName,
         cst.StatusNameAr,
         ic.CategoryName,
-        ic.CategoryNameAr
+        ic.CategoryNameAr,
+        lr.ReasonName AS LostReasonName,
+        lr.ReasonNameAr AS LostReasonNameAr
       FROM SalesOpportunities o
       LEFT JOIN Parties p ON o.PartyID = p.PartyID
       LEFT JOIN Employees e ON o.EmployeeID = e.EmployeeID
@@ -379,6 +381,7 @@ async function getOpportunityById(id) {
       LEFT JOIN SalesStages ss ON o.StageID = ss.StageID
       LEFT JOIN ContactStatus cst ON o.StatusID = cst.StatusID
       LEFT JOIN InterestCategories ic ON o.CategoryID = ic.CategoryID
+      LEFT JOIN LostReasons lr ON o.LostReasonID = lr.LostReasonID
       WHERE o.OpportunityID = @id
     `);
   return result.recordset[0] || null;
