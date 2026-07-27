@@ -14,12 +14,19 @@ function initializeFirebase() {
       return null;
     }
 
+    // ✅ معالجة المفتاح لتصحيح الأسطر الجديدة تلقائياً وإزالة علامات التنصيص الزائدة
+    let rawKey = process.env.FIREBASE_PRIVATE_KEY;
+    if (rawKey.startsWith('"') && rawKey.endsWith('"')) {
+      rawKey = rawKey.slice(1, -1);
+    }
+    const formattedKey = rawKey.replace(/\\n/g, '\n');
+
     if (!admin.apps.length) {
       admin.initializeApp({
         credential: admin.credential.cert({
           projectId: process.env.FIREBASE_PROJECT_ID,
           clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+          privateKey: formattedKey,
         }),
       });
       firebaseInitialized = true;
