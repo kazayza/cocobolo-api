@@ -1,4 +1,5 @@
 const { sql, connectDB } = require('../../core/database');
+const { sendPushNotification, isFirebaseReady } = require('../../core/firebase');
 
 // جلب الإشعارات غير المقروءة
 async function getUnreadNotifications(username) {
@@ -61,9 +62,11 @@ async function markAsRead(notificationId) {
   return true;
 }
 
-// إنشاء إشعار جديد
+// إنشاء إشعار جديد (مع إرسال Push Notification لحظي عبر Firebase)
 async function createNotification(data) {
   const pool = await connectDB();
+  
+  // 1. حفظ الإشعار في قاعدة البيانات
   const result = await pool.request()
     .input('title', sql.NVarChar(200), data.title)
     .input('message', sql.NVarChar(sql.MAX), data.message)
@@ -83,7 +86,34 @@ async function createNotification(data) {
         @formName, 0, @createdBy, GETDATE(), 0
       )
     `);
-  return result.recordset[0].NotificationID;
+
+  const notificationId = result.recordset[0].NotificationID;
+
+  // 2. إرسال Push Notification فوراً (حتى لو التطبيق مقفول)
+  try {
+    if (isFirebaseReady()) {
+      const tokenResult = await pool.request()
+        .input('username', sql.NVarChar(100), data.recipientUser)
+        .query('SELECT FCMToken FROM Users WHERE Username = @username AND FCMToken IS NOT NULL');
+
+      const fcmToken = tokenResult.recordset[0]?.FCMToken;
+
+      if (fcmToken) {
+        await sendPushNotification(fcmToken, data.title, data.message, {
+          formName: data.formName || '',
+          relatedId: String(data.relatedId || ''),
+          notificationId: String(notificationId)
+        });
+        console.log(`🔥 [FCM Push] تم إرسال إشعار لحظي بنجاح إلى المستخدم: ${data.recipientUser}`);
+      } else {
+        console.log(`⚠️ [FCM Push] المستخدم ${data.recipientUser} ليس لديه FCM Token مسجل.`);
+      }
+    }
+  } catch (pushErr) {
+    console.error('❌ خطأ في إرسال Push Notification اللحظي:', pushErr.message);
+  }
+
+  return notificationId;
 }
 
 // إرسال إشعار ذكي (لرول أو ليوزر محدد)
@@ -99,7 +129,6 @@ async function createNotificationSmart(data, target) {
       WHERE 
          Role = @target        -- لو هو رول (زي SalesManager)
          OR Username = @target -- لو هو يوزر محدد (زي Factory)
-         
     `);
 
   const recipients = usersResult.recordset;
@@ -107,31 +136,18 @@ async function createNotificationSmart(data, target) {
 
   let insertedCount = 0;
   for (const user of recipients) {
-    // نتجنب إرسال الإشعار للشخص اللي عمل الإجراء
     if (user.Username === data.createdBy) continue;
 
-    await pool.request()
-      .input('title', sql.NVarChar(200), data.title)
-      .input('message', sql.NVarChar(sql.MAX), data.message)
-      .input('recipientUser', sql.NVarChar(100), user.Username)
-      .input('relatedId', sql.Int, data.relatedId || null)
-      .input('formName', sql.NVarChar(100), data.formName || null)
-      .input('createdBy', sql.NVarChar(100), data.createdBy)
-      .query(`
-        INSERT INTO Notifications (
-          Title, Message, RecipientUser, RelatedID, FormName,
-          IsRead, CreatedBy, CreatedAt, ReminderEnabled
-        )
-        VALUES (
-          @title, @message, @recipientUser, @relatedId, @formName,
-          0, @createdBy, GETDATE(), 0
-        )
-      `);
+    // استدعاء دالة createNotification لضمان حفظ الإشعار وإرسال الـ Push للجميع
+    await createNotification({
+      ...data,
+      recipientUser: user.Username
+    });
+    
     insertedCount++;
   }
   return insertedCount;
 }
-
 
 // جلب FCM Token للمستخدم
 async function getFcmToken(username) {
