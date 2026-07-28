@@ -216,6 +216,8 @@ app.use('/api/complaints', require('./modules/complaints/complaints.routes'));
 
 app.use('/api/delivery', require('./modules/delivery/delivery.routes'));
 
+app.use('/api/leads', require('./modules/leads/leads.routes'));
+
 
 
 // ===================================
