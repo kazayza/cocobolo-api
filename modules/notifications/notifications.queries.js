@@ -76,16 +76,18 @@ async function createNotification(data) {
     .input('formName', sql.NVarChar(100), data.formName || null)
     .input('createdBy', sql.NVarChar(100), data.createdBy)
     .query(`
-      INSERT INTO Notifications (
-        Title, Message, RecipientUser, RelatedTable, RelatedID,
-        FormName, IsRead, CreatedBy, CreatedAt, ReminderEnabled
-      )
-      OUTPUT INSERTED.NotificationID
-      VALUES (
-        @title, @message, @recipientUser, @relatedTable, @relatedId,
-        @formName, 0, @createdBy, GETDATE(), 0
-      )
-    `);
+      DECLARE @NewID TABLE (NotificationID int);
+        INSERT INTO Notifications (
+          Title, Message, RecipientUser, RelatedTable, RelatedID,
+          FormName, IsRead, CreatedBy, CreatedAt, ReminderEnabled
+        )
+        OUTPUT INSERTED.NotificationID INTO @NewID
+        VALUES (
+          @title, @message, @recipientUser, @relatedTable, @relatedId,
+          @formName, 0, @createdBy, GETDATE(), 0
+        );
+        SELECT NotificationID FROM @NewID;
+      `);
 
   const notificationId = result.recordset[0].NotificationID;
 
