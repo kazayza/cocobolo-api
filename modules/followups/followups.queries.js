@@ -1,9 +1,13 @@
 const { sql, connectDB } = require('../../core/database');
 
 /**
- * Unified follow-ups: Leads + CRM Opportunities + CRM Tasks
- * Buckets: overdue | today | upcoming | all
- * Aligned with Blazor CrmDashboardService follow-up ideas.
+ * Unified "My Follow-ups" — mirrors Blazor TaskService.GetTasksAsync merge:
+ *   1) CRM_Tasks (client / opportunity work)
+ *   2) LeadInteractions open NextFollowUp (IsLeadTask)
+ * Plus optional opportunity-level NextFollowUpDate (CRM dashboard style).
+ *
+ * Buckets: overdue | today | tomorrow | upcoming | all
+ * Source:  all | lead | client | task | opportunity
  */
 
 function toInt(v, fb = null) {
@@ -12,46 +16,102 @@ function toInt(v, fb = null) {
   return Number.isNaN(n) ? fb : n;
 }
 
-function buildScopeCase(dateExpr) {
-  // dateExpr e.g. i.NextFollowUpDate
-  return `
-    CASE
-      WHEN CAST(${dateExpr} AS DATE) < CAST(GETDATE() AS DATE) THEN N'overdue'
-      WHEN CAST(${dateExpr} AS DATE) = CAST(GETDATE() AS DATE) THEN N'today'
-      ELSE N'upcoming'
-    END
-  `;
+function bucketOf(dateVal) {
+  if (!dateVal) return 'upcoming';
+  const d = new Date(dateVal);
+  if (Number.isNaN(d.getTime())) return 'upcoming';
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const day = new Date(d);
+  day.setHours(0, 0, 0, 0);
+  const diffDays = Math.round((day - today) / 86400000);
+  if (diffDays < 0) return 'overdue';
+  if (diffDays === 0) return 'today';
+  if (diffDays === 1) return 'tomorrow';
+  return 'upcoming';
 }
 
-function scopeWhere(dateExpr, scope) {
-  if (!scope || scope === 'all') return '1=1';
-  if (scope === 'overdue') {
+function daysOverdue(dateVal) {
+  if (!dateVal) return 0;
+  const d = new Date(dateVal);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const day = new Date(d);
+  day.setHours(0, 0, 0, 0);
+  const n = Math.round((today - day) / 86400000);
+  return n > 0 ? n : 0;
+}
+
+function scopeSql(dateExpr, scope) {
+  const s = (scope || 'all').toLowerCase();
+  if (s === 'overdue') {
     return `CAST(${dateExpr} AS DATE) < CAST(GETDATE() AS DATE)`;
   }
-  if (scope === 'today') {
+  if (s === 'today') {
     return `CAST(${dateExpr} AS DATE) = CAST(GETDATE() AS DATE)`;
   }
-  if (scope === 'upcoming') {
-    return `CAST(${dateExpr} AS DATE) > CAST(GETDATE() AS DATE)`;
+  if (s === 'tomorrow') {
+    return `CAST(${dateExpr} AS DATE) = DATEADD(DAY, 1, CAST(GETDATE() AS DATE))`;
   }
+  if (s === 'upcoming') {
+    return `CAST(${dateExpr} AS DATE) > DATEADD(DAY, 1, CAST(GETDATE() AS DATE))`;
+  }
+  // all active (include overdue..upcoming)
   return '1=1';
 }
 
-/**
- * GET unified list
- * filters: scope, employeeId, source (lead|opportunity|task|all), search, limit
- */
+function mapRow(r) {
+  const followUpDate = r.FollowUpDate;
+  const bucket = r.Bucket || bucketOf(followUpDate);
+  const overdueDays = bucket === 'overdue' ? daysOverdue(followUpDate) : 0;
+  let severity = '';
+  if (bucket === 'overdue') {
+    if (overdueDays >= 7) severity = 'high';
+    else if (overdueDays >= 3) severity = 'med';
+    else severity = 'low';
+  }
+  return {
+    itemType: r.ItemType,
+    isLeadTask: r.ItemType === 'lead' || r.IsLeadTask === true || r.IsLeadTask === 1,
+    itemId: r.ItemId,
+    relatedId: r.RelatedId,
+    relatedTable: r.RelatedTable,
+    formName: r.FormName,
+    clientName: r.ClientName,
+    phone: r.Phone,
+    city: r.City || null,
+    title: r.Title,
+    notes: r.Notes || null,
+    subType: r.SubType || null,
+    statusLabel: r.StatusLabel || null,
+    priority: r.Priority || 'Normal',
+    followUpDate,
+    bucket,
+    daysOverdue: overdueDays,
+    severity,
+    employeeId: r.EmployeeId,
+    employeeName: r.EmployeeName,
+    bestTimeToReach: r.BestTimeToReach || null,
+    campaignName: r.CampaignName || null,
+    platform: r.Platform || null,
+    extra: r.Extra || null,
+    createdAt: r.CreatedAt || null,
+  };
+}
+
 async function getFollowUps(filters = {}) {
   const pool = await connectDB();
   const scope = (filters.scope || 'all').toString().toLowerCase();
   const source = (filters.source || 'all').toString().toLowerCase();
   const employeeId = toInt(filters.employeeId);
-  const limit = Math.min(300, Math.max(1, toInt(filters.limit, 100)));
+  const limit = Math.min(400, Math.max(1, toInt(filters.limit, 150)));
   const search = filters.search ? String(filters.search).trim() : '';
 
   const parts = [];
 
-  // ── 1) Lead follow-ups (open LeadInteractions with NextFollowUpDate)
+  // ═══════════════════════════════════════════════════════
+  // A) Lead follow-ups  (Blazor TaskService lead merge)
+  // ═══════════════════════════════════════════════════════
   if (source === 'all' || source === 'lead' || source === 'leads') {
     const req = pool.request();
     let where = `
@@ -59,208 +119,239 @@ async function getFollowUps(filters = {}) {
         AND ISNULL(i.IsCompleted, 0) = 0
         AND ISNULL(l.IsConverted, 0) = 0
         AND ISNULL(l.LeadStatus, N'') NOT IN (N'محول', N'مرفوض')
-        AND ${scopeWhere('i.NextFollowUpDate', scope)}
+        AND ${scopeSql('i.NextFollowUpDate', scope)}
     `;
     if (employeeId) {
       req.input('empLead', sql.Int, employeeId);
-      where += ` AND (
-        i.EmployeeId = @empLead
-        OR l.AssignedEmployeeId = @empLead
-      )`;
+      where += ` AND (i.EmployeeId = @empLead OR l.AssignedEmployeeId = @empLead)`;
     }
     if (search) {
-      req.input('searchLead', sql.NVarChar(100), `%${search}%`);
+      req.input('qLead', sql.NVarChar(120), `%${search}%`);
       where += ` AND (
-        l.FullName LIKE @searchLead OR l.Phone LIKE @searchLead
-        OR i.Summary LIKE @searchLead OR i.Notes LIKE @searchLead
+        l.FullName LIKE @qLead OR l.Phone LIKE @qLead OR l.Phone2 LIKE @qLead
+        OR i.Summary LIKE @qLead OR l.CampaignName LIKE @qLead OR l.City LIKE @qLead
       )`;
     }
-
-    const q = `
-      SELECT TOP (${limit})
-        N'lead' AS ItemType,
-        i.LeadInteractionId AS ItemId,
-        l.LeadId AS RelatedId,
-        N'LeadsCRM' AS RelatedTable,
-        N'crm/leads' AS FormName,
-        l.FullName AS ClientName,
-        l.Phone AS Phone,
-        l.City AS City,
-        l.LeadStatus AS StatusLabel,
-        i.InteractionType AS SubType,
-        i.Summary AS Title,
-        i.Notes AS Notes,
-        i.NextFollowUpDate AS FollowUpDate,
-        ${buildScopeCase('i.NextFollowUpDate')} AS Bucket,
-        COALESCE(i.EmployeeId, l.AssignedEmployeeId) AS EmployeeId,
-        COALESCE(ei.FullName, ea.FullName) AS EmployeeName,
-        l.BestTimeToReach AS BestTimeToReach,
-        l.CampaignName AS Extra,
-        i.CreatedAt AS CreatedAt
-      FROM LeadInteractions i
-      INNER JOIN LeadsCRM l ON l.LeadId = i.LeadId
-      LEFT JOIN Employees ei ON i.EmployeeId = ei.EmployeeID
-      LEFT JOIN Employees ea ON l.AssignedEmployeeId = ea.EmployeeID
-      ${where}
-      ORDER BY i.NextFollowUpDate ASC
-    `;
     try {
-      const r = await req.query(q);
+      const r = await req.query(`
+        SELECT TOP (${limit})
+          N'lead' AS ItemType,
+          CAST(1 AS bit) AS IsLeadTask,
+          i.LeadInteractionId AS ItemId,
+          l.LeadId AS RelatedId,
+          N'LeadsCRM' AS RelatedTable,
+          N'crm/leads' AS FormName,
+          l.FullName AS ClientName,
+          l.Phone AS Phone,
+          l.City AS City,
+          ISNULL(i.Summary, N'متابعة Lead') AS Title,
+          i.Notes AS Notes,
+          i.InteractionType AS SubType,
+          l.LeadStatus AS StatusLabel,
+          N'Normal' AS Priority,
+          i.NextFollowUpDate AS FollowUpDate,
+          COALESCE(i.EmployeeId, l.AssignedEmployeeId) AS EmployeeId,
+          COALESCE(ei.FullName, ea.FullName) AS EmployeeName,
+          l.BestTimeToReach AS BestTimeToReach,
+          l.CampaignName AS CampaignName,
+          l.Platform AS Platform,
+          l.ProjectType AS Extra,
+          i.CreatedAt AS CreatedAt
+        FROM LeadInteractions i
+        INNER JOIN LeadsCRM l ON l.LeadId = i.LeadId
+        LEFT JOIN Employees ei ON i.EmployeeId = ei.EmployeeID
+        LEFT JOIN Employees ea ON l.AssignedEmployeeId = ea.EmployeeID
+        ${where}
+        ORDER BY i.NextFollowUpDate ASC
+      `);
       parts.push(...(r.recordset || []));
     } catch (e) {
-      console.error('followups leads query:', e.message);
+      console.error('followups/leads:', e.message);
     }
   }
 
-  // ── 2) Opportunity follow-ups
-  if (source === 'all' || source === 'opportunity' || source === 'crm') {
-    const req = pool.request();
-    let where = `
-      WHERE o.IsActive = 1
-        AND o.NextFollowUpDate IS NOT NULL
-        AND o.StageID NOT IN (3, 4, 5)
-        AND ${scopeWhere('o.NextFollowUpDate', scope)}
-    `;
-    if (employeeId) {
-      req.input('empOpp', sql.Int, employeeId);
-      where += ` AND o.EmployeeID = @empOpp`;
-    }
-    if (search) {
-      req.input('searchOpp', sql.NVarChar(100), `%${search}%`);
-      where += ` AND (
-        p.PartyName LIKE @searchOpp OR p.Phone LIKE @searchOpp
-        OR o.InterestedProduct LIKE @searchOpp OR o.Notes LIKE @searchOpp
-      )`;
-    }
-
-    const q = `
-      SELECT TOP (${limit})
-        N'opportunity' AS ItemType,
-        o.OpportunityID AS ItemId,
-        o.OpportunityID AS RelatedId,
-        N'SalesOpportunities' AS RelatedTable,
-        N'crm/opportunities' AS FormName,
-        p.PartyName AS ClientName,
-        p.Phone AS Phone,
-        NULL AS City,
-        ISNULL(ss.StageNameAr, ss.StageName) AS StatusLabel,
-        N'متابعة فرصة' AS SubType,
-        CONCAT(N'متابعة: ', ISNULL(p.PartyName, N'')) AS Title,
-        o.Notes AS Notes,
-        o.NextFollowUpDate AS FollowUpDate,
-        ${buildScopeCase('o.NextFollowUpDate')} AS Bucket,
-        o.EmployeeID AS EmployeeId,
-        e.FullName AS EmployeeName,
-        NULL AS BestTimeToReach,
-        o.InterestedProduct AS Extra,
-        o.CreatedAt AS CreatedAt
-      FROM SalesOpportunities o
-      LEFT JOIN Parties p ON o.PartyID = p.PartyID
-      LEFT JOIN Employees e ON o.EmployeeID = e.EmployeeID
-      LEFT JOIN SalesStages ss ON o.StageID = ss.StageID
-      ${where}
-      ORDER BY o.NextFollowUpDate ASC
-    `;
-    try {
-      const r = await req.query(q);
-      parts.push(...(r.recordset || []));
-    } catch (e) {
-      console.error('followups opportunities query:', e.message);
-    }
-  }
-
-  // ── 3) CRM Tasks due
-  if (source === 'all' || source === 'task' || source === 'tasks') {
+  // ═══════════════════════════════════════════════════════
+  // B) CRM Tasks (client work) — Blazor VwCrmTasks style
+  // ═══════════════════════════════════════════════════════
+  if (
+    source === 'all' ||
+    source === 'client' ||
+    source === 'task' ||
+    source === 'tasks'
+  ) {
     const req = pool.request();
     let where = `
       WHERE t.IsActive = 1
         AND t.Status NOT IN (N'Completed', N'Cancelled', N'completed', N'cancelled')
         AND t.DueDate IS NOT NULL
-        AND ${scopeWhere('t.DueDate', scope)}
+        AND ${scopeSql('t.DueDate', scope)}
     `;
     if (employeeId) {
       req.input('empTask', sql.Int, employeeId);
       where += ` AND (t.AssignedTo = @empTask OR o.EmployeeID = @empTask)`;
     }
     if (search) {
-      req.input('searchTask', sql.NVarChar(100), `%${search}%`);
+      req.input('qTask', sql.NVarChar(120), `%${search}%`);
       where += ` AND (
-        p.PartyName LIKE @searchTask OR p.Phone LIKE @searchTask
-        OR t.TaskDescription LIKE @searchTask
+        p.PartyName LIKE @qTask OR p.Phone LIKE @qTask
+        OR t.TaskDescription LIKE @qTask
       )`;
     }
-
-    const q = `
-      SELECT TOP (${limit})
-        N'task' AS ItemType,
-        t.TaskID AS ItemId,
-        t.OpportunityID AS RelatedId,
-        N'CRM_Tasks' AS RelatedTable,
-        N'frmDailyTasks' AS FormName,
-        p.PartyName AS ClientName,
-        p.Phone AS Phone,
-        NULL AS City,
-        t.Status AS StatusLabel,
-        ISNULL(tt.TaskTypeNameAr, tt.TaskTypeName) AS SubType,
-        ISNULL(t.TaskDescription, N'مهمة') AS Title,
-        t.TaskDescription AS Notes,
-        t.DueDate AS FollowUpDate,
-        ${buildScopeCase('t.DueDate')} AS Bucket,
-        t.AssignedTo AS EmployeeId,
-        e.FullName AS EmployeeName,
-        NULL AS BestTimeToReach,
-        empOwner.FullName AS Extra,
-        t.CreatedAt AS CreatedAt
-      FROM CRM_Tasks t
-      LEFT JOIN Parties p ON t.PartyID = p.PartyID
-      LEFT JOIN Employees e ON t.AssignedTo = e.EmployeeID
-      LEFT JOIN TaskTypes tt ON t.TaskTypeID = tt.TaskTypeID
-      LEFT JOIN SalesOpportunities o ON t.OpportunityID = o.OpportunityID
-      LEFT JOIN Employees empOwner ON o.EmployeeID = empOwner.EmployeeID
-      ${where}
-      ORDER BY t.DueDate ASC
-    `;
     try {
-      const r = await req.query(q);
+      const r = await req.query(`
+        SELECT TOP (${limit})
+          N'task' AS ItemType,
+          CAST(0 AS bit) AS IsLeadTask,
+          t.TaskID AS ItemId,
+          t.OpportunityID AS RelatedId,
+          N'CRM_Tasks' AS RelatedTable,
+          N'frmDailyTasks' AS FormName,
+          p.PartyName AS ClientName,
+          p.Phone AS Phone,
+          NULL AS City,
+          ISNULL(t.TaskDescription, N'مهمة') AS Title,
+          t.TaskDescription AS Notes,
+          ISNULL(tt.TaskTypeNameAr, tt.TaskTypeName) AS SubType,
+          t.Status AS StatusLabel,
+          t.Priority AS Priority,
+          t.DueDate AS FollowUpDate,
+          t.AssignedTo AS EmployeeId,
+          e.FullName AS EmployeeName,
+          NULL AS BestTimeToReach,
+          NULL AS CampaignName,
+          NULL AS Platform,
+          empOwner.FullName AS Extra,
+          t.CreatedAt AS CreatedAt
+        FROM CRM_Tasks t
+        LEFT JOIN Parties p ON t.PartyID = p.PartyID
+        LEFT JOIN Employees e ON t.AssignedTo = e.EmployeeID
+        LEFT JOIN TaskTypes tt ON t.TaskTypeID = tt.TaskTypeID
+        LEFT JOIN SalesOpportunities o ON t.OpportunityID = o.OpportunityID
+        LEFT JOIN Employees empOwner ON o.EmployeeID = empOwner.EmployeeID
+        ${where}
+        ORDER BY t.DueDate ASC, t.Priority DESC
+      `);
       parts.push(...(r.recordset || []));
     } catch (e) {
-      console.error('followups tasks query:', e.message);
+      console.error('followups/tasks:', e.message);
     }
   }
 
-  // Sort merged
-  parts.sort((a, b) => {
-    const da = a.FollowUpDate ? new Date(a.FollowUpDate).getTime() : 0;
-    const db = b.FollowUpDate ? new Date(b.FollowUpDate).getTime() : 0;
+  // ═══════════════════════════════════════════════════════
+  // C) Opportunity NextFollowUp (CRM dashboard style)
+  //    included in all/client/opportunity — skip if only lead/task
+  // ═══════════════════════════════════════════════════════
+  if (
+    source === 'all' ||
+    source === 'client' ||
+    source === 'opportunity' ||
+    source === 'crm'
+  ) {
+    const req = pool.request();
+    let where = `
+      WHERE o.IsActive = 1
+        AND o.NextFollowUpDate IS NOT NULL
+        AND o.StageID NOT IN (3, 4, 5)
+        AND ${scopeSql('o.NextFollowUpDate', scope)}
+        -- avoid double-count if open task already covers same opp today (soft: still show opp-level)
+    `;
+    if (employeeId) {
+      req.input('empOpp', sql.Int, employeeId);
+      where += ` AND o.EmployeeID = @empOpp`;
+    }
+    if (search) {
+      req.input('qOpp', sql.NVarChar(120), `%${search}%`);
+      where += ` AND (
+        p.PartyName LIKE @qOpp OR p.Phone LIKE @qOpp
+        OR o.InterestedProduct LIKE @qOpp OR o.Notes LIKE @qOpp
+      )`;
+    }
+    try {
+      const r = await req.query(`
+        SELECT TOP (${limit})
+          N'opportunity' AS ItemType,
+          CAST(0 AS bit) AS IsLeadTask,
+          o.OpportunityID AS ItemId,
+          o.OpportunityID AS RelatedId,
+          N'SalesOpportunities' AS RelatedTable,
+          N'crm/opportunities' AS FormName,
+          p.PartyName AS ClientName,
+          p.Phone AS Phone,
+          NULL AS City,
+          CONCAT(N'متابعة فرصة', CASE WHEN o.InterestedProduct IS NULL THEN N'' ELSE N': ' + o.InterestedProduct END) AS Title,
+          o.Notes AS Notes,
+          N'متابعة فرصة' AS SubType,
+          ISNULL(ss.StageNameAr, ss.StageName) AS StatusLabel,
+          N'Normal' AS Priority,
+          o.NextFollowUpDate AS FollowUpDate,
+          o.EmployeeID AS EmployeeId,
+          e.FullName AS EmployeeName,
+          NULL AS BestTimeToReach,
+          NULL AS CampaignName,
+          NULL AS Platform,
+          o.InterestedProduct AS Extra,
+          o.CreatedAt AS CreatedAt
+        FROM SalesOpportunities o
+        LEFT JOIN Parties p ON o.PartyID = p.PartyID
+        LEFT JOIN Employees e ON o.EmployeeID = e.EmployeeID
+        LEFT JOIN SalesStages ss ON o.StageID = ss.StageID
+        ${where}
+        ORDER BY o.NextFollowUpDate ASC
+      `);
+      parts.push(...(r.recordset || []));
+    } catch (e) {
+      console.error('followups/opportunities:', e.message);
+    }
+  }
+
+  // Map + sort (overdue first by severity, then date)
+  let items = parts.map(mapRow);
+
+  // If source=client: tasks + opportunities only (already filtered by query set)
+  // If source=lead: leads only
+
+  items.sort((a, b) => {
+    const order = { overdue: 0, today: 1, tomorrow: 2, upcoming: 3 };
+    const ba = order[a.bucket] ?? 9;
+    const bb = order[b.bucket] ?? 9;
+    if (ba !== bb) return ba - bb;
+    if (a.bucket === 'overdue' && b.bucket === 'overdue') {
+      return (b.daysOverdue || 0) - (a.daysOverdue || 0);
+    }
+    const da = a.followUpDate ? new Date(a.followUpDate).getTime() : 0;
+    const db = b.followUpDate ? new Date(b.followUpDate).getTime() : 0;
     return da - db;
   });
 
-  const items = parts.slice(0, limit);
+  items = items.slice(0, limit);
 
-  const summary = {
-    total: items.length,
-    overdue: items.filter((x) => x.Bucket === 'overdue').length,
-    today: items.filter((x) => x.Bucket === 'today').length,
-    upcoming: items.filter((x) => x.Bucket === 'upcoming').length,
-    leads: items.filter((x) => x.ItemType === 'lead').length,
-    opportunities: items.filter((x) => x.ItemType === 'opportunity').length,
-    tasks: items.filter((x) => x.ItemType === 'task').length,
-  };
-
+  const summary = buildSummary(items);
   return { items, summary, scope, source };
 }
 
+function buildSummary(items) {
+  return {
+    total: items.length,
+    overdue: items.filter((x) => x.bucket === 'overdue').length,
+    today: items.filter((x) => x.bucket === 'today').length,
+    tomorrow: items.filter((x) => x.bucket === 'tomorrow').length,
+    upcoming: items.filter((x) => x.bucket === 'upcoming').length,
+    leads: items.filter((x) => x.isLeadTask || x.itemType === 'lead').length,
+    clients: items.filter((x) => !x.isLeadTask && x.itemType !== 'lead').length,
+    opportunities: items.filter((x) => x.itemType === 'opportunity').length,
+    tasks: items.filter((x) => x.itemType === 'task').length,
+  };
+}
+
 async function getFollowUpSummary(filters = {}) {
-  const data = await getFollowUps({ ...filters, scope: 'all', limit: 300 });
+  // Full scan for KPIs (all buckets)
+  const data = await getFollowUps({ ...filters, scope: 'all', limit: 400 });
   return data.summary;
 }
 
-/**
- * Complete a lead follow-up interaction (mark IsCompleted)
- */
-async function completeLeadFollowUp(interactionId, userName = 'System') {
+async function completeLeadFollowUp(interactionId) {
   const pool = await connectDB();
-  await pool
+  const result = await pool
     .request()
     .input('id', sql.Int, interactionId)
     .query(`
@@ -268,8 +359,15 @@ async function completeLeadFollowUp(interactionId, userName = 'System') {
       SET IsCompleted = 1,
           CompletedDate = GETDATE()
       WHERE LeadInteractionId = @id
+        AND ISNULL(IsCompleted, 0) = 0;
+
+      SELECT @@ROWCOUNT AS affected;
     `);
-  return { success: true, message: 'تم إنهاء متابعة الـ Lead' };
+  const affected = result.recordset?.[0]?.affected ?? 0;
+  return {
+    success: affected > 0,
+    message: affected > 0 ? 'تم إنهاء متابعة الـ Lead' : 'المتابعة غير موجودة أو منتهية',
+  };
 }
 
 module.exports = {
