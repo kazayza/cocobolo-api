@@ -1,178 +1,1046 @@
 const { sql, connectDB } = require('../../core/database');
+const notificationsQueries = require('../notifications/notifications.queries');
 
-// 1. جلب الـ Leads مع الفلاتر والبحث
-async function getLeads(filters = {}) {
-  const pool = await connectDB();
-  let query = `
-    SELECT 
-      l.LeadId, l.FullName, l.Phone, l.Phone2, l.Email,
-      l.City, l.CampaignName, l.AdName, l.FormName, l.Platform,
-      l.LeadStatus, l.IsConverted, l.AssignedEmployeeId,
-      e.FullName AS EmployeeName,
-      FORMAT(l.LeadDate, 'yyyy-MM-dd hh:mm tt') as LeadDate,
-      FORMAT(l.CreatedAt, 'yyyy-MM-dd hh:mm tt') as CreatedAt,
-      l.Notes, l.Feedback
-    FROM LeadsCRM l
-    LEFT JOIN Employees e ON l.AssignedEmployeeId = e.EmployeeID
-    WHERE 1=1
-  `;
+// ═══════════════════════════════════════════════════════════
+// Constants — must match Blazor LeadInteractionTypes / statuses
+// ═══════════════════════════════════════════════════════════
+const STATUSES = {
+  NEW: 'جديد',
+  ASSIGNED: 'تم الإسناد',
+  CONTACTED: 'تم التواصل',
+  CONVERTED: 'محول',
+  REJECTED: 'مرفوض',
+  QUALIFIED_LEGACY: 'مؤهل',
+};
 
-  const request = pool.request();
+const INTERACTION_TYPES = {
+  ASSIGNED: 'إسناد',
+  CALL: 'اتصال',
+  WHATSAPP: 'واتساب',
+  NOTE: 'ملاحظة',
+  FOLLOW_UP: 'متابعة',
+  CONVERTED: 'تحويل',
+  REJECTED: 'رفض',
+};
 
-  if (filters.status && filters.status !== 'الكل') {
-    request.input('status', sql.NVarChar(50), filters.status);
-    query += ` AND l.LeadStatus = @status`;
-  }
+const CONTACT_TYPES = new Set([
+  INTERACTION_TYPES.CALL,
+  INTERACTION_TYPES.WHATSAPP,
+  INTERACTION_TYPES.FOLLOW_UP,
+  INTERACTION_TYPES.NOTE,
+]);
 
-  if (filters.search && filters.search.trim() !== '') {
-    request.input('search', sql.NVarChar(100), `%${filters.search}%`);
-    query += ` AND (l.FullName LIKE @search OR l.Phone LIKE @search OR l.CampaignName LIKE @search)`;
-  }
-
-  query += ` ORDER BY l.LeadId DESC`;
-
-  const result = await request.query(query);
-  return result.recordset;
+function normalizeStatus(status) {
+  if (!status) return status;
+  const s = String(status).trim();
+  // Fix common wrong spellings from older mobile/API code
+  if (s === 'محوّل' || s === 'محوّل' || s === 'محوله') return STATUSES.CONVERTED;
+  if (s === 'تم الاسناد') return STATUSES.ASSIGNED;
+  return s;
 }
 
-// 2. جلب تفاصيل Lead معين
+function toInt(v, fallback = null) {
+  if (v === undefined || v === null || v === '') return fallback;
+  const n = parseInt(v, 10);
+  return Number.isNaN(n) ? fallback : n;
+}
+
+function toDecimal(v, fallback = 0) {
+  if (v === undefined || v === null || v === '') return fallback;
+  const n = Number(v);
+  return Number.isNaN(n) ? fallback : n;
+}
+
+// ═══════════════════════════════════════════════════════════
+// LIST
+// ═══════════════════════════════════════════════════════════
+async function getLeads(filters = {}) {
+  const pool = await connectDB();
+  const request = pool.request();
+
+  const page = Math.max(1, toInt(filters.page, 1));
+  const limit = Math.min(200, Math.max(1, toInt(filters.limit, 50)));
+  const offset = (page - 1) * limit;
+
+  let where = ' WHERE 1=1 ';
+
+  const status = normalizeStatus(filters.status || filters.leadStatus);
+  if (status && status !== 'الكل') {
+    request.input('status', sql.NVarChar(50), status);
+    where += ' AND l.LeadStatus = @status ';
+  }
+
+  if (filters.search && String(filters.search).trim()) {
+    request.input('search', sql.NVarChar(100), `%${String(filters.search).trim()}%`);
+    where += ` AND (
+      l.FullName LIKE @search OR l.Phone LIKE @search OR l.Phone2 LIKE @search
+      OR l.CampaignName LIKE @search OR l.AdName LIKE @search
+    ) `;
+  }
+
+  const employeeId = toInt(filters.employeeId ?? filters.assignedEmployeeId);
+  if (employeeId) {
+    request.input('employeeId', sql.Int, employeeId);
+    where += ' AND l.AssignedEmployeeId = @employeeId ';
+  }
+
+  if (filters.dateFrom) {
+    request.input('dateFrom', sql.DateTime, new Date(filters.dateFrom));
+    where += ' AND ISNULL(l.LeadDate, l.CreatedAt) >= @dateFrom ';
+  }
+  if (filters.dateTo) {
+    // inclusive end-of-day-ish
+    const d = new Date(filters.dateTo);
+    d.setHours(23, 59, 59, 999);
+    request.input('dateTo', sql.DateTime, d);
+    where += ' AND ISNULL(l.LeadDate, l.CreatedAt) <= @dateTo ';
+  }
+
+  if (filters.platform) {
+    request.input('platform', sql.NVarChar(50), filters.platform);
+    where += ' AND l.Platform = @platform ';
+  }
+
+  if (filters.lateFollowUpOnly === '1' || filters.lateFollowUpOnly === true) {
+    where += `
+      AND l.LeadStatus NOT IN (N'محول', N'مرفوض')
+      AND l.IsConverted = 0
+      AND ISNULL(l.LeadDate, l.CreatedAt) < DATEADD(HOUR, -1, GETDATE())
+    `;
+  }
+
+  request.input('offset', sql.Int, offset);
+  request.input('limit', sql.Int, limit);
+
+  const countResult = await request.query(`
+    SELECT COUNT(1) AS total
+    FROM LeadsCRM l
+    ${where}
+  `);
+  const total = countResult.recordset[0]?.total || 0;
+
+  // new request for data (mssql request is single-use after query in some paths — recreate)
+  const dataReq = pool.request();
+  if (status && status !== 'الكل') dataReq.input('status', sql.NVarChar(50), status);
+  if (filters.search && String(filters.search).trim()) {
+    dataReq.input('search', sql.NVarChar(100), `%${String(filters.search).trim()}%`);
+  }
+  if (employeeId) dataReq.input('employeeId', sql.Int, employeeId);
+  if (filters.dateFrom) dataReq.input('dateFrom', sql.DateTime, new Date(filters.dateFrom));
+  if (filters.dateTo) {
+    const d = new Date(filters.dateTo);
+    d.setHours(23, 59, 59, 999);
+    dataReq.input('dateTo', sql.DateTime, d);
+  }
+  if (filters.platform) dataReq.input('platform', sql.NVarChar(50), filters.platform);
+  dataReq.input('offset', sql.Int, offset);
+  dataReq.input('limit', sql.Int, limit);
+
+  const dataResult = await dataReq.query(`
+    SELECT
+      l.LeadId, l.FullName, l.Phone, l.Phone2, l.Email,
+      l.City, l.Area, l.Address,
+      l.CampaignName, l.AdName, l.AdSetName, l.FormName, l.Platform,
+      l.ProjectType, l.Budget, l.LeadStatus, l.IsConverted,
+      l.AssignedEmployeeId, e.FullName AS AssignedEmployeeName,
+      l.ConvertedPartyId, l.ConvertedOpportunityId,
+      l.IsDuplicate, l.Feedback, l.RejectedReason, l.Notes,
+      l.LastContactDate, l.LeadDate, l.CreatedAt, l.CreatedBy
+    FROM LeadsCRM l
+    LEFT JOIN Employees e ON l.AssignedEmployeeId = e.EmployeeID
+    ${where}
+    ORDER BY l.LeadId DESC
+    OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
+  `);
+
+  return {
+    items: dataResult.recordset,
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit) || 1,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════
+// STATS
+// ═══════════════════════════════════════════════════════════
+async function getStats(filters = {}) {
+  const pool = await connectDB();
+  const request = pool.request();
+  let where = ' WHERE 1=1 ';
+
+  const employeeId = toInt(filters.employeeId);
+  if (employeeId) {
+    request.input('employeeId', sql.Int, employeeId);
+    where += ' AND AssignedEmployeeId = @employeeId ';
+  }
+  if (filters.dateFrom) {
+    request.input('dateFrom', sql.DateTime, new Date(filters.dateFrom));
+    where += ' AND ISNULL(LeadDate, CreatedAt) >= @dateFrom ';
+  }
+  if (filters.dateTo) {
+    const d = new Date(filters.dateTo);
+    d.setHours(23, 59, 59, 999);
+    request.input('dateTo', sql.DateTime, d);
+    where += ' AND ISNULL(LeadDate, CreatedAt) <= @dateTo ';
+  }
+
+  const result = await request.query(`
+    SELECT
+      COUNT(1) AS TotalLeads,
+      SUM(CASE WHEN LeadStatus = N'جديد' THEN 1 ELSE 0 END) AS NewLeads,
+      SUM(CASE WHEN LeadStatus = N'تم الإسناد' THEN 1 ELSE 0 END) AS AssignedLeads,
+      SUM(CASE WHEN LeadStatus = N'تم التواصل' THEN 1 ELSE 0 END) AS ContactedLeads,
+      SUM(CASE WHEN LeadStatus = N'مؤهل' THEN 1 ELSE 0 END) AS QualifiedLeads,
+      SUM(CASE WHEN LeadStatus = N'محول' OR IsConverted = 1 THEN 1 ELSE 0 END) AS ConvertedLeads,
+      SUM(CASE WHEN LeadStatus = N'مرفوض' THEN 1 ELSE 0 END) AS RejectedLeads,
+      SUM(CASE
+            WHEN LeadStatus NOT IN (N'محول', N'مرفوض') AND IsConverted = 0
+             AND ISNULL(LeadDate, CreatedAt) < DATEADD(HOUR, -1, GETDATE())
+            THEN 1 ELSE 0 END) AS LateFollowUps
+    FROM LeadsCRM
+    ${where}
+  `);
+
+  const row = result.recordset[0] || {};
+  return {
+    totalLeads: row.TotalLeads || 0,
+    newLeads: row.NewLeads || 0,
+    assignedLeads: row.AssignedLeads || 0,
+    contactedLeads: row.ContactedLeads || 0,
+    qualifiedLeads: row.QualifiedLeads || 0,
+    convertedLeads: row.ConvertedLeads || 0,
+    rejectedLeads: row.RejectedLeads || 0,
+    lateFollowUps: row.LateFollowUps || 0,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════
+// DETAIL
+// ═══════════════════════════════════════════════════════════
 async function getLeadById(leadId) {
   const pool = await connectDB();
   const result = await pool.request()
     .input('leadId', sql.Int, leadId)
     .query(`
-      SELECT l.*, e.FullName AS EmployeeName
+      SELECT
+        l.*,
+        e.FullName AS AssignedEmployeeName,
+        oe.FullName AS OpportunityEmployeeName
       FROM LeadsCRM l
       LEFT JOIN Employees e ON l.AssignedEmployeeId = e.EmployeeID
+      LEFT JOIN SalesOpportunities so ON l.ConvertedOpportunityId = so.OpportunityID
+      LEFT JOIN Employees oe ON so.EmployeeID = oe.EmployeeID
       WHERE l.LeadId = @leadId
     `);
-  return result.recordset[0] || null;
+
+  const lead = result.recordset[0] || null;
+  if (lead) {
+    lead.LeadStatus = normalizeStatus(lead.LeadStatus);
+    lead.CanConvert = canConvertLead(lead);
+  }
+  return lead;
 }
 
-// 3. تحديث بيانات الـ Lead
-async function updateLead(leadId, data) {
+function canConvertLead(lead) {
+  if (!lead) return false;
+  if (lead.IsConverted === true || lead.IsConverted === 1) return false;
+  const status = normalizeStatus(lead.LeadStatus);
+  if (status === STATUSES.CONVERTED || status === STATUSES.REJECTED) return false;
+  return status === STATUSES.CONTACTED || !!lead.LastContactDate;
+}
+
+// ═══════════════════════════════════════════════════════════
+// EMPLOYEES (assignable)
+// ═══════════════════════════════════════════════════════════
+async function getAssignableEmployees() {
   const pool = await connectDB();
-  await pool.request()
-    .input('leadId', sql.Int, leadId)
-    .input('status', sql.NVarChar(50), data.leadStatus)
-    .input('employeeId', sql.Int, data.assignedEmployeeId || null)
-    .input('notes', sql.NVarChar(sql.MAX), data.notes || null)
-    .input('feedback', sql.NVarChar(sql.MAX), data.feedback || null)
-    .query(`
-      UPDATE LeadsCRM 
-      SET LeadStatus = @status,
-          AssignedEmployeeId = @employeeId,
-          Notes = @notes,
-          Feedback = @feedback
-      WHERE LeadId = @leadId
-    `);
-  return true;
+  const result = await pool.request().query(`
+    SELECT EmployeeID AS EmployeeId, FullName, Department, Status, Phone
+    FROM Employees
+    WHERE Status IN (N'نشط', N'Active')
+    ORDER BY FullName
+  `);
+  return result.recordset;
 }
 
-// 4. تحويل الـ Lead إلى عميل رسمي (Party + Opportunity)
-async function convertLeadToClient(leadId, dto, userName) {
+// ═══════════════════════════════════════════════════════════
+// UPDATE (status / assign / notes) — Blazor UpdateLeadAsync
+// ═══════════════════════════════════════════════════════════
+async function updateLead(leadId, data, userName = 'System') {
   const pool = await connectDB();
   const transaction = new sql.Transaction(pool);
   await transaction.begin();
 
   try {
-    const leadResult = await transaction.request()
+    const req = new sql.Request(transaction);
+    const leadResult = await req
       .input('leadId', sql.Int, leadId)
-      .query(`SELECT * FROM LeadsCRM WHERE LeadId = @leadId`);
+      .query('SELECT * FROM LeadsCRM WHERE LeadId = @leadId');
+
     const lead = leadResult.recordset[0];
+    if (!lead) {
+      await transaction.rollback();
+      return { success: false, message: 'Lead غير موجود' };
+    }
 
-    if (!lead) throw new Error('العميل المحتمل غير موجود');
+    const statusNow = normalizeStatus(lead.LeadStatus);
+    if (statusNow === STATUSES.CONVERTED || lead.IsConverted) {
+      await transaction.rollback();
+      return { success: false, message: 'لا يمكن تعديل Lead محوّل' };
+    }
 
-    const partyResult = await transaction.request()
-      .input('partyName', sql.NVarChar(200), lead.FullName)
-      .input('phone', sql.NVarChar(50), lead.Phone)
-      .input('phone2', sql.NVarChar(50), lead.Phone2 || null)
-      .input('email', sql.NVarChar(100), lead.Email || null)
-      .input('address', sql.NVarChar(500), lead.Address || lead.City || null)
-      .input('createdBy', sql.NVarChar(100), userName)
-      .query(`
-        INSERT INTO Parties (PartyName, Phone, Phone2, Email, Address, PartyType, IsActive, CreatedBy, CreatedAt)
-        OUTPUT INSERTED.PartyID
-        VALUES (@partyName, @phone, @phone2, @email, @address, 1, 1, @createdBy, GETDATE())
-      `);
-    const partyId = partyResult.recordset[0].PartyID;
+    const now = new Date();
+    const oldStatus = lead.LeadStatus;
+    const oldAssigned = lead.AssignedEmployeeId;
 
-    const oppResult = await transaction.request()
-      .input('partyId', sql.Int, partyId)
-      .input('employeeId', sql.Int, dto.employeeId || lead.AssignedEmployeeId || 1)
-      .input('expectedValue', sql.Decimal(18,2), dto.expectedValue || 0)
-      .input('notes', sql.NVarChar(sql.MAX), dto.notes || lead.Notes || 'مستورد من إعلانات Meta')
-      .input('createdBy', sql.NVarChar(100), userName)
-      .query(`
-        INSERT INTO SalesOpportunities (
-          PartyID, EmployeeID, StageID, ExpectedValue, Notes, IsActive, CreatedBy, CreatedAt, FirstContactDate
-        )
-        OUTPUT INSERTED.OpportunityID
-        VALUES (
-          @partyId, @employeeId, 1, @expectedValue, @notes, 1, @createdBy, GETDATE(), GETDATE()
-        )
-      `);
-    const opportunityId = oppResult.recordset[0].OpportunityID;
+    let newStatus = data.leadStatus !== undefined
+      ? normalizeStatus(data.leadStatus)
+      : lead.LeadStatus;
 
-    await transaction.request()
+    let assignedEmployeeId =
+      data.assignedEmployeeId !== undefined
+        ? toInt(data.assignedEmployeeId, null)
+        : lead.AssignedEmployeeId;
+
+    // allow explicit null unassign
+    if (data.assignedEmployeeId === null) assignedEmployeeId = null;
+
+    const notes = data.notes !== undefined ? data.notes : lead.Notes;
+    const feedback = data.feedback !== undefined ? data.feedback : lead.Feedback;
+    let rejectedReason = data.rejectedReason !== undefined
+      ? data.rejectedReason
+      : lead.RejectedReason;
+
+    let hasContactAction = false;
+    if (newStatus === STATUSES.CONTACTED || newStatus === STATUSES.QUALIFIED_LEGACY) {
+      hasContactAction = true;
+    }
+    if (newStatus === STATUSES.REJECTED) {
+      hasContactAction = true;
+      if (!rejectedReason && data.rejectedReason) rejectedReason = data.rejectedReason;
+    }
+    if (feedback && String(feedback).trim() && feedback !== lead.Feedback) {
+      hasContactAction = true;
+    }
+
+    const assignmentChanged = oldAssigned !== assignedEmployeeId;
+
+    // Auto: assign on جديد → تم الإسناد
+    if (assignmentChanged && assignedEmployeeId && normalizeStatus(newStatus) === STATUSES.NEW) {
+      newStatus = STATUSES.ASSIGNED;
+    } else if (
+      assignmentChanged &&
+      assignedEmployeeId &&
+      normalizeStatus(lead.LeadStatus) === STATUSES.NEW &&
+      data.leadStatus === undefined
+    ) {
+      newStatus = STATUSES.ASSIGNED;
+    }
+
+    const lastContactDate = hasContactAction ? now : lead.LastContactDate;
+    const qualifiedDate =
+      newStatus === STATUSES.QUALIFIED_LEGACY && oldStatus !== STATUSES.QUALIFIED_LEGACY
+        ? now
+        : lead.QualifiedDate;
+
+    await new sql.Request(transaction)
       .input('leadId', sql.Int, leadId)
-      .input('partyId', sql.Int, partyId)
-      .input('oppId', sql.Int, opportunityId)
+      .input('status', sql.NVarChar(50), newStatus)
+      .input('employeeId', sql.Int, assignedEmployeeId)
+      .input('notes', sql.NVarChar(sql.MAX), notes)
+      .input('feedback', sql.NVarChar(sql.MAX), feedback)
+      .input('rejectedReason', sql.NVarChar(sql.MAX), rejectedReason)
+      .input('lastContact', sql.DateTime, lastContactDate)
+      .input('qualifiedDate', sql.DateTime, qualifiedDate)
       .query(`
-        UPDATE LeadsCRM 
-        SET IsConverted = 1,
-            LeadStatus = N'محوّل',
-            ConvertedPartyId = @partyId,
-            ConvertedOpportunityId = @oppId,
-            ConvertedDate = GETDATE()
+        UPDATE LeadsCRM SET
+          LeadStatus = @status,
+          AssignedEmployeeId = @employeeId,
+          Notes = @notes,
+          Feedback = @feedback,
+          RejectedReason = @rejectedReason,
+          LastContactDate = @lastContact,
+          QualifiedDate = @qualifiedDate
         WHERE LeadId = @leadId
       `);
 
+    // System interaction on assign
+    if (assignmentChanged && assignedEmployeeId) {
+      await insertLeadInteraction(transaction, {
+        leadId,
+        employeeId: assignedEmployeeId,
+        interactionType: INTERACTION_TYPES.ASSIGNED,
+        summary: 'تم إسناد الـ Lead إلى موظف مسؤول.',
+        notes: null,
+        oldLeadStatus: oldStatus,
+        newLeadStatus: newStatus,
+        nextFollowUpDate: null,
+        isSystemGenerated: true,
+        createdBy: userName,
+      });
+    }
+
+    if (assignmentChanged && !assignedEmployeeId && oldAssigned) {
+      await insertLeadInteraction(transaction, {
+        leadId,
+        employeeId: oldAssigned,
+        interactionType: INTERACTION_TYPES.NOTE,
+        summary: 'تم إلغاء إسناد الـ Lead من الموظف السابق.',
+        notes: null,
+        oldLeadStatus: oldStatus,
+        newLeadStatus: newStatus,
+        nextFollowUpDate: null,
+        isSystemGenerated: true,
+        createdBy: userName,
+      });
+    }
+
+    // Reject system interaction when status flipped to مرفوض via update
+    if (
+      normalizeStatus(newStatus) === STATUSES.REJECTED &&
+      normalizeStatus(oldStatus) !== STATUSES.REJECTED
+    ) {
+      await insertLeadInteraction(transaction, {
+        leadId,
+        employeeId: assignedEmployeeId || oldAssigned,
+        interactionType: INTERACTION_TYPES.REJECTED,
+        summary: rejectedReason || 'تم رفض الـ Lead',
+        notes: feedback,
+        oldLeadStatus: oldStatus,
+        newLeadStatus: STATUSES.REJECTED,
+        nextFollowUpDate: null,
+        isSystemGenerated: true,
+        createdBy: userName,
+      });
+    }
+
     await transaction.commit();
-    return { success: true, partyId, opportunityId };
+
+    // Notify outside transaction
+    if (assignmentChanged && assignedEmployeeId) {
+      const fresh = await getLeadById(leadId);
+      await notifyLeadAssigned(fresh || lead, assignedEmployeeId, userName);
+    }
+
+    return { success: true, message: 'تم التحديث بنجاح', leadId };
   } catch (err) {
-    await transaction.rollback();
+    try { await transaction.rollback(); } catch (_) {}
     throw err;
   }
 }
 
-// 5. جلب تفاعلات Lead معين
+// ═══════════════════════════════════════════════════════════
+// INTERACTIONS
+// ═══════════════════════════════════════════════════════════
 async function getLeadInteractions(leadId) {
   const pool = await connectDB();
   const result = await pool.request()
     .input('leadId', sql.Int, leadId)
     .query(`
-      SELECT 
-        InteractionID, LeadID, InteractionType, Notes,
-        CreatedBy, FORMAT(CreatedAt, 'yyyy-MM-dd hh:mm tt') as CreatedAt
-      FROM LeadsInteraction
-      WHERE LeadID = @leadId
-      ORDER BY InteractionID DESC
+      SELECT
+        i.LeadInteractionId,
+        i.LeadId,
+        i.EmployeeId,
+        e.FullName AS EmployeeName,
+        i.InteractionType,
+        i.InteractionDate,
+        i.Summary,
+        i.Notes,
+        i.OldLeadStatus,
+        i.NewLeadStatus,
+        i.NextFollowUpDate,
+        i.IsCompleted,
+        i.CompletedByEmployeeId,
+        i.CompletedDate,
+        i.IsSystemGenerated,
+        i.CreatedBy,
+        i.CreatedAt
+      FROM LeadInteractions i
+      LEFT JOIN Employees e ON i.EmployeeId = e.EmployeeID
+      WHERE i.LeadId = @leadId
+      ORDER BY i.InteractionDate DESC, i.LeadInteractionId DESC
     `);
   return result.recordset;
 }
 
-// 6. إضافة تفاعل جديد لـ Lead
-async function addLeadInteraction(leadId, data, userName) {
+async function insertLeadInteraction(transactionOrNull, payload) {
+  const run = async (requestFactory) => {
+    const request = requestFactory();
+    const result = await request
+      .input('leadId', sql.Int, payload.leadId)
+      .input('employeeId', sql.Int, payload.employeeId || null)
+      .input('type', sql.NVarChar(50), payload.interactionType)
+      .input('summary', sql.NVarChar(sql.MAX), payload.summary || null)
+      .input('notes', sql.NVarChar(sql.MAX), payload.notes || null)
+      .input('oldStatus', sql.NVarChar(50), payload.oldLeadStatus || null)
+      .input('newStatus', sql.NVarChar(50), payload.newLeadStatus || null)
+      .input('nextFollowUp', sql.DateTime, payload.nextFollowUpDate || null)
+      .input('isSystem', sql.Bit, payload.isSystemGenerated ? 1 : 0)
+      .input('createdBy', sql.NVarChar(100), payload.createdBy || 'System')
+      .query(`
+        INSERT INTO LeadInteractions (
+          LeadId, EmployeeId, InteractionType, InteractionDate,
+          Summary, Notes, OldLeadStatus, NewLeadStatus, NextFollowUpDate,
+          IsCompleted, IsSystemGenerated, CreatedBy, CreatedAt
+        )
+        OUTPUT INSERTED.LeadInteractionId
+        VALUES (
+          @leadId, @employeeId, @type, GETDATE(),
+          @summary, @notes, @oldStatus, @newStatus, @nextFollowUp,
+          0, @isSystem, @createdBy, GETDATE()
+        )
+      `);
+    return result.recordset[0]?.LeadInteractionId;
+  };
+
+  if (transactionOrNull) {
+    return run(() => new sql.Request(transactionOrNull));
+  }
+  const pool = await connectDB();
+  return run(() => pool.request());
+}
+
+/**
+ * Blazor AddLeadInteractionAsync parity
+ */
+async function addLeadInteraction(leadId, data, userName = 'System') {
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
+
+  try {
+    const leadRes = await new sql.Request(transaction)
+      .input('leadId', sql.Int, leadId)
+      .query('SELECT * FROM LeadsCRM WHERE LeadId = @leadId');
+
+    const lead = leadRes.recordset[0];
+    if (!lead) {
+      await transaction.rollback();
+      return { success: false, message: 'Lead غير موجود' };
+    }
+
+    if (lead.IsConverted || normalizeStatus(lead.LeadStatus) === STATUSES.CONVERTED) {
+      await transaction.rollback();
+      return { success: false, message: 'لا يمكن إضافة تواصل على Lead محوّل' };
+    }
+    if (normalizeStatus(lead.LeadStatus) === STATUSES.REJECTED) {
+      await transaction.rollback();
+      return { success: false, message: 'لا يمكن إضافة تواصل على Lead مرفوض' };
+    }
+
+    const now = new Date();
+    const oldStatus = lead.LeadStatus;
+    const interactionType = (data.interactionType || INTERACTION_TYPES.NOTE).trim();
+    let newStatus = data.newLeadStatus ? normalizeStatus(data.newLeadStatus) : null;
+
+    // Resolve employee: body → assigned → user.employee
+    let empId = toInt(data.employeeId, null);
+    if (!empId) empId = lead.AssignedEmployeeId || null;
+    if (!empId && userName) {
+      const u = await new sql.Request(transaction)
+        .input('username', sql.NVarChar(100), userName)
+        .query('SELECT employeeID FROM Users WHERE Username = @username');
+      empId = u.recordset[0]?.employeeID || null;
+    }
+
+    // Close open follow-ups
+    await new sql.Request(transaction)
+      .input('leadId', sql.Int, leadId)
+      .input('empId', sql.Int, empId)
+      .query(`
+        UPDATE LeadInteractions
+        SET IsCompleted = 1,
+            CompletedByEmployeeId = @empId,
+            CompletedDate = GETDATE()
+        WHERE LeadId = @leadId
+          AND NextFollowUpDate IS NOT NULL
+          AND ISNULL(IsCompleted, 0) = 0
+      `);
+
+    let assignedEmployeeId = lead.AssignedEmployeeId;
+    let leadStatus = lead.LeadStatus;
+    let lastContactDate = lead.LastContactDate;
+    let rejectedReason = lead.RejectedReason;
+
+    // Auto-assign if unassigned
+    if (!assignedEmployeeId && empId) {
+      assignedEmployeeId = empId;
+      if (normalizeStatus(leadStatus) === STATUSES.NEW) {
+        leadStatus = STATUSES.ASSIGNED;
+      }
+    }
+
+    if (newStatus) {
+      leadStatus = newStatus;
+      if (newStatus === STATUSES.CONTACTED) {
+        lastContactDate = now;
+      } else if (newStatus === STATUSES.REJECTED) {
+        lastContactDate = now;
+        if (data.rejectedReason) rejectedReason = data.rejectedReason;
+      } else if (newStatus === STATUSES.CONVERTED) {
+        lastContactDate = now;
+      }
+    } else if (CONTACT_TYPES.has(interactionType)) {
+      lastContactDate = now;
+      const st = normalizeStatus(leadStatus);
+      if (st === STATUSES.NEW || st === STATUSES.ASSIGNED) {
+        leadStatus = STATUSES.CONTACTED;
+        newStatus = STATUSES.CONTACTED;
+      }
+    }
+
+    const interactionId = await insertLeadInteraction(transaction, {
+      leadId,
+      employeeId: empId,
+      interactionType,
+      summary: data.summary || null,
+      notes: data.notes || null,
+      oldLeadStatus: oldStatus,
+      newLeadStatus: newStatus,
+      nextFollowUpDate: data.nextFollowUpDate ? new Date(data.nextFollowUpDate) : null,
+      isSystemGenerated: false,
+      createdBy: userName,
+    });
+
+    await new sql.Request(transaction)
+      .input('leadId', sql.Int, leadId)
+      .input('status', sql.NVarChar(50), leadStatus)
+      .input('employeeId', sql.Int, assignedEmployeeId)
+      .input('lastContact', sql.DateTime, lastContactDate)
+      .input('rejectedReason', sql.NVarChar(sql.MAX), rejectedReason)
+      .query(`
+        UPDATE LeadsCRM SET
+          LeadStatus = @status,
+          AssignedEmployeeId = @employeeId,
+          LastContactDate = @lastContact,
+          RejectedReason = @rejectedReason
+        WHERE LeadId = @leadId
+      `);
+
+    await transaction.commit();
+
+    // Notify if we newly assigned via interaction
+    if (!lead.AssignedEmployeeId && assignedEmployeeId) {
+      const fresh = await getLeadById(leadId);
+      await notifyLeadAssigned(fresh || lead, assignedEmployeeId, userName);
+    }
+
+    return {
+      success: true,
+      message: 'تم تسجيل التواصل بنجاح',
+      interactionId,
+      leadStatus,
+    };
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) {}
+    throw err;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// CONVERT — Blazor ConvertLeadToClientAsync parity
+// ═══════════════════════════════════════════════════════════
+async function convertLeadToClient(leadId, dto = {}, userName = 'System') {
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
+
+  try {
+    const leadRes = await new sql.Request(transaction)
+      .input('leadId', sql.Int, leadId)
+      .query('SELECT * FROM LeadsCRM WHERE LeadId = @leadId');
+
+    const lead = leadRes.recordset[0];
+    if (!lead) {
+      await transaction.rollback();
+      return { success: false, message: 'Lead غير موجود' };
+    }
+    if (lead.IsConverted) {
+      await transaction.rollback();
+      return { success: false, message: 'الـ Lead ده اتحول لعميل قبل كده' };
+    }
+
+    const status = normalizeStatus(lead.LeadStatus);
+    if (status === STATUSES.REJECTED) {
+      await transaction.rollback();
+      return { success: false, message: 'لا يمكن تحويل Lead مرفوض' };
+    }
+    if (!(status === STATUSES.CONTACTED || lead.LastContactDate)) {
+      await transaction.rollback();
+      return {
+        success: false,
+        message: 'يجب تسجيل تواصل مع الـ Lead قبل التحويل (حالة تم التواصل)',
+      };
+    }
+
+    const employeeId = toInt(dto.employeeId ?? dto.EmployeeId, null)
+      || lead.AssignedEmployeeId;
+    if (!employeeId) {
+      await transaction.rollback();
+      return {
+        success: false,
+        message: 'يجب اختيار الموظف الذي ستُسند إليه الفرصة قبل التحويل',
+      };
+    }
+
+    const empRes = await new sql.Request(transaction)
+      .input('employeeId', sql.Int, employeeId)
+      .query(`
+        SELECT EmployeeID, FullName, Status
+        FROM Employees
+        WHERE EmployeeID = @employeeId
+          AND Status IN (N'نشط', N'Active')
+      `);
+    if (!empRes.recordset[0]) {
+      await transaction.rollback();
+      return { success: false, message: 'الموظف المختار غير موجود أو غير نشط' };
+    }
+
+    if (!lead.FullName || !lead.Phone) {
+      await transaction.rollback();
+      return { success: false, message: 'بيانات الـ Lead ناقصة (الاسم أو الموبايل)' };
+    }
+
+    const phoneCheck = await new sql.Request(transaction)
+      .input('phone', sql.NVarChar(50), String(lead.Phone).trim())
+      .query(`
+        SELECT TOP 1 PartyID FROM Parties
+        WHERE Phone = @phone AND ISNULL(IsActive, 1) = 1
+      `);
+    if (phoneCheck.recordset[0]) {
+      await transaction.rollback();
+      return { success: false, message: 'رقم الهاتف موجود بالفعل في العملاء' };
+    }
+
+    // Initial stage: Potential / مهتم else first active
+    let stageRes = await new sql.Request(transaction).query(`
+      SELECT TOP 1 StageID
+      FROM SalesStages
+      WHERE IsActive = 1
+        AND (StageName = 'Potential' OR StageNameAr = N'مهتم')
+      ORDER BY StageOrder
+    `);
+    let stageId = stageRes.recordset[0]?.StageID;
+    if (!stageId) {
+      stageRes = await new sql.Request(transaction).query(`
+        SELECT TOP 1 StageID FROM SalesStages
+        WHERE IsActive = 1 ORDER BY StageOrder
+      `);
+      stageId = stageRes.recordset[0]?.StageID;
+    }
+    if (!stageId) {
+      await transaction.rollback();
+      return { success: false, message: 'لا توجد مراحل بيع مفعّلة' };
+    }
+
+    const expectedValue = toDecimal(dto.expectedValue ?? dto.ExpectedValue, 0);
+    const notes = dto.notes ?? dto.Notes ?? lead.Notes ?? null;
+    const sourceId = toInt(dto.sourceId ?? dto.SourceId, null);
+    const adTypeId = toInt(dto.adTypeId ?? dto.AdTypeId, null);
+    const categoryId = toInt(dto.categoryId ?? dto.CategoryId, null);
+    const taskTypeId = toInt(dto.taskTypeId ?? dto.TaskTypeId, null);
+    const oldLeadStatus = lead.LeadStatus;
+
+    const guidance = buildGuidanceFromLead(lead);
+
+    // 1) Party
+    const partyResult = await new sql.Request(transaction)
+      .input('partyName', sql.NVarChar(200), String(lead.FullName).trim())
+      .input('phone', sql.NVarChar(50), String(lead.Phone).trim())
+      .input('phone2', sql.NVarChar(50), lead.Phone2 || null)
+      .input('email', sql.NVarChar(100), lead.Email || null)
+      .input('address', sql.NVarChar(250), lead.Address || lead.City || null)
+      .input('referralSourceId', sql.Int, sourceId || null)
+      .input('createdBy', sql.NVarChar(100), userName)
+      .query(`
+        INSERT INTO Parties (
+          PartyName, PartyType, Phone, Phone2, Email, Address,
+          ReferralSourceID, IsActive, CreatedBy, CreatedAt
+        )
+        OUTPUT INSERTED.PartyID
+        VALUES (
+          @partyName, 1, @phone, @phone2, @email, @address,
+          @referralSourceId, 1, @createdBy, GETDATE()
+        )
+      `);
+    const partyId = partyResult.recordset[0].PartyID;
+
+    // 2) Opportunity (column set matches working opportunities module)
+    const oppResult = await new sql.Request(transaction)
+      .input('partyId', sql.Int, partyId)
+      .input('employeeId', sql.Int, employeeId)
+      .input('sourceId', sql.Int, sourceId)
+      .input('adTypeId', sql.Int, adTypeId)
+      .input('stageId', sql.Int, stageId)
+      .input('categoryId', sql.Int, categoryId)
+      .input('interestedProduct', sql.NVarChar(255), lead.ProjectType || null)
+      .input('nextFollowUp', sql.DateTime, new Date(Date.now() + 24 * 60 * 60 * 1000))
+      .input('notes', sql.NVarChar(sql.MAX), notes)
+      .input('expectedValue', sql.Decimal(18, 2), expectedValue)
+      .input('guidance', sql.NVarChar(sql.MAX), guidance)
+      .input('createdBy', sql.NVarChar(50), userName)
+      .query(`
+        INSERT INTO SalesOpportunities (
+          PartyID, EmployeeID, SourceID, AdTypeID, CategoryID,
+          StageID, InterestedProduct, ExpectedValue,
+          Notes, Guidance, NextFollowUpDate, FirstContactDate,
+          CreatedBy, CreatedAt, IsActive
+        )
+        OUTPUT INSERTED.OpportunityID
+        VALUES (
+          @partyId, @employeeId, @sourceId, @adTypeId, @categoryId,
+          @stageId, @interestedProduct, @expectedValue,
+          @notes, @guidance, @nextFollowUp, GETDATE(),
+          @createdBy, GETDATE(), 1
+        )
+      `);
+    const opportunityId = oppResult.recordset[0].OpportunityID;
+
+    // 3) Customer interaction
+    await new sql.Request(transaction)
+      .input('opportunityId', sql.Int, opportunityId)
+      .input('partyId', sql.Int, partyId)
+      .input('employeeId', sql.Int, employeeId)
+      .input('sourceId', sql.Int, sourceId)
+      .input('stageAfterId', sql.Int, stageId)
+      .input('summary', sql.NVarChar(1000),
+        `تحويل Lead من إعلان Meta - كامبين: ${lead.CampaignName || 'غير محدد'}`)
+      .input('nextFollowUp', sql.DateTime, new Date(Date.now() + 24 * 60 * 60 * 1000))
+      .input('notes', sql.NVarChar(500), notes)
+      .input('createdBy', sql.NVarChar(50), userName)
+      .query(`
+        INSERT INTO CustomerInteractions (
+          OpportunityID, PartyID, EmployeeID, SourceID,
+          InteractionDate, Summary, StageAfterID, NextFollowUpDate,
+          Notes, CreatedBy, CreatedAt
+        )
+        VALUES (
+          @opportunityId, @partyId, @employeeId, @sourceId,
+          GETDATE(), @summary, @stageAfterId, @nextFollowUp,
+          @notes, @createdBy, GETDATE()
+        )
+      `);
+
+    // 4) CRM Task
+    await new sql.Request(transaction)
+      .input('opportunityId', sql.Int, opportunityId)
+      .input('partyId', sql.Int, partyId)
+      .input('assignedTo', sql.Int, employeeId)
+      .input('taskTypeId', sql.Int, taskTypeId)
+      .input('taskDescription', sql.NVarChar(sql.MAX),
+        `متابعة عميل جديد من Meta: ${lead.FullName}`)
+      .input('dueDate', sql.DateTime, new Date(Date.now() + 24 * 60 * 60 * 1000))
+      .input('createdBy', sql.NVarChar(100), userName)
+      .query(`
+        INSERT INTO CRM_Tasks (
+          OpportunityID, PartyID, AssignedTo, TaskTypeID,
+          TaskDescription, DueDate, Priority, Status,
+          ReminderEnabled, IsActive, CreatedBy, CreatedAt
+        )
+        VALUES (
+          @opportunityId, @partyId, @assignedTo, @taskTypeId,
+          @taskDescription, @dueDate, 'Normal', 'Pending',
+          1, 1, @createdBy, GETDATE()
+        )
+      `);
+
+    // 5) Update lead
+    await new sql.Request(transaction)
+      .input('leadId', sql.Int, leadId)
+      .input('partyId', sql.Int, partyId)
+      .input('oppId', sql.Int, opportunityId)
+      .input('convertedBy', sql.NVarChar(100), userName)
+      .input('employeeId', sql.Int, employeeId)
+      .query(`
+        UPDATE LeadsCRM SET
+          IsConverted = 1,
+          LeadStatus = N'محول',
+          ConvertedPartyId = @partyId,
+          ConvertedOpportunityId = @oppId,
+          ConvertedDate = GETDATE(),
+          ConvertedBy = @convertedBy,
+          LastContactDate = GETDATE(),
+          AssignedEmployeeId = ISNULL(AssignedEmployeeId, @employeeId)
+        WHERE LeadId = @leadId
+      `);
+
+    // 6) Lead interaction system
+    await insertLeadInteraction(transaction, {
+      leadId,
+      employeeId,
+      interactionType: INTERACTION_TYPES.CONVERTED,
+      summary: `تم تحويل الـ Lead إلى فرصة بيع #${opportunityId}`,
+      notes,
+      oldLeadStatus: oldLeadStatus,
+      newLeadStatus: STATUSES.CONVERTED,
+      nextFollowUpDate: null,
+      isSystemGenerated: true,
+      createdBy: userName,
+    });
+
+    await transaction.commit();
+
+    // 7) Notify
+    try {
+      await notifyOpportunityFromConversion(lead, opportunityId, employeeId, userName);
+    } catch (e) {
+      console.error('⚠️ convert notify failed:', e.message);
+    }
+
+    return {
+      success: true,
+      message: 'تم تحويل Lead لعميل بنجاح',
+      partyId,
+      opportunityId,
+    };
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) {}
+    console.error('convertLeadToClient error:', err);
+    return {
+      success: false,
+      message: err.originalError?.message || err.message || 'فشل التحويل',
+    };
+  }
+}
+
+function buildGuidanceFromLead(lead) {
+  const parts = [];
+  if (lead.ProjectType) parts.push(`نوع المشروع: ${lead.ProjectType}`);
+  if (lead.ProjectStage) parts.push(`مرحلة المشروع: ${lead.ProjectStage}`);
+  if (lead.Budget) parts.push(`الميزانية: ${lead.Budget}`);
+  if (lead.DecisionMaker) parts.push(`متخذ القرار: ${lead.DecisionMaker}`);
+  if (lead.BestTimeToReach) parts.push(`أفضل وقت: ${lead.BestTimeToReach}`);
+  if (lead.CampaignName) parts.push(`الحملة: ${lead.CampaignName}`);
+  if (lead.Platform) parts.push(`المنصة: ${lead.Platform}`);
+  return parts.length ? parts.join(' | ') : null;
+}
+
+// ═══════════════════════════════════════════════════════════
+// NOTIFICATIONS + FCM (via notifications.queries)
+// ═══════════════════════════════════════════════════════════
+async function getUsernameByEmployeeId(employeeId) {
   const pool = await connectDB();
   const result = await pool.request()
-    .input('leadId', sql.Int, leadId)
-    .input('type', sql.NVarChar(50), data.interactionType || 'مكالمة')
-    .input('notes', sql.NVarChar(sql.MAX), data.notes)
-    .input('userName', sql.NVarChar(100), userName)
+    .input('employeeId', sql.Int, employeeId)
     .query(`
-      INSERT INTO LeadsInteraction (LeadID, InteractionType, Notes, CreatedBy, CreatedAt)
-      OUTPUT INSERTED.InteractionID
-      VALUES (@leadId, @type, @notes, @userName, GETDATE())
+      SELECT TOP 1 Username, FullName
+      FROM Users
+      WHERE employeeID = @employeeId AND ISNULL(IsActive, 1) = 1
     `);
-  return result.recordset[0].InteractionID;
+  return result.recordset[0] || null;
+}
+
+async function notifyLeadAssigned(lead, employeeId, assignedBy) {
+  try {
+    const user = await getUsernameByEmployeeId(employeeId);
+    if (!user?.Username) {
+      console.warn(`⚠️ Lead ${lead.LeadId} assigned to emp ${employeeId} but no linked user`);
+      return;
+    }
+    const campaignPart = lead.CampaignName ? ` من حملة: ${lead.CampaignName}` : '';
+    await notificationsQueries.createNotification({
+      title: '📌 تم إسناد Lead جديد لك',
+      message:
+        `تم إسناد Lead لك: ${lead.FullName} - ${lead.Phone}${campaignPart}. ` +
+        'برجاء المتابعة واتخاذ إجراء.',
+      recipientUser: user.Username,
+      relatedTable: 'LeadsCRM',
+      relatedId: lead.LeadId,
+      formName: 'lead_detail_screen',
+      createdBy: assignedBy || 'System',
+    });
+  } catch (e) {
+    console.error('notifyLeadAssigned:', e.message);
+  }
+}
+
+async function notifyOpportunityFromConversion(lead, opportunityId, employeeId, actor) {
+  try {
+    const user = await getUsernameByEmployeeId(employeeId);
+    if (!user?.Username) return;
+
+    await notificationsQueries.createNotification({
+      title: '🎯 تم تحويل Lead إلى فرصة بيع لك',
+      message:
+        `تم تحويل Lead العميل ${lead.FullName} إلى فرصة بيع رقم #${opportunityId} وتم إسنادها لك. برجاء البدء في المتابعة.`,
+      recipientUser: user.Username,
+      relatedTable: 'SalesOpportunities',
+      relatedId: opportunityId,
+      formName: 'opportunity_detail_screen',
+      createdBy: actor || 'System',
+    });
+  } catch (e) {
+    console.error('notifyOpportunityFromConversion:', e.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// CREATE manual lead (basic — for list "add" later)
+// ═══════════════════════════════════════════════════════════
+async function createLead(data, userName = 'System') {
+  const pool = await connectDB();
+  if (!data.fullName || !data.phone) {
+    return { success: false, message: 'الاسم والهاتف مطلوبان' };
+  }
+
+  const result = await pool.request()
+    .input('fullName', sql.NVarChar(200), String(data.fullName).trim())
+    .input('phone', sql.NVarChar(50), String(data.phone).trim())
+    .input('phone2', sql.NVarChar(50), data.phone2 || null)
+    .input('email', sql.NVarChar(100), data.email || null)
+    .input('city', sql.NVarChar(100), data.city || null)
+    .input('notes', sql.NVarChar(sql.MAX), data.notes || null)
+    .input('platform', sql.NVarChar(50), data.platform || 'Manual')
+    .input('employeeId', sql.Int, toInt(data.assignedEmployeeId, null))
+    .input('createdBy', sql.NVarChar(100), userName)
+    .input('status', sql.NVarChar(50),
+      toInt(data.assignedEmployeeId, null) ? STATUSES.ASSIGNED : STATUSES.NEW)
+    .query(`
+      INSERT INTO LeadsCRM (
+        FullName, Phone, Phone2, Email, City, Notes, Platform,
+        LeadStatus, AssignedEmployeeId, LeadDate, CreatedAt, CreatedBy, IsConverted
+      )
+      OUTPUT INSERTED.LeadId
+      VALUES (
+        @fullName, @phone, @phone2, @email, @city, @notes, @platform,
+        @status, @employeeId, GETDATE(), GETDATE(), @createdBy, 0
+      )
+    `);
+
+  const leadId = result.recordset[0].LeadId;
+  const empId = toInt(data.assignedEmployeeId, null);
+  if (empId) {
+    await insertLeadInteraction(null, {
+      leadId,
+      employeeId: empId,
+      interactionType: INTERACTION_TYPES.ASSIGNED,
+      summary: 'تم إسناد الـ Lead عند الإنشاء.',
+      oldLeadStatus: STATUSES.NEW,
+      newLeadStatus: STATUSES.ASSIGNED,
+      isSystemGenerated: true,
+      createdBy: userName,
+    });
+    const lead = await getLeadById(leadId);
+    await notifyLeadAssigned(lead, empId, userName);
+  }
+
+  return { success: true, leadId, message: 'تم إنشاء الـ Lead' };
 }
 
 module.exports = {
+  STATUSES,
+  INTERACTION_TYPES,
   getLeads,
+  getStats,
   getLeadById,
+  getAssignableEmployees,
   updateLead,
-  convertLeadToClient,
   getLeadInteractions,
-  addLeadInteraction
+  addLeadInteraction,
+  convertLeadToClient,
+  createLead,
+  canConvertLead,
+  normalizeStatus,
 };
