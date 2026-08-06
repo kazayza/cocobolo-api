@@ -218,6 +218,9 @@ app.use('/api/delivery', require('./modules/delivery/delivery.routes'));
 
 app.use('/api/leads', require('./modules/leads/leads.routes'));
 
+// Unified CRM + Leads follow-ups (mobile)
+app.use('/api/followups', require('./modules/followups/followups.routes'));
+
 // ===================================
 // ⚠️ Error Handling
 // ===================================
