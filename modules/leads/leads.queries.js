@@ -255,11 +255,21 @@ function canConvertLead(lead) {
 // EMPLOYEES (assignable)
 // ═══════════════════════════════════════════════════════════
 async function getAssignableEmployees() {
+  // Same rule as Blazor LeadsCrmService.GetAssignableEmployeesAsync:
+  // Active + Department in (المبيعات, إدارة العلاقات العامة)
   const pool = await connectDB();
   const result = await pool.request().query(`
-    SELECT EmployeeID AS EmployeeId, FullName, Department, Status, Phone
+    SELECT
+      EmployeeID AS EmployeeId,
+      FullName,
+      Department,
+      Status,
+      JobTitle,
+      MobilePhone
     FROM Employees
     WHERE Status IN (N'نشط', N'Active')
+      AND Department IS NOT NULL
+      AND LTRIM(RTRIM(Department)) IN (N'المبيعات', N'إدارة العلاقات العامة')
     ORDER BY FullName
   `);
   return result.recordset;
