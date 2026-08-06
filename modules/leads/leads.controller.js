@@ -95,6 +95,15 @@ async function update(req, res) {
       rejectedReason: req.body.rejectedReason ?? req.body.RejectedReason,
     };
 
+    // Direct reject only for GeneralManager / Admin
+    const actorRole = (req.body.actorRole || req.headers['x-user-role'] || '').toString();
+    const roleNorm = actorRole.toLowerCase().replace(/\s+/g, '');
+    const isGm = !actorRole || roleNorm === 'generalmanager' || roleNorm === 'admin' || roleNorm === 'gm' || roleNorm === 'general_manager';
+    // If client sends role and tries reject without GM → block
+    if (actorRole && !isGm && (body.leadStatus === 'مرفوض')) {
+      return errorResponse(res, 'رفض الـ Lead يحتاج موافقة المدير العام — استخدم طلب الرفض', 403);
+    }
+
     // Support explicit null unassign
     if (
       Object.prototype.hasOwnProperty.call(req.body, 'assignedEmployeeId') ||
@@ -174,6 +183,21 @@ async function addInteraction(req, res) {
       return errorResponse(res, 'محتوى التواصل مطلوب', 400);
     }
 
+    // Block direct reject via interaction unless actor is GM/Admin (client should use reject-request)
+    const actorRole = (req.body.actorRole || req.headers['x-user-role'] || '').toString();
+    const roleNorm = actorRole.toLowerCase().replace(/\s+/g, '');
+    const isGm = roleNorm === 'generalmanager' || roleNorm === 'admin' || roleNorm === 'gm';
+    if (
+      !isGm &&
+      (data.newLeadStatus === 'مرفوض' || data.interactionType === 'رفض')
+    ) {
+      return errorResponse(
+        res,
+        'رفض الـ Lead يحتاج موافقة المدير العام — استخدم طلب الرفض',
+        403
+      );
+    }
+
     const result = await leadsQueries.addLeadInteraction(
       req.params.id,
       data,
@@ -188,6 +212,79 @@ async function addInteraction(req, res) {
   }
 }
 
+// POST /api/leads/:id/reject-request
+async function requestReject(req, res) {
+  try {
+    const result = await leadsQueries.requestLeadReject(
+      req.params.id,
+      {
+        reason: req.body.reason ?? req.body.rejectedReason ?? req.body.notes,
+        employeeId: req.body.employeeId,
+      },
+      actorName(req)
+    );
+    if (!result.success) return errorResponse(res, result.message, 400);
+    return successResponse(res, result, result.message);
+  } catch (err) {
+    console.error('leads.requestReject:', err);
+    return errorResponse(res, 'فشل إرسال طلب الرفض', 500, err.message);
+  }
+}
+
+// GET /api/leads/reject-requests/pending
+async function pendingRejectRequests(req, res) {
+  try {
+    const rows = await leadsQueries.getPendingRejectRequests();
+    return res.json(rows);
+  } catch (err) {
+    console.error('leads.pendingRejectRequests:', err);
+    return errorResponse(res, 'فشل تحميل طلبات الرفض', 500, err.message);
+  }
+}
+
+// GET /api/leads/:id/reject-request
+async function leadPendingReject(req, res) {
+  try {
+    const row = await leadsQueries.getLeadPendingReject(req.params.id);
+    return res.json(row || null);
+  } catch (err) {
+    console.error('leads.leadPendingReject:', err);
+    return errorResponse(res, 'فشل جلب طلب الرفض', 500, err.message);
+  }
+}
+
+// POST /api/leads/reject-requests/:requestId/decide
+async function decideReject(req, res) {
+  try {
+    const actorRole = (req.body.actorRole || req.headers['x-user-role'] || '').toString();
+    const roleNorm = actorRole.toLowerCase().replace(/\s+/g, '');
+    const isGm =
+      roleNorm === 'generalmanager' ||
+      roleNorm === 'admin' ||
+      roleNorm === 'gm' ||
+      roleNorm === 'general_manager';
+
+    // Soft gate (full auth later). Allow if role says GM/Admin.
+    if (actorRole && !isGm) {
+      return errorResponse(res, 'هذه العملية للمدير العام فقط', 403);
+    }
+
+    const result = await leadsQueries.decideLeadRejectRequest(
+      req.params.requestId,
+      {
+        approve: req.body.approve,
+        decisionNotes: req.body.decisionNotes ?? req.body.notes,
+      },
+      actorName(req)
+    );
+    if (!result.success) return errorResponse(res, result.message, 400);
+    return successResponse(res, result, result.message);
+  } catch (err) {
+    console.error('leads.decideReject:', err);
+    return errorResponse(res, 'فشل البت في طلب الرفض', 500, err.message);
+  }
+}
+
 module.exports = {
   getAll,
   getStats,
@@ -199,4 +296,8 @@ module.exports = {
   convertToClient,
   getInteractions,
   addInteraction,
+  requestReject,
+  pendingRejectRequests,
+  leadPendingReject,
+  decideReject,
 };

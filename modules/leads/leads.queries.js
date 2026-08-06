@@ -1029,9 +1029,335 @@ async function createLead(data, userName = 'System') {
   return { success: true, leadId, message: 'تم إنشاء الـ Lead' };
 }
 
+
+// ═══════════════════════════════════════════════════════════
+// REJECT REQUEST FLOW (needs GeneralManager approval)
+// InteractionType = 'طلب رفض' + IsCompleted=0 => pending
+// ═══════════════════════════════════════════════════════════
+const REJECT_REQUEST_TYPE = 'طلب رفض';
+
+async function getUsersByRoles(roles = []) {
+  const pool = await connectDB();
+  if (!roles.length) return [];
+  const req = pool.request();
+  const parts = roles.map((r, i) => {
+    req.input(`r${i}`, sql.NVarChar(50), r);
+    return `@r${i}`;
+  });
+  // Also match without spaces / case-insensitive-ish via LOWER
+  const result = await req.query(`
+    SELECT UserID, Username, FullName, Role, employeeID, FCMToken
+    FROM Users
+    WHERE ISNULL(IsActive, 1) = 1
+      AND (
+        Role IN (${parts.join(',')})
+        OR LOWER(REPLACE(ISNULL(Role,''), ' ', '')) IN (${parts.map((_, i) => `LOWER(REPLACE(@r${i}, ' ', ''))`).join(',')})
+      )
+  `);
+  return result.recordset || [];
+}
+
+async function hasPendingRejectRequest(leadId) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('leadId', sql.Int, leadId)
+    .input('type', sql.NVarChar(50), REJECT_REQUEST_TYPE)
+    .query(`
+      SELECT TOP 1 LeadInteractionId
+      FROM LeadInteractions
+      WHERE LeadId = @leadId
+        AND InteractionType = @type
+        AND ISNULL(IsCompleted, 0) = 0
+      ORDER BY LeadInteractionId DESC
+    `);
+  return result.recordset[0] || null;
+}
+
+/**
+ * Employee requests reject → notify GeneralManagers
+ * Does NOT change LeadStatus until GM approves.
+ */
+async function requestLeadReject(leadId, data = {}, userName = 'System') {
+  const pool = await connectDB();
+  const lead = await getLeadById(leadId);
+  if (!lead) return { success: false, message: 'Lead غير موجود' };
+
+  const status = normalizeStatus(lead.LeadStatus);
+  if (lead.IsConverted || status === STATUSES.CONVERTED) {
+    return { success: false, message: 'لا يمكن رفض Lead محوّل' };
+  }
+  if (status === STATUSES.REJECTED) {
+    return { success: false, message: 'الـ Lead مرفوض بالفعل' };
+  }
+
+  const reason = (data.reason || data.rejectedReason || '').toString().trim();
+  if (!reason) return { success: false, message: 'سبب طلب الرفض مطلوب' };
+
+  const pending = await hasPendingRejectRequest(leadId);
+  if (pending) {
+    return {
+      success: false,
+      message: 'يوجد طلب رفض معلّق بالفعل بانتظار موافقة المدير العام',
+      pendingRequestId: pending.LeadInteractionId,
+    };
+  }
+
+  // optional: requester employee id
+  let empId = toInt(data.employeeId, null);
+  if (!empId && userName) {
+    const u = await pool.request()
+      .input('username', sql.NVarChar(100), userName)
+      .query('SELECT employeeID FROM Users WHERE Username = @username');
+    empId = u.recordset[0]?.employeeID || lead.AssignedEmployeeId || null;
+  }
+
+  const interactionId = await insertLeadInteraction(null, {
+    leadId,
+    employeeId: empId,
+    interactionType: REJECT_REQUEST_TYPE,
+    summary: `طلب رفض من ${userName}`,
+    notes: reason,
+    oldLeadStatus: lead.LeadStatus,
+    newLeadStatus: null,
+    nextFollowUpDate: null,
+    isSystemGenerated: false,
+    createdBy: userName,
+  });
+
+  // Store pending marker lightly in Feedback (does not change status)
+  try {
+    await pool.request()
+      .input('leadId', sql.Int, leadId)
+      .input('feedback', sql.NVarChar(sql.MAX),
+        `⏳ طلب رفض معلّق بواسطة ${userName}: ${reason}`)
+      .query(`UPDATE LeadsCRM SET Feedback = @feedback WHERE LeadId = @leadId`);
+  } catch (_) {}
+
+  // Notify GeneralManager (+ Admin as backup)
+  const managers = await getUsersByRoles(['GeneralManager', 'Admin']);
+  let notified = 0;
+  const title = '⚠️ طلب رفض Lead يحتاج موافقتك';
+  const message =
+    `طلب ${userName} رفض Lead: ${lead.FullName} - ${lead.Phone}. السبب: ${reason}`;
+
+  for (const m of managers) {
+    if (!m.Username || m.Username === userName) continue;
+    try {
+      await notificationsQueries.createNotification({
+        title,
+        message,
+        recipientUser: m.Username,
+        relatedTable: 'LeadsCRM',
+        relatedId: leadId,
+        formName: 'lead_reject_approval',
+        createdBy: userName,
+      });
+      notified++;
+    } catch (e) {
+      console.error('notify GM failed', e.message);
+    }
+  }
+
+  return {
+    success: true,
+    message: notified > 0
+      ? `تم إرسال طلب الرفض إلى المدير العام (${notified})`
+      : 'تم تسجيل طلب الرفض — لم يُعثر على مستخدم GeneralManager لإشعاره',
+    requestId: interactionId,
+    notifiedCount: notified,
+    requiresApproval: true,
+  };
+}
+
+/**
+ * GM decides on reject request
+ * data: { approve: boolean, decisionNotes?, userName, actorRole? }
+ */
+async function decideLeadRejectRequest(requestId, data = {}, userName = 'System') {
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
+
+  try {
+    const reqRes = await new sql.Request(transaction)
+      .input('id', sql.Int, requestId)
+      .input('type', sql.NVarChar(50), REJECT_REQUEST_TYPE)
+      .query(`
+        SELECT * FROM LeadInteractions
+        WHERE LeadInteractionId = @id AND InteractionType = @type
+      `);
+    const requestRow = reqRes.recordset[0];
+    if (!requestRow) {
+      await transaction.rollback();
+      return { success: false, message: 'طلب الرفض غير موجود' };
+    }
+    if (requestRow.IsCompleted) {
+      await transaction.rollback();
+      return { success: false, message: 'تم البت في هذا الطلب مسبقًا' };
+    }
+
+    const leadId = requestRow.LeadId;
+    const leadRes = await new sql.Request(transaction)
+      .input('leadId', sql.Int, leadId)
+      .query('SELECT * FROM LeadsCRM WHERE LeadId = @leadId');
+    const lead = leadRes.recordset[0];
+    if (!lead) {
+      await transaction.rollback();
+      return { success: false, message: 'Lead غير موجود' };
+    }
+
+    const approve = data.approve === true || data.approve === 1 || data.approve === 'true';
+    const decisionNotes = (data.decisionNotes || data.notes || '').toString().trim();
+    const requester = requestRow.CreatedBy || '';
+    const reason = requestRow.Notes || '';
+
+    // complete request interaction
+    await new sql.Request(transaction)
+      .input('id', sql.Int, requestId)
+      .input('notes', sql.NVarChar(sql.MAX),
+        `${requestRow.Notes || ''}\n---\nقرار ${userName}: ${approve ? 'موافقة' : 'رفض الطلب'}${decisionNotes ? ' | ' + decisionNotes : ''}`)
+      .query(`
+        UPDATE LeadInteractions
+        SET IsCompleted = 1,
+            CompletedDate = GETDATE(),
+            Notes = @notes
+        WHERE LeadInteractionId = @id
+      `);
+
+    if (approve) {
+      const oldStatus = lead.LeadStatus;
+      await new sql.Request(transaction)
+        .input('leadId', sql.Int, leadId)
+        .input('reason', sql.NVarChar(sql.MAX), reason)
+        .input('feedback', sql.NVarChar(sql.MAX),
+          `✅ تم اعتماد الرفض بواسطة ${userName}`)
+        .query(`
+          UPDATE LeadsCRM SET
+            LeadStatus = N'مرفوض',
+            RejectedReason = @reason,
+            Feedback = @feedback,
+            LastContactDate = GETDATE()
+          WHERE LeadId = @leadId
+        `);
+
+      await insertLeadInteraction(transaction, {
+        leadId,
+        employeeId: null,
+        interactionType: INTERACTION_TYPES.REJECTED,
+        summary: `تم اعتماد طلب الرفض بواسطة ${userName}`,
+        notes: decisionNotes || reason,
+        oldLeadStatus: oldStatus,
+        newLeadStatus: STATUSES.REJECTED,
+        isSystemGenerated: true,
+        createdBy: userName,
+      });
+    } else {
+      await new sql.Request(transaction)
+        .input('leadId', sql.Int, leadId)
+        .input('feedback', sql.NVarChar(sql.MAX),
+          `❌ المدير العام رفض طلب الرفض — ${userName}${decisionNotes ? ': ' + decisionNotes : ''}`)
+        .query(`UPDATE LeadsCRM SET Feedback = @feedback WHERE LeadId = @leadId`);
+
+      await insertLeadInteraction(transaction, {
+        leadId,
+        employeeId: null,
+        interactionType: INTERACTION_TYPES.NOTE,
+        summary: `تم رفض طلب الرفض بواسطة ${userName}`,
+        notes: decisionNotes || 'لم تتم الموافقة على الرفض',
+        oldLeadStatus: lead.LeadStatus,
+        newLeadStatus: lead.LeadStatus,
+        isSystemGenerated: true,
+        createdBy: userName,
+      });
+    }
+
+    await transaction.commit();
+
+    // Notify original requester
+    if (requester) {
+      try {
+        await notificationsQueries.createNotification({
+          title: approve
+            ? '✅ تمت الموافقة على طلب رفض Lead'
+            : '❌ تم رفض طلب رفض Lead',
+          message: approve
+            ? `المدير العام ${userName} اعتمد رفض Lead: ${lead.FullName} - ${lead.Phone}`
+            : `المدير العام ${userName} رفض طلبك لرفض Lead: ${lead.FullName}. ${decisionNotes}`,
+          recipientUser: requester,
+          relatedTable: 'LeadsCRM',
+          relatedId: leadId,
+          formName: 'lead_detail_screen',
+          createdBy: userName,
+        });
+      } catch (e) {
+        console.error('notify requester failed', e.message);
+      }
+    }
+
+    return {
+      success: true,
+      message: approve ? 'تم اعتماد الرفض وتحويل الـ Lead إلى مرفوض' : 'تم رفض الطلب وإبقاء حالة الـ Lead',
+      approved: approve,
+      leadId,
+    };
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) {}
+    throw err;
+  }
+}
+
+async function getPendingRejectRequests() {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('type', sql.NVarChar(50), REJECT_REQUEST_TYPE)
+    .query(`
+      SELECT
+        i.LeadInteractionId AS RequestId,
+        i.LeadId,
+        i.Summary,
+        i.Notes AS Reason,
+        i.CreatedBy AS RequestedBy,
+        i.CreatedAt AS RequestedAt,
+        i.InteractionDate,
+        l.FullName,
+        l.Phone,
+        l.LeadStatus,
+        l.CampaignName,
+        l.AssignedEmployeeId,
+        e.FullName AS AssignedEmployeeName
+      FROM LeadInteractions i
+      INNER JOIN LeadsCRM l ON l.LeadId = i.LeadId
+      LEFT JOIN Employees e ON l.AssignedEmployeeId = e.EmployeeID
+      WHERE i.InteractionType = @type
+        AND ISNULL(i.IsCompleted, 0) = 0
+      ORDER BY i.CreatedAt DESC
+    `);
+  return result.recordset;
+}
+
+async function getLeadPendingReject(leadId) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('leadId', sql.Int, leadId)
+    .input('type', sql.NVarChar(50), REJECT_REQUEST_TYPE)
+    .query(`
+      SELECT TOP 1
+        LeadInteractionId AS RequestId,
+        Summary, Notes AS Reason, CreatedBy AS RequestedBy, CreatedAt AS RequestedAt
+      FROM LeadInteractions
+      WHERE LeadId = @leadId
+        AND InteractionType = @type
+        AND ISNULL(IsCompleted, 0) = 0
+      ORDER BY LeadInteractionId DESC
+    `);
+  return result.recordset[0] || null;
+}
+
+
 module.exports = {
   STATUSES,
   INTERACTION_TYPES,
+  REJECT_REQUEST_TYPE,
   getLeads,
   getStats,
   getLeadById,
@@ -1043,4 +1369,9 @@ module.exports = {
   createLead,
   canConvertLead,
   normalizeStatus,
+  requestLeadReject,
+  decideLeadRejectRequest,
+  getPendingRejectRequests,
+  getLeadPendingReject,
+  getUsersByRoles,
 };
