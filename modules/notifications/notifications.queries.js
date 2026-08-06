@@ -77,17 +77,17 @@ async function createNotification(data) {
     .input('createdBy', sql.NVarChar(100), data.createdBy)
     .query(`
       DECLARE @NewID TABLE (NotificationID int);
-      INSERT INTO Notifications (
-        Title, Message, RecipientUser, RelatedTable, RelatedID,
-        FormName, IsRead, CreatedBy, CreatedAt, ReminderEnabled
-      )
-      OUTPUT INSERTED.NotificationID INTO @NewID
-      VALUES (
-        @title, @message, @recipientUser, @relatedTable, @relatedId,
-        @formName, 0, @createdBy, GETDATE(), 0
-      );
-      SELECT NotificationID FROM @NewID;
-    `);
+        INSERT INTO Notifications (
+          Title, Message, RecipientUser, RelatedTable, RelatedID,
+          FormName, IsRead, CreatedBy, CreatedAt, ReminderEnabled
+        )
+        OUTPUT INSERTED.NotificationID INTO @NewID
+        VALUES (
+          @title, @message, @recipientUser, @relatedTable, @relatedId,
+          @formName, 0, @createdBy, GETDATE(), 0
+        );
+        SELECT NotificationID FROM @NewID;
+      `);
 
   const notificationId = result.recordset[0].NotificationID;
 
@@ -118,23 +118,19 @@ async function createNotification(data) {
   return notificationId;
 }
 
-// إرسال إشعار ذكي (لرول، أو يوزر، أو لصلاحية شاشة معينة)
+// إرسال إشعار ذكي (لرول أو ليوزر محدد)
 async function createNotificationSmart(data, target) {
   const pool = await connectDB();
   
-  // 1. تحديد المستلمين بناءً على (Role أو Username أو FormName Permission)
+  // 1. تحديد المستلمين
   const usersResult = await pool.request()
     .input('target', sql.NVarChar, target)
     .query(`
-      SELECT DISTINCT u.Username 
-      FROM Users u
-      LEFT JOIN UserPermissions up ON u.UserID = up.UserID
-      LEFT JOIN Permissions p ON up.PermissionID = p.PermissionID
+      SELECT Username 
+      FROM Users 
       WHERE 
-         LOWER(u.Role) = LOWER(@target)        -- مطابقة الدور الوظيفي (Sales, Admin...)
-         OR u.Username = @target               -- يوزر محدد بالاسم
-         OR p.FormName = @target               -- أو لديه صلاحية على هذه الشاشة (مثل frm_LeadsCRM)
-         AND u.IsActive = 1
+         Role = @target        -- لو هو رول (زي SalesManager)
+         OR Username = @target -- لو هو يوزر محدد (زي Factory)
     `);
 
   const recipients = usersResult.recordset;
@@ -144,7 +140,7 @@ async function createNotificationSmart(data, target) {
   for (const user of recipients) {
     if (user.Username === data.createdBy) continue;
 
-    // استدعاء دالة createNotification لضمان حفظ الإشعار وإرسال الـ Push فوراً للجميع
+    // استدعاء دالة createNotification لضمان حفظ الإشعار وإرسال الـ Push للجميع
     await createNotification({
       ...data,
       recipientUser: user.Username
