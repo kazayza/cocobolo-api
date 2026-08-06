@@ -75,6 +75,7 @@ async function getLeads(filters = {}) {
     where += ` AND (
       l.FullName LIKE @search OR l.Phone LIKE @search OR l.Phone2 LIKE @search
       OR l.CampaignName LIKE @search OR l.AdName LIKE @search
+      OR l.City LIKE @search OR l.ProjectType LIKE @search
     ) `;
   }
 
@@ -82,6 +83,19 @@ async function getLeads(filters = {}) {
   if (employeeId) {
     request.input('employeeId', sql.Int, employeeId);
     where += ' AND l.AssignedEmployeeId = @employeeId ';
+  }
+
+  const city = filters.city != null ? String(filters.city).trim() : '';
+  if (city && city !== 'الكل') {
+    request.input('city', sql.NVarChar(100), city);
+    where += ' AND LTRIM(RTRIM(ISNULL(l.City, N\'\'))) = @city ';
+  }
+
+  const projectType =
+    filters.projectType != null ? String(filters.projectType).trim() : '';
+  if (projectType && projectType !== 'الكل') {
+    request.input('projectType', sql.NVarChar(150), projectType);
+    where += ' AND LTRIM(RTRIM(ISNULL(l.ProjectType, N\'\'))) = @projectType ';
   }
 
   if (filters.dateFrom) {
@@ -126,6 +140,10 @@ async function getLeads(filters = {}) {
     dataReq.input('search', sql.NVarChar(100), `%${String(filters.search).trim()}%`);
   }
   if (employeeId) dataReq.input('employeeId', sql.Int, employeeId);
+  if (city && city !== 'الكل') dataReq.input('city', sql.NVarChar(100), city);
+  if (projectType && projectType !== 'الكل') {
+    dataReq.input('projectType', sql.NVarChar(150), projectType);
+  }
   if (filters.dateFrom) dataReq.input('dateFrom', sql.DateTime, new Date(filters.dateFrom));
   if (filters.dateTo) {
     const d = new Date(filters.dateTo);
@@ -141,7 +159,8 @@ async function getLeads(filters = {}) {
       l.LeadId, l.FullName, l.Phone, l.Phone2, l.Email,
       l.City, l.Area, l.Address,
       l.CampaignName, l.AdName, l.AdSetName, l.FormName, l.Platform,
-      l.ProjectType, l.Budget, l.LeadStatus, l.IsConverted,
+      l.ProjectType, l.ProjectStage, l.Budget, l.BestTimeToReach,
+      l.DecisionMaker, l.LeadStatus, l.IsConverted,
       l.AssignedEmployeeId, e.FullName AS AssignedEmployeeName,
       l.ConvertedPartyId, l.ConvertedOpportunityId,
       l.IsDuplicate, l.Feedback, l.RejectedReason, l.Notes,
@@ -165,6 +184,26 @@ async function getLeads(filters = {}) {
 // ═══════════════════════════════════════════════════════════
 // STATS
 // ═══════════════════════════════════════════════════════════
+async function getFilterOptions() {
+  const pool = await connectDB();
+  const cities = await pool.request().query(`
+    SELECT DISTINCT LTRIM(RTRIM(City)) AS value
+    FROM LeadsCRM
+    WHERE City IS NOT NULL AND LTRIM(RTRIM(City)) <> N''
+    ORDER BY value
+  `);
+  const projectTypes = await pool.request().query(`
+    SELECT DISTINCT LTRIM(RTRIM(ProjectType)) AS value
+    FROM LeadsCRM
+    WHERE ProjectType IS NOT NULL AND LTRIM(RTRIM(ProjectType)) <> N''
+    ORDER BY value
+  `);
+  return {
+    cities: (cities.recordset || []).map((r) => r.value).filter(Boolean),
+    projectTypes: (projectTypes.recordset || []).map((r) => r.value).filter(Boolean),
+  };
+}
+
 async function getStats(filters = {}) {
   const pool = await connectDB();
   const request = pool.request();
@@ -174,6 +213,17 @@ async function getStats(filters = {}) {
   if (employeeId) {
     request.input('employeeId', sql.Int, employeeId);
     where += ' AND AssignedEmployeeId = @employeeId ';
+  }
+  const city = filters.city != null ? String(filters.city).trim() : '';
+  if (city && city !== 'الكل') {
+    request.input('city', sql.NVarChar(100), city);
+    where += ' AND LTRIM(RTRIM(ISNULL(City, N\'\'))) = @city ';
+  }
+  const projectType =
+    filters.projectType != null ? String(filters.projectType).trim() : '';
+  if (projectType && projectType !== 'الكل') {
+    request.input('projectType', sql.NVarChar(150), projectType);
+    where += ' AND LTRIM(RTRIM(ISNULL(ProjectType, N\'\'))) = @projectType ';
   }
   if (filters.dateFrom) {
     request.input('dateFrom', sql.DateTime, new Date(filters.dateFrom));
@@ -958,7 +1008,8 @@ async function notifyLeadAssigned(lead, employeeId, assignedBy) {
       recipientUser: user.Username,
       relatedTable: 'LeadsCRM',
       relatedId: lead.LeadId,
-      formName: 'lead_detail_screen',
+      // Blazor source-of-truth form key
+      formName: 'crm/leads/my',
       createdBy: assignedBy || 'System',
     });
   } catch (e) {
@@ -978,7 +1029,8 @@ async function notifyOpportunityFromConversion(lead, opportunityId, employeeId, 
       recipientUser: user.Username,
       relatedTable: 'SalesOpportunities',
       relatedId: opportunityId,
-      formName: 'opportunity_detail_screen',
+      // Blazor key
+      formName: 'crm/opportunities',
       createdBy: actor || 'System',
     });
   } catch (e) {
@@ -1143,29 +1195,27 @@ async function requestLeadReject(leadId, data = {}, userName = 'System') {
       .query(`UPDATE LeadsCRM SET Feedback = @feedback WHERE LeadId = @leadId`);
   } catch (_) {}
 
-  // Notify GeneralManager (+ Admin as backup)
-  const managers = await getUsersByRoles(['GeneralManager', 'Admin']);
-  let notified = 0;
+  // Notify GeneralManager (+ Admin) — per username via shared helper
   const title = '⚠️ طلب رفض Lead يحتاج موافقتك';
   const message =
     `طلب ${userName} رفض Lead: ${lead.FullName} - ${lead.Phone}. السبب: ${reason}`;
 
-  for (const m of managers) {
-    if (!m.Username || m.Username === userName) continue;
-    try {
-      await notificationsQueries.createNotification({
-        title,
-        message,
-        recipientUser: m.Username,
-        relatedTable: 'LeadsCRM',
-        relatedId: leadId,
-        formName: 'lead_reject_approval',
-        createdBy: userName,
-      });
-      notified++;
-    } catch (e) {
-      console.error('notify GM failed', e.message);
-    }
+  let notified = 0;
+  try {
+    const nr = await notificationsQueries.notifyByRoles({
+      roles: ['GeneralManager', 'Admin'],
+      title,
+      message,
+      createdBy: userName,
+      // Blazor form key (Flutter maps it)
+      formName: 'frm_LeadsCRM',
+      relatedTable: 'LeadsCRM',
+      relatedId: leadId,
+      excludeUsername: userName,
+    });
+    notified = nr.count || 0;
+  } catch (e) {
+    console.error('notify GM failed', e.message);
   }
 
   return {
@@ -1296,7 +1346,7 @@ async function decideLeadRejectRequest(requestId, data = {}, userName = 'System'
           recipientUser: requester,
           relatedTable: 'LeadsCRM',
           relatedId: leadId,
-          formName: 'lead_detail_screen',
+          formName: 'crm/leads',
           createdBy: userName,
         });
       } catch (e) {
@@ -1370,6 +1420,7 @@ module.exports = {
   REJECT_REQUEST_TYPE,
   getLeads,
   getStats,
+  getFilterOptions,
   getLeadById,
   getAssignableEmployees,
   updateLead,

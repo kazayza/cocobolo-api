@@ -6,6 +6,7 @@ const leadsController = require('./leads.controller');
 router.get('/stats', leadsController.getStats);
 router.get('/employees', leadsController.getEmployees);
 router.get('/meta', leadsController.getMeta);
+router.get('/filter-options', leadsController.getFilterOptions);
 router.get('/reject-requests/pending', leadsController.pendingRejectRequests);
 router.post('/reject-requests/:requestId/decide', leadsController.decideReject);
 

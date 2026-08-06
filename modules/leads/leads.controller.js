@@ -59,6 +59,17 @@ async function getMeta(req, res) {
   });
 }
 
+// GET /api/leads/filter-options  (cities + project types)
+async function getFilterOptions(req, res) {
+  try {
+    const options = await leadsQueries.getFilterOptions();
+    return res.json(options);
+  } catch (err) {
+    console.error('leads.getFilterOptions:', err);
+    return errorResponse(res, 'فشل تحميل خيارات الفلتر', 500, err.message);
+  }
+}
+
 // GET /api/leads/:id
 async function getById(req, res) {
   try {
@@ -290,6 +301,7 @@ module.exports = {
   getStats,
   getEmployees,
   getMeta,
+  getFilterOptions,
   getById,
   create,
   update,
