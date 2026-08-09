@@ -197,12 +197,12 @@ async function getDeliveryDetails(transactionId) {
     .query(`
       SELECT 
         td.ProductID,
-        td.ProductName,
+        p.ProductName,
         td.Quantity,
-        td.UnitName,
         td.UnitPrice,
         td.TotalAmount
       FROM TransactionDetails td
+      INNER JOIN Products p ON td.ProductID = p.ProductID
       WHERE td.TransactionID = @id
     `);
 
