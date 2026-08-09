@@ -62,7 +62,7 @@ async function getAllTransactions({
       t.NetTotalAmount, t.PaidAmount, t.TotalChargesAmount,
       t.GrandTotal, t.PaymentMethod, t.Notes,
       t.CreatedBy, t.CreatedAt,
-      t.InvoiceStatus, t.EditStatus, t.EditBy, t.EditRequestDate,
+      t.InvoiceStatus, t.EditStatus, t.EditBy, t.EditRequestDate, t.EditReason, t.EditDone,
       t.DueDate, t.IsDelivered, t.ReferenceNumber,
       p.PartyID, p.PartyName, p.Phone,
       w.WarehouseID, w.WarehouseName,

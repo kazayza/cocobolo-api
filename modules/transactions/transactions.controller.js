@@ -7,17 +7,22 @@ async function getAll(req, res) {
     const {
       type, startDate, endDate, partyId,
       search, status, hasRemaining, overdue, page, limit,
+      dateFrom, dateTo, // أسماء بديلة (الشاشة بتبعت دي)
     } = req.query;
 
+    // توحيد الأسماء: لو جات dateFrom/dateTo نستخدمهم
+    const effStart = startDate || dateFrom;
+    const effEnd = endDate || dateTo;
+
     const transactions = await transactionsQueries.getAllTransactions({
-      type, startDate, endDate, partyId,
+      type, startDate: effStart, endDate: effEnd, partyId,
       search, status, hasRemaining, overdue,
       page: parseInt(page, 10) || 1,
       limit: parseInt(limit, 10) || 20,
     });
 
     const stats = await transactionsQueries.getInvoicesStats({
-      type, search, status, hasRemaining, overdue,
+      type, startDate: effStart, endDate: effEnd, search, status, hasRemaining, overdue,
     });
 
     return res.json({
