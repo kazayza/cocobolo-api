@@ -67,11 +67,13 @@ async function getAllTransactions({
       p.PartyID, p.PartyName, p.Phone,
       w.WarehouseID, w.WarehouseName,
       e.FullName AS EmployeeName,
+      supplier.PartyName AS SupplierName,
       (t.GrandTotal - t.PaidAmount) AS RemainingAmount
     FROM Transactions t
     INNER JOIN Parties p ON t.PartyID = p.PartyID
     INNER JOIN Warehouses w ON t.WarehouseID = w.WarehouseID
-    LEFT JOIN Employees e ON t.EmpID = e.EmployeeID
+    LEFT JOIN Employees e ON t.EmpId = e.EmployeeID
+    LEFT JOIN Parties supplier ON t.EmpId = supplier.PartyID
     ${where}
     ORDER BY t.TransactionDate DESC, t.TransactionID DESC
     OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY
@@ -145,11 +147,13 @@ async function getTransactionById(id) {
         t.*, 
         p.PartyName, p.Phone, p.Address, p.TaxNumber,
         w.WarehouseName,
-        e.FullName AS EmployeeName
+        e.FullName AS EmployeeName,
+        supplier.PartyName AS SupplierName
       FROM Transactions t
       INNER JOIN Parties p ON t.PartyID = p.PartyID
       INNER JOIN Warehouses w ON t.WarehouseID = w.WarehouseID
       LEFT JOIN Employees e ON t.EmpId = e.EmployeeID
+    LEFT JOIN Parties supplier ON t.EmpId = supplier.PartyID
       WHERE t.TransactionID = @id
     `);
   return result.recordset[0] || null;
