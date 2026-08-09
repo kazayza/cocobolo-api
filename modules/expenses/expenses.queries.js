@@ -28,7 +28,10 @@ async function getExpensesSummary() {
         (SELECT ISNULL(SUM(Amount), 0) FROM Expenses WHERE CAST(ExpenseDate AS DATE) = CAST(GETDATE() AS DATE)) as todayAmount,
         (SELECT ISNULL(SUM(Amount), 0) FROM Expenses 
          WHERE YEAR(ExpenseDate) = YEAR(GETDATE()) 
-           AND MONTH(ExpenseDate) = MONTH(GETDATE())) as monthAmount
+           AND MONTH(ExpenseDate) = MONTH(GETDATE())) as monthAmount,
+        (SELECT ISNULL(SUM(Amount), 0) FROM Expenses 
+         WHERE YEAR(ExpenseDate) = YEAR(DATEADD(MONTH,-1,GETDATE())) 
+           AND MONTH(ExpenseDate) = MONTH(DATEADD(MONTH,-1,GETDATE()))) as prevMonthAmount
       FROM Expenses
     `);
   return result.recordset[0];

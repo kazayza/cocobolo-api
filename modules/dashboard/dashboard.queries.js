@@ -8,7 +8,7 @@ async function getDashboardStats(userId, username, role, employeeId) {
   let query = '';
   
   // تحديد الاستعلام حسب الـ Role
-  if (role === 'Admin' || role === 'SalesManager') {
+  if (role === 'Admin' || role === 'AccountManager') {
     // الأدمن ومدير المبيعات يشوفوا كل حاجة
     query = `
       SELECT 
@@ -16,6 +16,8 @@ async function getDashboardStats(userId, username, role, employeeId) {
         (SELECT COUNT(*) FROM SalesOpportunities WHERE IsActive = 1 AND StageID NOT IN (3,4,5)) as openOpportunities,
         (SELECT COUNT(*) FROM CRM_Tasks WHERE CAST(DueDate AS DATE) = CAST(GETDATE() AS DATE) AND Status != 'Completed') as tasksToday,
         (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) AND TransactionType = 'Sale') as salesToday,
+        (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE YEAR(TransactionDate) = YEAR(GETDATE()) AND MONTH(TransactionDate) = MONTH(GETDATE()) AND TransactionType = 'Sale') as salesMonth,
+        (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE YEAR(TransactionDate) = YEAR(DATEADD(MONTH,-1,GETDATE())) AND MONTH(TransactionDate) = MONTH(DATEADD(MONTH,-1,GETDATE())) AND TransactionType = 'Sale') as salesPrevMonth,
         (SELECT COUNT(*) FROM Notifications WHERE RecipientUser = @username AND IsRead = 0) as unreadCount
     `;
   } else if (role === 'Sales') {
@@ -26,6 +28,8 @@ async function getDashboardStats(userId, username, role, employeeId) {
         (SELECT COUNT(*) FROM SalesOpportunities WHERE IsActive = 1 AND StageID NOT IN (3,4,5) AND EmployeeID = @employeeId) as openOpportunities,
         (SELECT COUNT(*) FROM CRM_Tasks WHERE CAST(DueDate AS DATE) = CAST(GETDATE() AS DATE) AND Status != 'Completed' AND AssignedTo = @employeeId) as tasksToday,
         (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) AND TransactionType = 'Sale' AND CreatedBy = @username) as salesToday,
+        (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE YEAR(TransactionDate) = YEAR(GETDATE()) AND MONTH(TransactionDate) = MONTH(GETDATE()) AND TransactionType = 'Sale' AND CreatedBy = @username) as salesMonth,
+        (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE YEAR(TransactionDate) = YEAR(DATEADD(MONTH,-1,GETDATE())) AND MONTH(TransactionDate) = MONTH(DATEADD(MONTH,-1,GETDATE())) AND TransactionType = 'Sale' AND CreatedBy = @username) as salesPrevMonth,
         (SELECT COUNT(*) FROM Notifications WHERE RecipientUser = @username AND IsRead = 0) as unreadCount
     `;
   } else if (role === 'AccountManager' || role === 'Account') {
