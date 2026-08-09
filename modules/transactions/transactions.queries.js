@@ -88,6 +88,8 @@ async function getAllTransactions({
 // ═══════════════════════════════════════════════════════════
 async function getInvoicesStats({
   type = null,
+  startDate = null,
+  endDate = null,
   search = null,
   status = null,
   hasRemaining = null,
@@ -100,6 +102,14 @@ async function getInvoicesStats({
   if (type) {
     where += ` AND t.TransactionType = @type`;
     request.input('type', sql.VarChar(20), type);
+  }
+  if (startDate) {
+    where += ` AND CAST(t.TransactionDate AS DATE) >= @startDate`;
+    request.input('startDate', sql.Date, startDate);
+  }
+  if (endDate) {
+    where += ` AND CAST(t.TransactionDate AS DATE) <= @endDate`;
+    request.input('endDate', sql.Date, endDate);
   }
   if (search && search.trim()) {
     where += ` AND (p.PartyName LIKE @search OR CAST(t.TransactionID AS VARCHAR) LIKE @search)`;
