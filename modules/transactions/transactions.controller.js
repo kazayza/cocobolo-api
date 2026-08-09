@@ -4,11 +4,28 @@ const { successResponse, errorResponse, notFoundResponse } = require('../../shar
 // جلب كل الفواتير
 async function getAll(req, res) {
   try {
-    const { type, startDate, endDate, partyId } = req.query;
-    const transactions = await transactionsQueries.getAllTransactions(
-      type, startDate, endDate, partyId
-    );
-    return res.json(transactions);
+    const {
+      type, startDate, endDate, partyId,
+      search, status, hasRemaining, overdue, page, limit,
+    } = req.query;
+
+    const transactions = await transactionsQueries.getAllTransactions({
+      type, startDate, endDate, partyId,
+      search, status, hasRemaining, overdue,
+      page: parseInt(page, 10) || 1,
+      limit: parseInt(limit, 10) || 20,
+    });
+
+    const stats = await transactionsQueries.getInvoicesStats({
+      type, search, status, hasRemaining, overdue,
+    });
+
+    return res.json({
+      data: transactions,
+      stats,
+      page: parseInt(page, 10) || 1,
+      limit: parseInt(limit, 10) || 20,
+    });
   } catch (err) {
     console.error('خطأ في جلب الفواتير:', err);
     return errorResponse(res, 'فشل تحميل الفواتير', 500, err.message);

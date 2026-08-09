@@ -1,51 +1,138 @@
 const { sql, connectDB } = require('../../core/database');
 
 // جلب كل الفواتير
-async function getAllTransactions(type = null, startDate = null, endDate = null, partyId = null) {
+async function getAllTransactions({
+  type = null,
+  startDate = null,
+  endDate = null,
+  partyId = null,
+  search = null,
+  status = null,
+  hasRemaining = null,
+  overdue = false,
+  page = 1,
+  limit = 20,
+}) {
   const pool = await connectDB();
+  const request = pool.request();
 
-  let query = `
+  // ── بناء الفلاتر ─────────────────────────────────────
+  let where = ' WHERE 1=1';
+
+  if (type) {
+    where += ` AND t.TransactionType = @type`;
+    request.input('type', sql.VarChar(20), type);
+  }
+  if (startDate) {
+    where += ` AND CAST(t.TransactionDate AS DATE) >= @startDate`;
+    request.input('startDate', sql.Date, startDate);
+  }
+  if (endDate) {
+    where += ` AND CAST(t.TransactionDate AS DATE) <= @endDate`;
+    request.input('endDate', sql.Date, endDate);
+  }
+  if (partyId) {
+    where += ` AND t.PartyID = @partyId`;
+    request.input('partyId', sql.Int, partyId);
+  }
+  if (search && search.trim()) {
+    where += ` AND (p.PartyName LIKE @search OR CAST(t.TransactionID AS VARCHAR) LIKE @search OR t.ReferenceNumber LIKE @search)`;
+    request.input('search', sql.NVarChar(200), `%${search.trim()}%`);
+  }
+  if (status) {
+    where += ` AND t.InvoiceStatus = @status`;
+    request.input('status', sql.NVarChar(30), status);
+  }
+  if (hasRemaining === true) {
+    where += ` AND t.GrandTotal > t.PaidAmount`;
+  } else if (hasRemaining === false) {
+    where += ` AND t.GrandTotal <= t.PaidAmount`;
+  }
+  if (overdue === true || overdue === 'true') {
+    where += ` AND t.DueDate IS NOT NULL AND t.DueDate < GETDATE() AND (t.InvoiceStatus != 'Paid' OR t.InvoiceStatus IS NULL) AND (t.InvoiceStatus != 'Cancelled' OR t.InvoiceStatus IS NULL)`;
+  }
+
+  // ── القائمة مع Pagination ────────────────────────────
+  const offset = ((page || 1) - 1) * (limit || 20);
+
+  const query = `
     SELECT 
       t.TransactionID, t.TransactionDate, t.TransactionType,
       t.TotalAmount, t.DiscountPercentage, t.DiscountAmount,
       t.NetTotalAmount, t.PaidAmount, t.TotalChargesAmount,
       t.GrandTotal, t.PaymentMethod, t.Notes,
       t.CreatedBy, t.CreatedAt,
+      t.InvoiceStatus, t.EditStatus, t.EditBy, t.EditRequestDate,
+      t.DueDate, t.IsDelivered, t.ReferenceNumber,
       p.PartyID, p.PartyName, p.Phone,
       w.WarehouseID, w.WarehouseName,
+      e.FullName AS EmployeeName,
       (t.GrandTotal - t.PaidAmount) AS RemainingAmount
     FROM Transactions t
     INNER JOIN Parties p ON t.PartyID = p.PartyID
     INNER JOIN Warehouses w ON t.WarehouseID = w.WarehouseID
-    WHERE 1=1
+    LEFT JOIN Employees e ON t.EmpID = e.EmployeeID
+    ${where}
+    ORDER BY t.TransactionDate DESC, t.TransactionID DESC
+    OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY
   `;
-
-  const request = pool.request();
-
-  if (type) {
-    query += ` AND t.TransactionType = @type`;
-    request.input('type', sql.VarChar(20), type);
-  }
-
-  if (startDate) {
-    query += ` AND CAST(t.TransactionDate AS DATE) >= @startDate`;
-    request.input('startDate', sql.Date, startDate);
-  }
-
-  if (endDate) {
-    query += ` AND CAST(t.TransactionDate AS DATE) <= @endDate`;
-    request.input('endDate', sql.Date, endDate);
-  }
-
-  if (partyId) {
-    query += ` AND t.PartyID = @partyId`;
-    request.input('partyId', sql.Int, partyId);
-  }
-
-  query += ` ORDER BY t.TransactionDate DESC, t.TransactionID DESC`;
 
   const result = await request.query(query);
   return result.recordset;
+}
+
+// ═══════════════════════════════════════════════════════════
+// إحصائيات الفواتير (مطابقة لبلازور)
+// ═══════════════════════════════════════════════════════════
+async function getInvoicesStats({
+  type = null,
+  search = null,
+  status = null,
+  hasRemaining = null,
+  overdue = false,
+}) {
+  const pool = await connectDB();
+  const request = pool.request();
+
+  let where = ' WHERE 1=1';
+  if (type) {
+    where += ` AND t.TransactionType = @type`;
+    request.input('type', sql.VarChar(20), type);
+  }
+  if (search && search.trim()) {
+    where += ` AND (p.PartyName LIKE @search OR CAST(t.TransactionID AS VARCHAR) LIKE @search)`;
+    request.input('search', sql.NVarChar(200), `%${search.trim()}%`);
+  }
+  if (status) {
+    where += ` AND t.InvoiceStatus = @status`;
+    request.input('status', sql.NVarChar(30), status);
+  }
+  if (hasRemaining === true) {
+    where += ` AND t.GrandTotal > t.PaidAmount`;
+  } else if (hasRemaining === false) {
+    where += ` AND t.GrandTotal <= t.PaidAmount`;
+  }
+  if (overdue === true || overdue === 'true') {
+    where += ` AND t.DueDate IS NOT NULL AND t.DueDate < GETDATE() AND (t.InvoiceStatus != 'Paid' OR t.InvoiceStatus IS NULL) AND (t.InvoiceStatus != 'Cancelled' OR t.InvoiceStatus IS NULL)`;
+  }
+
+  const query = `
+    SELECT
+      COUNT(*) AS TotalCount,
+      ISNULL(SUM(CASE WHEN CAST(t.TransactionDate AS DATE) = CAST(GETDATE() AS DATE) THEN 1 ELSE 0 END), 0) AS TodayCount,
+      ISNULL(SUM(CASE WHEN t.InvoiceStatus = 'Open' OR t.InvoiceStatus IS NULL THEN 1 ELSE 0 END), 0) AS OpenCount,
+      ISNULL(SUM(CASE WHEN t.InvoiceStatus = 'Paid' THEN 1 ELSE 0 END), 0) AS PaidCount,
+      ISNULL(SUM(CASE WHEN t.DueDate IS NOT NULL AND t.DueDate < GETDATE() AND (t.InvoiceStatus != 'Paid' OR t.InvoiceStatus IS NULL) AND (t.InvoiceStatus != 'Cancelled' OR t.InvoiceStatus IS NULL) THEN 1 ELSE 0 END), 0) AS OverdueCount,
+      ISNULL(SUM(t.GrandTotal), 0) AS TotalSales,
+      ISNULL(SUM(t.PaidAmount), 0) AS TotalPaid,
+      ISNULL(SUM(t.GrandTotal - t.PaidAmount), 0) AS TotalRemaining
+    FROM Transactions t
+    INNER JOIN Parties p ON t.PartyID = p.PartyID
+    ${where}
+  `;
+
+  const result = await request.query(query);
+  return result.recordset[0];
 }
 
 // جلب فاتورة بالـ ID
@@ -481,6 +568,7 @@ async function getFullInvoiceData(transactionId) {
 // تصدير الدوال
 module.exports = {
   getAllTransactions,
+  getInvoicesStats,
   getTransactionById,
   getTransactionDetails,
   getAdditionalCharges,
