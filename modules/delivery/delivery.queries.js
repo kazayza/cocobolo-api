@@ -27,7 +27,7 @@ async function getDeliveries({
       t.GrandTotal,
       t.PaidAmount,
       ISNULL(t.GrandTotal, 0) - ISNULL(t.PaidAmount, 0) AS RemainingAmount,
-      e.FullName AS DeliveryEmployeeName,
+      de.FullName AS DeliveryEmployeeName,
       DATEDIFF(DAY, GETDATE(), t.DueDate) AS DaysRemaining,
       CASE 
         WHEN t.IsDelivered = 1 THEN 'delivered'
