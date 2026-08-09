@@ -1,4 +1,5 @@
 const authQueries = require('./auth.queries');
+const bcrypt = require('bcryptjs');
 const { successResponse, errorResponse } = require('../../shared/response.helper');
 
 // تسجيل الدخول
@@ -38,10 +39,14 @@ async function login(req, res) {
       };
     });
 
-    // إرجاع البيانات
+    // إرجاع البيانات (بدون أي بيانات حساسة)
+    const safeUser = { ...user };
+    delete safeUser.Password;
+    delete safeUser.HashedPassword;
+
     return res.json({
       success: true,
-      user: user,
+      user: safeUser,
       permissions: permissions
     });
 
@@ -102,13 +107,24 @@ async function changePassword(req, res) {
       return res.status(404).json({ success: false, message: 'مستخدم غير موجود' });
     }
 
-    // مقارنة مباشرة (بدون تشفير)
-    if (user.Password !== currentPassword) {
+    // ── تحقق ذكي من كلمة المرور الحالية ──────────────────
+    let isValid = false;
+
+    if (user.HashedPassword) {
+      // عنده تشفير → bcrypt
+      isValid = await bcrypt.compare(currentPassword, user.HashedPassword);
+    } else {
+      // قديم → plain + ترحيل تلقائي بعد التحقق
+      isValid = user.Password === currentPassword;
+    }
+
+    if (!isValid) {
       return res.status(400).json({ success: false, message: 'كلمة المرور الحالية غير صحيحة' });
     }
 
-    // 2. تحديث كلمة المرور
-    await authQueries.updateUserPassword(userId, newPassword);
+    // 2. تشفير الجديدة وحفظها (hash + plain مؤقت للتوافق)
+    const hashedNew = await bcrypt.hash(newPassword, 10);
+    await authQueries.updateUserPassword(userId, newPassword, hashedNew);
 
     return res.json({ success: true, message: 'تم تغيير كلمة المرور بنجاح' });
 

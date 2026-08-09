@@ -221,6 +221,9 @@ app.use('/api/leads', require('./modules/leads/leads.routes'));
 // Unified CRM + Leads follow-ups (mobile)
 app.use('/api/followups', require('./modules/followups/followups.routes'));
 
+// Admin: Users & Permissions Management
+app.use('/api/admin', require('./modules/admin-users/admin-users.routes'));
+
 // ===================================
 // ⚠️ Error Handling
 // ===================================

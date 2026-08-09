@@ -1,19 +1,54 @@
 const { sql, connectDB } = require('../../core/database');
+const bcrypt = require('bcryptjs');
 
-// استعلام تسجيل الدخول
+// ═══════════════════════════════════════════════════════════
+// تسجيل الدخول — "تحقق ذكي" (زي الـ Blazor بالظبط)
+//
+// الحالات:
+// 1) المستخدم عنده HashedPassword → تحقق بـ bcrypt
+// 2) المستخدم قديم (plain فقط) → تحقق بالمقارنة المباشرة،
+//    وعند النجاح نعمل ترحيل تلقائي → نحفظ bcrypt hash فوراً
+//    (فأول دخول بعد التحديث بيحوّله للتشفير من غير ما يحس)
+// ═══════════════════════════════════════════════════════════
 async function findUserByCredentials(username, password) {
   const pool = await connectDB();
+
+  // نجيب المستخدم بـ username فقط (مش بنقارن الباسورد في الـ SQL)
   const result = await pool.request()
     .input('username', sql.NVarChar, username)
-    .input('password', sql.NVarChar, password)
     .query(`
-      SELECT UserID, Username, FullName, Email, employeeID , Role
+      SELECT UserID, Username, FullName, Email, employeeID, Role,
+             Password, HashedPassword, IsActive
       FROM Users 
-      WHERE Username = @username 
-        AND Password = @password 
-        AND IsActive = 1
+      WHERE Username = @username AND IsActive = 1
     `);
-  return result.recordset[0] || null;
+
+  const user = result.recordset[0];
+  if (!user) return null;
+
+  // ── 1) عنده Hash → تحقق بـ bcrypt ─────────────────────
+  if (user.HashedPassword) {
+    const valid = await bcrypt.compare(password, user.HashedPassword);
+    return valid ? user : null;
+  }
+
+  // ── 2) قديم (plain) → مقارنة مباشرة + ترحيل تلقائي ────
+  if (user.Password === password) {
+    // أول دخول ناجح → نشفر فوراً ونحفظ (المرة الجاية هيدخل بـ bcrypt)
+    try {
+      const hashed = await bcrypt.hash(password, 10);
+      await pool.request()
+        .input('uid', sql.Int, user.UserID)
+        .input('hash', sql.NVarChar(255), hashed)
+        .query('UPDATE Users SET HashedPassword = @hash WHERE UserID = @uid');
+    } catch (e) {
+      console.error('⚠️ فشل ترحيل كلمة المرور للتشفير:', e.message);
+      // مش فشل الدخول — بنكمّل عادي
+    }
+    return user;
+  }
+
+  return null;
 }
 
 // استعلام صلاحيات المستخدم
@@ -74,12 +109,20 @@ async function getUserById(userId) {
   return result.recordset[0];
 }
 
-async function updateUserPassword(userId, newPassword) {
+async function updateUserPassword(userId, newPassword, hashedPassword = null) {
   const pool = await connectDB();
-  await pool.request()
+  const request = pool.request()
     .input('uid', sql.Int, userId)
-    .input('pass', sql.NVarChar, newPassword)
-    .query('UPDATE Users SET Password = @pass WHERE UserID = @uid');
+    .input('pass', sql.NVarChar, newPassword);
+
+  let query = 'UPDATE Users SET Password = @pass';
+  if (hashedPassword) {
+    request.input('hash', sql.NVarChar(255), hashedPassword);
+    query += ', HashedPassword = @hash';
+  }
+  query += ' WHERE UserID = @uid';
+
+  await request.query(query);
 }
 
 // تصدير الدوال
