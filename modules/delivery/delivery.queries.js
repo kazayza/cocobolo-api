@@ -18,7 +18,6 @@ async function getDeliveries({
       t.TransactionID,
       t.TransactionDate,
       t.DueDate,
-      t.DeliveredAt,
       t.IsDelivered,
       t.PartyID,
       p.PartyName AS ClientName,
@@ -39,7 +38,7 @@ async function getDeliveries({
       END AS DeliveryStatus
     FROM Transactions t
     LEFT JOIN Parties p ON t.PartyID = p.PartyID
-    LEFT JOIN Employees e ON t.DeliveryEmployeeID = e.EmployeeID
+    LEFT JOIN Employees de ON t.DeliveryEmployeeId = de.EmployeeID
     WHERE t.TransactionType = 'Sale'
       AND t.DueDate IS NOT NULL
   `;
@@ -63,14 +62,12 @@ async function getDeliveries({
   // ── فلترة التاريخ ────────────────────────────────────
   if (dateFrom) {
     const col = dateFilterType === 'invoice' ? 't.TransactionDate'
-      : dateFilterType === 'delivered' ? 't.DeliveredAt'
       : 't.DueDate';
     request.input('dateFrom', sql.DateTime, new Date(dateFrom));
     query += ` AND ${col} >= @dateFrom`;
   }
   if (dateTo) {
     const col = dateFilterType === 'invoice' ? 't.TransactionDate'
-      : dateFilterType === 'delivered' ? 't.DeliveredAt'
       : 't.DueDate';
     request.input('dateTo', sql.DateTime, new Date(dateTo));
     query += ` AND ${col} < DATEADD(DAY, 1, @dateTo)`;
@@ -119,14 +116,12 @@ async function getDeliveryStats({
 
   if (dateFrom) {
     const col = dateFilterType === 'invoice' ? 't.TransactionDate'
-      : dateFilterType === 'delivered' ? 't.DeliveredAt'
       : 't.DueDate';
     request.input('dateFrom', sql.DateTime, new Date(dateFrom));
     query += ` AND ${col} >= @dateFrom`;
   }
   if (dateTo) {
     const col = dateFilterType === 'invoice' ? 't.TransactionDate'
-      : dateFilterType === 'delivered' ? 't.DeliveredAt'
       : 't.DueDate';
     request.input('dateTo', sql.DateTime, new Date(dateTo));
     query += ` AND ${col} < DATEADD(DAY, 1, @dateTo)`;
@@ -166,19 +161,15 @@ async function getDeliveryDetails(transactionId) {
         t.TransactionID,
         t.TransactionDate,
         t.DueDate,
-        t.DeliveredAt,
         t.IsDelivered,
         t.TransactionType,
         t.Notes,
-        t.DeliveredNotes,
         t.PartyID,
         p.PartyName AS ClientName,
         p.Phone,
         p.Phone2,
         p.Address,
-        t.SalesEmployeeID,
-        se.FullName AS SalesEmployeeName,
-        t.DeliveryEmployeeID,
+        t.DeliveryEmployeeId,
         de.FullName AS DeliveryEmployeeName,
         t.GrandTotal,
         t.PaidAmount,
@@ -193,8 +184,7 @@ async function getDeliveryDetails(transactionId) {
         END AS DeliveryStatus
       FROM Transactions t
       LEFT JOIN Parties p ON t.PartyID = p.PartyID
-      LEFT JOIN Employees se ON t.SalesEmployeeID = se.EmployeeID
-      LEFT JOIN Employees de ON t.DeliveryEmployeeID = de.EmployeeID
+      LEFT JOIN Employees de ON t.DeliveryEmployeeId = de.EmployeeID
       WHERE t.TransactionID = @id
     `);
 
@@ -243,17 +233,15 @@ async function markAsDelivered({
 
   const request = pool.request()
     .input('id', sql.Int, transactionId)
-    .input('deliveredAt', sql.DateTime, new Date())
     .input('employeeId', sql.Int, deliveryEmployeeId)
     .input('notes', sql.NVarChar(1000), deliveredNotes || null);
 
   let query = `
     UPDATE Transactions 
-    SET IsDelivered = 1,
-        DeliveredAt = @deliveredAt
+    SET IsDelivered = 1
   `;
-  if (deliveryEmployeeId) query += `, DeliveryEmployeeID = @employeeId`;
-  if (deliveredNotes) query += `, DeliveredNotes = @notes`;
+  if (deliveryEmployeeId) query += `, DeliveryEmployeeId = @employeeId`;
+  if (deliveredNotes) query += `, Notes = @notes`;
   query += ` WHERE TransactionID = @id`;
 
   await request.query(query);
