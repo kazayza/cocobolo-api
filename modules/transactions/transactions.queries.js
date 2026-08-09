@@ -265,6 +265,219 @@ async function getTransactionsSummary(type = null) {
   return result.recordset[0];
 }
 
+// ═══════════════════════════════════════════════════════════
+// 🧾 نظام طلبات تعديل الفواتير (Edit Status)
+// ═══════════════════════════════════════════════════════════
+
+// طلب تعديل فاتورة (المندوب/أي مخول)
+async function requestEdit(transactionId, requestedBy, reason) {
+  const pool = await connectDB();
+  await pool.request()
+    .input('id', sql.Int, transactionId)
+    .input('editBy', sql.NVarChar(50), requestedBy)
+    .input('editReason', sql.NVarChar(500), reason || null)
+    .query(`
+      UPDATE Transactions 
+      SET EditStatus = 1, EditBy = @editBy, 
+          EditRequestDate = GETDATE(), EditReason = @editReason
+      WHERE TransactionID = @id
+    `);
+  return true;
+}
+
+// قائمة طلبات التعديل المعلقة (للإشعارات والمراجعة)
+async function getPendingEditRequests() {
+  const pool = await connectDB();
+  const result = await pool.request().query(`
+    SELECT 
+      t.TransactionID, t.TransactionDate, t.GrandTotal,
+      t.EditBy, t.EditRequestDate, t.EditReason,
+      p.PartyName AS ClientName
+    FROM Transactions t
+    INNER JOIN Parties p ON t.PartyID = p.PartyID
+    WHERE t.EditStatus = 1
+    ORDER BY t.EditRequestDate DESC
+  `);
+  return result.recordset;
+}
+
+// موافقة على طلب التعديل
+async function approveEditRequest(transactionId, approvedBy) {
+  const pool = await connectDB();
+  await pool.request()
+    .input('id', sql.Int, transactionId)
+    .input('by', sql.NVarChar(50), approvedBy)
+    .query(`
+      UPDATE Transactions 
+      SET EditStatus = 2, EditDone = @by
+      WHERE TransactionID = @id AND EditStatus = 1
+    `);
+  return true;
+}
+
+// رفض طلب التعديل
+async function rejectEditRequest(transactionId, rejectedBy, reason) {
+  const pool = await connectDB();
+  await pool.request()
+    .input('id', sql.Int, transactionId)
+    .input('by', sql.NVarChar(50), rejectedBy)
+    .input('reason', sql.NVarChar(500), reason || null)
+    .query(`
+      UPDATE Transactions 
+      SET EditStatus = 3, EditDone = @by, EditReason = @reason
+      WHERE TransactionID = @id AND EditStatus = 1
+    `);
+  return true;
+}
+
+// تعديل فعلي: تاريخ التسليم + الخصم + مبلغ صنف + تسجيل PriceHistory
+async function applyInvoiceEdit({
+  transactionId,
+  dueDate,            // تاريخ التسليم الجديد
+  discountPercentage, // نسبة الخصم الجديدة
+  discountAmount,     // قيمة الخصم الجديدة
+  editedBy,
+}) {
+  const pool = await connectDB();
+  const request = pool.request()
+    .input('id', sql.Int, transactionId)
+    .input('editedBy', sql.NVarChar(50), editedBy);
+
+  let query = `
+    UPDATE Transactions SET
+      EditStatus = 4, EditDone = @editedBy, EditAt = GETDATE()
+  `;
+
+  if (dueDate) {
+    request.input('dueDate', sql.DateTime, new Date(dueDate));
+    query += `, DueDate = @dueDate`;
+  }
+  if (discountPercentage !== undefined && discountPercentage !== null) {
+    request.input('discPct', sql.Decimal(5, 2), discountPercentage);
+    query += `, DiscountPercentage = @discPct`;
+  }
+  if (discountAmount !== undefined && discountAmount !== null) {
+    request.input('discAmt', sql.Decimal(18, 2), discountAmount);
+    query += `, DiscountAmount = @discAmt`;
+  }
+
+  // إعادة حساب NetTotalAmount و GrandTotal (لو في خصم)
+  // NetTotal = TotalAmount - DiscountAmount (أو نسبة من TotalAmount)
+  // GrandTotal = NetTotal + TotalChargesAmount
+  query += `,
+    NetTotalAmount = ISNULL(TotalAmount,0) 
+      - CASE 
+          WHEN DiscountAmount > 0 THEN DiscountAmount 
+          WHEN DiscountPercentage > 0 THEN ISNULL(TotalAmount,0) * DiscountPercentage / 100 
+          ELSE 0 
+        END,
+    GrandTotal = ISNULL(TotalAmount,0) 
+      - CASE 
+          WHEN DiscountAmount > 0 THEN DiscountAmount 
+          WHEN DiscountPercentage > 0 THEN ISNULL(TotalAmount,0) * DiscountPercentage / 100 
+          ELSE 0 
+        END 
+      + ISNULL(TotalChargesAmount,0)
+  `;
+
+  query += ` WHERE TransactionID = @id`;
+  await request.query(query);
+  return true;
+}
+
+// تعديل مبلغ صنف في الفاتورة + تسجيل في PriceHistory
+async function updateDetailPrice(transactionId, detailId, newUnitPrice, editedBy, changeReason) {
+  const pool = await connectDB();
+
+  // 1. جلب السعر القديم
+  const oldRes = await pool.request()
+    .input('detailId', sql.Int, detailId)
+    .query(`
+      SELECT td.UnitPrice, td.ProductID, td.Quantity
+      FROM TransactionDetails td
+      WHERE td.DetailID = @detailId
+    `);
+  const old = oldRes.recordset[0];
+  if (!old) return { success: false, message: 'الصنف غير موجود' };
+
+  // 2. تحديث السعر + الإجمالي
+  await pool.request()
+    .input('detailId', sql.Int, detailId)
+    .input('newPrice', sql.Decimal(18, 2), newUnitPrice)
+    .query(`
+      UPDATE TransactionDetails 
+      SET UnitPrice = @newPrice, 
+          TotalAmount = Quantity * @newPrice
+      WHERE DetailID = @detailId
+    `);
+
+  // 3. تسجيل في PriceHistory
+  await pool.request()
+    .input('productId', sql.Int, old.ProductID)
+    .input('priceType', sql.NVarChar(20), 'Sale')
+    .input('oldPrice', sql.Decimal(18, 2), old.UnitPrice)
+    .input('newPrice', sql.Decimal(18, 2), newUnitPrice)
+    .input('changedBy', sql.NVarChar(50), editedBy)
+    .input('reason', sql.NVarChar(200), changeReason || `تعديل سعر صنف في فاتورة #${transactionId}`)
+    .query(`
+      INSERT INTO PriceHistory (
+        ProductID, PriceType, OldPrice, NewPrice, 
+        ChangedBy, ChangedAt, ChangeReason
+      )
+      VALUES (
+        @productId, @priceType, @oldPrice, @newPrice,
+        @changedBy, GETDATE(), @reason
+      )
+    `);
+
+  // 4. إعادة حساب إجماليات الفاتورة بعد تعديل الصنف
+  await pool.request()
+    .input('id', sql.Int, transactionId)
+    .query(`
+      UPDATE Transactions SET
+        TotalAmount = (SELECT ISNULL(SUM(TotalAmount),0) FROM TransactionDetails WHERE TransactionID = @id),
+        NetTotalAmount = (SELECT ISNULL(SUM(TotalAmount),0) FROM TransactionDetails WHERE TransactionID = @id) 
+          - CASE WHEN DiscountAmount > 0 THEN DiscountAmount 
+                 WHEN DiscountPercentage > 0 THEN (SELECT ISNULL(SUM(TotalAmount),0) FROM TransactionDetails WHERE TransactionID = @id) * DiscountPercentage / 100 
+                 ELSE 0 END,
+        GrandTotal = (SELECT ISNULL(SUM(TotalAmount),0) FROM TransactionDetails WHERE TransactionID = @id) 
+          - CASE WHEN DiscountAmount > 0 THEN DiscountAmount 
+                 WHEN DiscountPercentage > 0 THEN (SELECT ISNULL(SUM(TotalAmount),0) FROM TransactionDetails WHERE TransactionID = @id) * DiscountPercentage / 100 
+                 ELSE 0 END 
+          + ISNULL(TotalChargesAmount,0)
+      WHERE TransactionID = @id
+    `);
+
+  return { success: true };
+}
+
+// ═══════════════════════════════════════════════════════════
+// 🖨️ تصدير الفاتورة PDF — جلب كل بياناتها
+// ═══════════════════════════════════════════════════════════
+
+async function getFullInvoiceData(transactionId) {
+  const pool = await connectDB();
+
+  // الهيدر
+  const header = await getTransactionById(transactionId);
+
+  // الأصناف
+  const details = await getTransactionDetails(transactionId);
+
+  // الرسوم
+  const charges = await getAdditionalCharges(transactionId);
+
+  // المدفوعات
+  const payments = await getPayments(transactionId);
+
+  return {
+    header,
+    details,
+    charges,
+    payments,
+  };
+}
+
 // تصدير الدوال
 module.exports = {
   getAllTransactions,
@@ -274,5 +487,12 @@ module.exports = {
   getPayments,
   createTransaction,
   addPayment,
-  getTransactionsSummary
+  getTransactionsSummary,
+  requestEdit,
+  getPendingEditRequests,
+  approveEditRequest,
+  rejectEditRequest,
+  applyInvoiceEdit,
+  updateDetailPrice,
+  getFullInvoiceData
 };

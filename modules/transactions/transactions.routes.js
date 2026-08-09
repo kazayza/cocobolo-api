@@ -30,5 +30,28 @@ router.get('/:id/payments', transactionsController.getPayments);
 // POST /api/transactions/:id/payments
 router.post('/:id/payments', transactionsController.addPayment);
 
+// ═══════════════════════════════════════════════════════════
+// 🧾 نظام طلبات تعديل الفواتير
+// ═══════════════════════════════════════════════════════════
+
+// قائمة طلبات التعديل المعلقة (مهم: قبل /:id عشان متتعرفش كـ id)
+router.get('/edit-requests', transactionsController.getPendingEditRequests);
+
+// طلب تعديل فاتورة
+router.post('/:id/request-edit', transactionsController.requestEdit);
+
+// موافقة / رفض
+router.post('/:id/approve-edit', transactionsController.approveEdit);
+router.post('/:id/reject-edit', transactionsController.rejectEdit);
+
+// تطبيق التعديل الفعلي
+router.put('/:id/apply-edit', transactionsController.applyEdit);
+
+// تعديل مبلغ صنف
+router.put('/:id/details/:detailId/price', transactionsController.updateDetailPrice);
+
+// بيانات كاملة للـ PDF
+router.get('/:id/full', transactionsController.getFullInvoice);
+
 // تصدير الراوتر
 module.exports = router;
