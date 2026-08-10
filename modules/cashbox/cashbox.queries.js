@@ -427,9 +427,119 @@ async function getMonthlyComparison() {
   return result.recordset[0];
 }
 
+// ═══════════════════════════════════════════════════════════
+// 📊 الداشبورد الكامل (مطابق لبلازور)
+// ═══════════════════════════════════════════════════════════
+async function getFullDashboard() {
+  const pool = await connectDB();
+
+  // 1. الإحصائيات الرئيسية
+  const statsRes = await pool.request().query(`
+    SELECT
+      ISNULL(SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE -Amount END), 0) AS TotalBalance,
+      ISNULL(SUM(CASE WHEN TransactionType = N'قبض' AND CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) THEN Amount ELSE 0 END), 0) AS TodayIn,
+      ISNULL(SUM(CASE WHEN TransactionType = N'صرف' AND CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) THEN Amount ELSE 0 END), 0) AS TodayOut,
+      ISNULL(SUM(CASE WHEN TransactionType = N'قبض' AND YEAR(TransactionDate) = YEAR(GETDATE()) AND MONTH(TransactionDate) = MONTH(GETDATE()) THEN Amount ELSE 0 END), 0) AS MonthIn,
+      ISNULL(SUM(CASE WHEN TransactionType = N'صرف' AND YEAR(TransactionDate) = YEAR(GETDATE()) AND MONTH(TransactionDate) = MONTH(GETDATE()) THEN Amount ELSE 0 END), 0) AS MonthOut
+    FROM CashboxTransactions
+  `);
+  const stats = statsRes.recordset[0] || {};
+
+  // 2. عدد الخزن
+  const boxesCountRes = await pool.request().query(`
+    SELECT COUNT(*) AS Total, SUM(CASE WHEN IsActive = 1 THEN 1 ELSE 0 END) AS Active
+    FROM CashBoxes
+  `);
+  const boxesCount = boxesCountRes.recordset[0] || {};
+
+  // 3. كل الخزن بأرصدتها
+  const boxesRes = await pool.request().query(`
+    SELECT
+      c.CashBoxID, c.CashBoxName, c.Description,
+      c.CashBoxKind, c.Icon, c.Color, c.OpeningBalance,
+      c.IsActive, c.IsDefault,
+      ISNULL((SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE -Amount END)
+              FROM CashboxTransactions WHERE CashBoxID = c.CashBoxID), 0) AS CurrentBalance,
+      ISNULL((SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE 0 END)
+              FROM CashboxTransactions WHERE CashBoxID = c.CashBoxID), 0) AS TotalIn,
+      ISNULL((SELECT SUM(CASE WHEN TransactionType = N'صرف' THEN Amount ELSE 0 END)
+              FROM CashboxTransactions WHERE CashBoxID = c.CashBoxID), 0) AS TotalOut,
+      (SELECT COUNT(*) FROM CashboxTransactions WHERE CashBoxID = c.CashBoxID) AS TransactionsCount
+    FROM CashBoxes c
+    ORDER BY c.IsDefault DESC, c.CashBoxName
+  `);
+
+  // 4. آخر 30 يوم حركة يومية
+  const last30Res = await pool.request().query(`
+    SELECT
+      CAST(TransactionDate AS DATE) AS Date,
+      ISNULL(SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE 0 END), 0) AS [In],
+      ISNULL(SUM(CASE WHEN TransactionType = N'صرف' THEN Amount ELSE 0 END), 0) AS [Out]
+    FROM CashboxTransactions
+    WHERE TransactionDate >= DATEADD(DAY, -29, CAST(GETDATE() AS DATE))
+    GROUP BY CAST(TransactionDate AS DATE)
+    ORDER BY CAST(TransactionDate AS DATE)
+  `);
+
+  // 5. توزيع الأنواع (ReferenceType)
+  const breakdownRes = await pool.request().query(`
+    SELECT
+      ISNULL(ReferenceType, N'أخرى') AS ReferenceType,
+      COUNT(*) AS Count,
+      ISNULL(SUM(Amount), 0) AS Total
+    FROM CashboxTransactions
+    GROUP BY ReferenceType
+    ORDER BY SUM(Amount) DESC
+  `);
+
+  // 6. آخر الحركات
+  const recentRes = await pool.request().query(`
+    SELECT TOP 10
+      ct.CashboxTransactionID, ct.CashBoxID, ct.TransactionDate,
+      ct.TransactionType, ct.Amount, ct.Notes, ct.CreatedBy,
+      c.CashBoxName
+    FROM CashboxTransactions ct
+    INNER JOIN CashBoxes c ON ct.CashBoxID = c.CashBoxID
+    ORDER BY ct.TransactionDate DESC
+  `);
+
+  // 7. دائنون/مدينون (الحسابات الشخصية لو موجودة)
+  let creditors = 0, debtors = 0;
+  try {
+    const accRes = await pool.request().query(`
+      SELECT ISNULL(SUM(CASE WHEN Balance > 0 THEN Balance ELSE 0 END), 0) AS Creditors,
+             ISNULL(SUM(CASE WHEN Balance < 0 THEN ABS(Balance) ELSE 0 END), 0) AS Debtors
+      FROM PersonalAccounts
+    `);
+    creditors = accRes.recordset[0]?.Creditors || 0;
+    debtors = accRes.recordset[0]?.Debtors || 0;
+  } catch (e) {
+    // جدول الحسابات الشخصية مش موجود — نتجاهل
+  }
+
+  return {
+    TotalBalance: stats.TotalBalance ?? 0,
+    TodayIn: stats.TodayIn ?? 0,
+    TodayOut: stats.TodayOut ?? 0,
+    TodayNet: (stats.TodayIn ?? 0) - (stats.TodayOut ?? 0),
+    MonthIn: stats.MonthIn ?? 0,
+    MonthOut: stats.MonthOut ?? 0,
+    MonthNet: (stats.MonthIn ?? 0) - (stats.MonthOut ?? 0),
+    CashBoxesCount: boxesCount.Total ?? 0,
+    ActiveCashBoxesCount: boxesCount.Active ?? 0,
+    CashBoxes: boxesRes.recordset,
+    Last30Days: last30Res.recordset,
+    TypeBreakdown: breakdownRes.recordset,
+    RecentTransactions: recentRes.recordset,
+    TotalCreditors: creditors,
+    TotalDebtors: debtors,
+  };
+}
+
 // تصدير الدوال
 module.exports = {
   getAllCashboxes,
+  getFullDashboard,
   getCashboxById,
   getCashboxTransactions,
   getCashboxSummary,

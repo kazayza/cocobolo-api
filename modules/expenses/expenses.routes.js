@@ -10,9 +10,17 @@ const expensesController = require('./expenses.controller');
 // GET /api/expenses/groups
 router.get('/groups', expensesController.getGroups);
 
+// إنشاء مجموعة مصروفات
+// POST /api/expenses/groups
+router.post('/groups', expensesController.createGroup);
+
 // جلب الخزائن
 // GET /api/expenses/cashboxes
 router.get('/cashboxes', expensesController.getCashboxes);
+
+// داشبورد المصروفات الكامل
+// GET /api/expenses/dashboard
+router.get('/dashboard', expensesController.getDashboard);
 
 // ملخص المصروفات
 // GET /api/expenses/summary

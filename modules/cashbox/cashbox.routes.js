@@ -6,6 +6,10 @@ const cashboxController = require('./cashbox.controller');
 // 🏦 Cashbox Routes
 // ===================================
 
+// الداشبورد الكامل (كل البيانات في استجابة واحدة)
+// GET /api/cashbox/dashboard/full
+router.get('/dashboard/full', cashboxController.getFullDashboard);
+
 // ملخص الخزينة
 // GET /api/cashbox/summary?cashboxId=xxx
 router.get('/summary', cashboxController.getSummary);

@@ -229,6 +229,7 @@ async function getMonthlyComparison(req, res) {
 
 // تصدير الدوال
 module.exports = {
+  getFullDashboard,
   getAll,
   getById,
   getSummary,

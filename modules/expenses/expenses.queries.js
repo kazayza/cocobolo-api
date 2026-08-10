@@ -415,15 +415,99 @@ async function getExpenseById(id) {
 
 
 
+// ═══════════════════════════════════════════════════════════
+// 📊 داشبورد المصروفات الكامل
+// ═══════════════════════════════════════════════════════════
+async function getExpenseDashboard() {
+  const pool = await connectDB();
+
+  // 1. الملخص
+  const summary = await getExpensesSummary();
+
+  // 2. آخر 30 يوم
+  const last30Res = await pool.request().query(`
+    SELECT
+      CAST(ExpenseDate AS DATE) AS Date,
+      ISNULL(SUM(Amount), 0) AS Total
+    FROM Expenses
+    WHERE ExpenseDate >= DATEADD(DAY, -29, CAST(GETDATE() AS DATE))
+    GROUP BY CAST(ExpenseDate AS DATE)
+    ORDER BY CAST(ExpenseDate AS DATE)
+  `);
+
+  // 3. توزيع المجموعات (الشهر الحالي)
+  const breakdownRes = await pool.request().query(`
+    SELECT TOP 8
+      ISNULL(g.ExpenseGroupName, N'غير مصنف') AS GroupName,
+      ISNULL(SUM(e.Amount), 0) AS Total,
+      COUNT(*) AS Count
+    FROM Expenses e
+    LEFT JOIN ExpenseGroups g ON e.ExpenseGroupID = g.ExpenseGroupID
+    WHERE YEAR(e.ExpenseDate) = YEAR(GETDATE())
+      AND MONTH(e.ExpenseDate) = MONTH(GETDATE())
+    GROUP BY g.ExpenseGroupName
+    ORDER BY SUM(e.Amount) DESC
+  `);
+
+  // 4. آخر المصروفات
+  const recentRes = await pool.request().query(`
+    SELECT TOP 8
+      e.ExpenseID, e.ExpenseName, e.ExpenseDate, e.Amount,
+      e.Notes, e.CreatedBy,
+      g.ExpenseGroupName
+    FROM Expenses e
+    LEFT JOIN ExpenseGroups g ON e.ExpenseGroupID = g.ExpenseGroupID
+    ORDER BY e.ExpenseDate DESC
+  `);
+
+  // 5. أعلى 5 مصروفات هذا الشهر
+  const topRes = await pool.request().query(`
+    SELECT TOP 5
+      e.ExpenseName,
+      ISNULL(SUM(e.Amount), 0) AS Total
+    FROM Expenses e
+    WHERE YEAR(e.ExpenseDate) = YEAR(GETDATE())
+      AND MONTH(e.ExpenseDate) = MONTH(GETDATE())
+    GROUP BY e.ExpenseName
+    ORDER BY SUM(e.Amount) DESC
+  `);
+
+  return {
+    summary,
+    last30Days: last30Res.recordset,
+    breakdown: breakdownRes.recordset,
+    recent: recentRes.recordset,
+    topExpenses: topRes.recordset,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════
+// إنشاء مجموعة مصروفات
+// ═══════════════════════════════════════════════════════════
+async function createExpenseGroup({ expenseGroupName, parentGroupId = null }) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('name', sql.NVarChar(200), expenseGroupName)
+    .input('parentId', sql.Int, parentGroupId)
+    .query(`
+      INSERT INTO ExpenseGroups (ExpenseGroupName, ParentGroupID)
+      OUTPUT INSERTED.ExpenseGroupID
+      VALUES (@name, @parentId)
+    `);
+  return result.recordset[0]?.ExpenseGroupID || null;
+}
+
 // تصدير الدوال
 module.exports = {
   getExpenseGroups,
   getCashboxes,
   getExpensesSummary,
+  getExpenseDashboard,
   getAllExpenses,
   createExpense,
   updateExpense,
   deleteExpense,
   getExpenseGroupsByParent,
+  createExpenseGroup,
   getExpenseById
 };

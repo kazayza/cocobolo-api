@@ -160,8 +160,43 @@ async function getById(req, res) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════
+// 📊 داشبورد المصروفات
+// ═══════════════════════════════════════════════════════════
+async function getDashboard(req, res) {
+  try {
+    const dashboard = await expensesQueries.getExpenseDashboard();
+    return res.json(dashboard);
+  } catch (err) {
+    console.error('❌ getDashboard (expenses):', err.message);
+    return errorResponse(res, 'فشل تحميل الداشبورد', 500, err.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// إنشاء مجموعة مصروفات
+// ═══════════════════════════════════════════════════════════
+async function createGroup(req, res) {
+  try {
+    const { expenseGroupName, parentGroupId } = req.body;
+    if (!expenseGroupName || !expenseGroupName.trim()) {
+      return errorResponse(res, 'اسم المجموعة مطلوب', 400);
+    }
+    const id = await expensesQueries.createExpenseGroup({
+      expenseGroupName: expenseGroupName.trim(),
+      parentGroupId: parentGroupId || null,
+    });
+    return successResponse(res, { groupId: id }, 'تم إنشاء المجموعة بنجاح', 201);
+  } catch (err) {
+    console.error('❌ createGroup:', err.message);
+    return errorResponse(res, 'فشل إنشاء المجموعة', 500, err.message);
+  }
+}
+
 // تصدير الدوال
 module.exports = {
+  createGroup,
+  getDashboard,
   getGroups,
   getCashboxes,
   getSummary,
