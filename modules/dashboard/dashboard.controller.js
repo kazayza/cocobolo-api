@@ -14,8 +14,21 @@ async function getStats(req, res) {
       employeeId || null
     );
 
+    // جلب الـ Trends (آخر 7 أيام) — من غير ما يكسر الداشبورد لو فشل
+    let trends = {};
+    try {
+      trends = await dashboardQueries.getDashboardTrends(
+        userId, username, role || 'User', employeeId || null
+      );
+    } catch (e) {
+      console.error('⚠️ فشل جلب الـ Trends:', e.message);
+    }
+
     return res.json({
-      summary: stats,
+      summary: {
+        ...stats,
+        ...trends,
+      },
       unreadCount: stats?.unreadCount || 0
     });
   } catch (err) {

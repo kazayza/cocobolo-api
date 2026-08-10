@@ -18,37 +18,7 @@ async function getDashboardStats(userId, username, role, employeeId) {
         (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) AND TransactionType = 'Sale') as salesToday,
         (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE YEAR(TransactionDate) = YEAR(GETDATE()) AND MONTH(TransactionDate) = MONTH(GETDATE()) AND TransactionType = 'Sale') as salesMonth,
         (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE YEAR(TransactionDate) = YEAR(DATEADD(MONTH,-1,GETDATE())) AND MONTH(TransactionDate) = MONTH(DATEADD(MONTH,-1,GETDATE())) AND TransactionType = 'Sale') as salesPrevMonth,
-        (SELECT COUNT(*) FROM Notifications WHERE RecipientUser = @username AND IsRead = 0) as unreadCount,
-        (SELECT ISNULL((
-          SELECT STUFF((
-            SELECT ',' + CONVERT(VARCHAR, cnt)
-            FROM (
-              SELECT TOP 7 d2.dt, ISNULL((SELECT COUNT(*) FROM Parties WHERE CAST(CreatedAt AS DATE) = d2.dt), 0) as cnt
-              FROM (SELECT CAST(DATEADD(DAY, -n, GETDATE()) AS DATE) as dt FROM (SELECT 0 n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6) nums) d2
-              ORDER BY d2.dt
-            ) t FOR XML PATH('')
-          ), 1, 1, '')
-        ), '') as clientsTrend7,
-        (SELECT ISNULL((
-          SELECT STUFF((
-            SELECT ',' + CONVERT(VARCHAR, cnt)
-            FROM (
-              SELECT TOP 7 d2.dt, ISNULL((SELECT COUNT(*) FROM CRM_Tasks WHERE CAST(DueDate AS DATE) = d2.dt AND Status != 'Completed'), 0) as cnt
-              FROM (SELECT CAST(DATEADD(DAY, -n, GETDATE()) AS DATE) as dt FROM (SELECT 0 n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6) nums) d2
-              ORDER BY d2.dt
-            ) t FOR XML PATH('')
-          ), 1, 1, '')
-        ), '') as tasksTrend7,
-        (SELECT ISNULL((
-          SELECT STUFF((
-            SELECT ',' + CONVERT(VARCHAR, cnt)
-            FROM (
-              SELECT TOP 7 d2.dt, ISNULL((SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE CAST(TransactionDate AS DATE) = d2.dt AND TransactionType = 'Sale'), 0) as cnt
-              FROM (SELECT CAST(DATEADD(DAY, -n, GETDATE()) AS DATE) as dt FROM (SELECT 0 n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6) nums) d2
-              ORDER BY d2.dt
-            ) t FOR XML PATH('')
-          ), 1, 1, '')
-        ), '') as salesTrend7
+        (SELECT COUNT(*) FROM Notifications WHERE RecipientUser = @username AND IsRead = 0) as unreadCount
     `;
   } else if (role === 'Sales') {
     // موظف المبيعات يشوف بتاعه بس
@@ -60,37 +30,7 @@ async function getDashboardStats(userId, username, role, employeeId) {
         (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) AND TransactionType = 'Sale' AND CreatedBy = @username) as salesToday,
         (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE YEAR(TransactionDate) = YEAR(GETDATE()) AND MONTH(TransactionDate) = MONTH(GETDATE()) AND TransactionType = 'Sale' AND CreatedBy = @username) as salesMonth,
         (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE YEAR(TransactionDate) = YEAR(DATEADD(MONTH,-1,GETDATE())) AND MONTH(TransactionDate) = MONTH(DATEADD(MONTH,-1,GETDATE())) AND TransactionType = 'Sale' AND CreatedBy = @username) as salesPrevMonth,
-        (SELECT COUNT(*) FROM Notifications WHERE RecipientUser = @username AND IsRead = 0) as unreadCount,
-        (SELECT ISNULL((
-          SELECT STUFF((
-            SELECT ',' + CONVERT(VARCHAR, cnt)
-            FROM (
-              SELECT TOP 7 d2.dt, ISNULL((SELECT COUNT(*) FROM Parties WHERE CAST(CreatedAt AS DATE) = d2.dt AND CreatedBy = @username), 0) as cnt
-              FROM (SELECT CAST(DATEADD(DAY, -n, GETDATE()) AS DATE) as dt FROM (SELECT 0 n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6) nums) d2
-              ORDER BY d2.dt
-            ) t FOR XML PATH('')
-          ), 1, 1, '')
-        ), '') as clientsTrend7,
-        (SELECT ISNULL((
-          SELECT STUFF((
-            SELECT ',' + CONVERT(VARCHAR, cnt)
-            FROM (
-              SELECT TOP 7 d2.dt, ISNULL((SELECT COUNT(*) FROM CRM_Tasks WHERE CAST(DueDate AS DATE) = d2.dt AND Status != 'Completed' AND AssignedTo = @employeeId), 0) as cnt
-              FROM (SELECT CAST(DATEADD(DAY, -n, GETDATE()) AS DATE) as dt FROM (SELECT 0 n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6) nums) d2
-              ORDER BY d2.dt
-            ) t FOR XML PATH('')
-          ), 1, 1, '')
-        ), '') as tasksTrend7,
-        (SELECT ISNULL((
-          SELECT STUFF((
-            SELECT ',' + CONVERT(VARCHAR, cnt)
-            FROM (
-              SELECT TOP 7 d2.dt, ISNULL((SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE CAST(TransactionDate AS DATE) = d2.dt AND TransactionType = 'Sale' AND CreatedBy = @username), 0) as cnt
-              FROM (SELECT CAST(DATEADD(DAY, -n, GETDATE()) AS DATE) as dt FROM (SELECT 0 n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6) nums) d2
-              ORDER BY d2.dt
-            ) t FOR XML PATH('')
-          ), 1, 1, '')
-        ), '') as salesTrend7
+        (SELECT COUNT(*) FROM Notifications WHERE RecipientUser = @username AND IsRead = 0) as unreadCount
     `;
   } else if (role === 'AccountManager' || role === 'Account') {
     // الحسابات يشوفوا إحصائيات مالية
@@ -225,9 +165,74 @@ async function getDebugData() {
   return results;
 }
 
+// ═══════════════════════════════════════════════════════════
+// Trends — آخر 7 أيام (باستعلام بسيط Group By)
+// ═══════════════════════════════════════════════════════════
+async function getDashboardTrends(userId, username, role, employeeId) {
+  const pool = await connectDB();
+
+  // فلتر المستخدم (للسيلز فقط)
+  const userFilter = role === 'Sales' ? ' AND CreatedBy = @username' : '';
+  const taskFilter = role === 'Sales' ? ' AND AssignedTo = @employeeId' : '';
+
+  const request = pool.request()
+    .input('username', sql.NVarChar, username)
+    .input('employeeId', sql.Int, employeeId);
+
+  // 1. العملاء الجدد آخر 7 أيام
+  const clientsRes = await request.query(`
+    SELECT CAST(CreatedAt AS DATE) as d, COUNT(*) as cnt
+    FROM Parties
+    WHERE CreatedAt >= DATEADD(DAY, -6, CAST(GETDATE() AS DATE))${userFilter}
+    GROUP BY CAST(CreatedAt AS DATE)
+  `);
+
+  // 2. المهام آخر 7 أيام
+  const tasksRes = await request.query(`
+    SELECT CAST(DueDate AS DATE) as d, COUNT(*) as cnt
+    FROM CRM_Tasks
+    WHERE DueDate >= DATEADD(DAY, -6, CAST(GETDATE() AS DATE))
+      AND Status != 'Completed'${taskFilter}
+    GROUP BY CAST(DueDate AS DATE)
+  `);
+
+  // 3. المبيعات آخر 7 أيام
+  const salesRes = await request.query(`
+    SELECT CAST(TransactionDate AS DATE) as d, ISNULL(SUM(GrandTotal),0) as cnt
+    FROM Transactions
+    WHERE TransactionDate >= DATEADD(DAY, -6, CAST(GETDATE() AS DATE))
+      AND TransactionType = 'Sale'${userFilter}
+    GROUP BY CAST(TransactionDate AS DATE)
+  `);
+
+  // تجميع النتائج في مصفوفة 7 أيام (الأحدث آخراً)
+  function buildSeries(rows) {
+    const map = {};
+    for (const r of rows) {
+      const d = r.d instanceof Date ? r.d : new Date(r.d);
+      map[d.toISOString().slice(0, 10)] = r.cnt;
+    }
+    const series = [];
+    for (let i = 6; i >= 0; i--) {
+      const day = new Date();
+      day.setDate(day.getDate() - i);
+      const key = day.toISOString().slice(0, 10);
+      series.push(map[key] ?? 0);
+    }
+    return series.join(',');
+  }
+
+  return {
+    clientsTrend7: buildSeries(clientsRes.recordset),
+    tasksTrend7: buildSeries(tasksRes.recordset),
+    salesTrend7: buildSeries(salesRes.recordset),
+  };
+}
+
 // تصدير الدوال
 module.exports = {
   getDashboardStats,
+  getDashboardTrends,
   getRecentActivities,
   getDebugData
 };
