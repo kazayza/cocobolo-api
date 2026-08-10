@@ -199,6 +199,72 @@ async function createSmart(req, res) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════
+// 📢 بث إشعار لجميع المستخدمين (خاص بالأدمن)
+// — بيبعت FCM مباشر فقط، من غير حفظ في جدول الإشعارات
+// ═══════════════════════════════════════════════════════════
+async function broadcast(req, res) {
+  try {
+    const { title, message, sender } = req.body;
+
+    if (!title || !message) {
+      return errorResponse(res, 'العنوان والرسالة مطلوبان', 400);
+    }
+
+    // 1. جلب كل المستخدمين النشطين اللي عندهم tokens
+    const users = await notificationsQueries.getAllFcmTokens();
+
+    if (users.length === 0) {
+      return res.json({
+        success: true,
+        sent: 0,
+        message: 'لا يوجد مستخدمون مسجلون للـ Push حالياً',
+      });
+    }
+
+    // 2. إرسال FCM لكل مستخدم (من غير حفظ في الجدول)
+    let sent = 0;
+    let failed = 0;
+
+    for (const user of users) {
+      try {
+        if (isFirebaseReady()) {
+          const result = await sendPushNotification(
+            user.FCMToken,
+            title,
+            message,
+            {
+              formName: 'broadcast',
+              sender: sender || 'Admin',
+            }
+          );
+          if (result.success) sent++;
+          else failed++;
+        } else {
+          return res.json({
+            success: false,
+            message: 'Firebase غير مفعل على السيرفر — الإشعارات اللحظية معطلة',
+          });
+        }
+      } catch (e) {
+        failed++;
+        console.error(`⚠️ فشل بث لـ ${user.Username}:`, e.message);
+      }
+    }
+
+    console.log(`📢 بث إشعار: "${title}" → نجح=${sent} فشل=${failed}`);
+    return res.json({
+      success: true,
+      sent,
+      failed,
+      message: `تم إرسال الإشعار لـ ${sent} مستخدم${failed > 0 ? ` (فشل ${failed})` : ''}`,
+    });
+  } catch (err) {
+    console.error('❌ خطأ في البث:', err.message);
+    return errorResponse(res, 'فشل إرسال البث', 500, err.message);
+  }
+}
+
 // تصدير الدوال
 module.exports = {
   getUnread,
