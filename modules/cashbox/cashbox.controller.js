@@ -227,6 +227,19 @@ async function getMonthlyComparison(req, res) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════
+// 📊 الداشبورد الكامل للخزينة
+// ═══════════════════════════════════════════════════════════
+async function getFullDashboard(req, res) {
+  try {
+    const dashboard = await cashboxQueries.getFullDashboard();
+    return successResponse(res, dashboard, 'تم جلب الداشبورد بنجاح');
+  } catch (err) {
+    console.error('❌ getFullDashboard:', err.message);
+    return errorResponse(res, 'فشل تحميل الداشبورد', 500, err.message);
+  }
+}
+
 // تصدير الدوال
 module.exports = {
   getFullDashboard,
