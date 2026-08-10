@@ -8,7 +8,7 @@ async function getDashboardStats(userId, username, role, employeeId) {
   let query = '';
   
   // تحديد الاستعلام حسب الـ Role
-  if (role === 'Admin' || role === 'AccountManager') {
+  if (role === 'Admin' || role === 'SalesManager') {
     // الأدمن ومدير المبيعات يشوفوا كل حاجة
     query = `
       SELECT 
@@ -18,7 +18,10 @@ async function getDashboardStats(userId, username, role, employeeId) {
         (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) AND TransactionType = 'Sale') as salesToday,
         (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE YEAR(TransactionDate) = YEAR(GETDATE()) AND MONTH(TransactionDate) = MONTH(GETDATE()) AND TransactionType = 'Sale') as salesMonth,
         (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE YEAR(TransactionDate) = YEAR(DATEADD(MONTH,-1,GETDATE())) AND MONTH(TransactionDate) = MONTH(DATEADD(MONTH,-1,GETDATE())) AND TransactionType = 'Sale') as salesPrevMonth,
-        (SELECT COUNT(*) FROM Notifications WHERE RecipientUser = @username AND IsRead = 0) as unreadCount
+        (SELECT COUNT(*) FROM Notifications WHERE RecipientUser = @username AND IsRead = 0) as unreadCount,
+        (SELECT STUFF((SELECT ',' + CONVERT(VARCHAR, COUNT(*)) FROM Parties WHERE CAST(CreatedAt AS DATE) = d.dt GROUP BY CAST(CreatedAt AS DATE) FOR XML PATH('')), 1, 1, '') FROM (SELECT TOP 7 CAST(DATEADD(DAY, -n, GETDATE()) AS DATE) as dt FROM (SELECT 0 n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6) nums) d) as clientsTrend7,
+        (SELECT STUFF((SELECT ',' + CONVERT(VARCHAR, COUNT(*)) FROM CRM_Tasks WHERE CAST(DueDate AS DATE) = d.dt AND Status != 'Completed' GROUP BY CAST(DueDate AS DATE) FOR XML PATH('')), 1, 1, '') FROM (SELECT TOP 7 CAST(DATEADD(DAY, -n, GETDATE()) AS DATE) as dt FROM (SELECT 0 n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6) nums) d) as tasksTrend7,
+        (SELECT STUFF((SELECT ',' + CONVERT(VARCHAR, ISNULL(SUM(GrandTotal),0)) FROM Transactions WHERE CAST(TransactionDate AS DATE) = d.dt AND TransactionType = 'Sale' GROUP BY CAST(TransactionDate AS DATE) FOR XML PATH('')), 1, 1, '') FROM (SELECT TOP 7 CAST(DATEADD(DAY, -n, GETDATE()) AS DATE) as dt FROM (SELECT 0 n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6) nums) d) as salesTrend7
     `;
   } else if (role === 'Sales') {
     // موظف المبيعات يشوف بتاعه بس
@@ -30,7 +33,10 @@ async function getDashboardStats(userId, username, role, employeeId) {
         (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) AND TransactionType = 'Sale' AND CreatedBy = @username) as salesToday,
         (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE YEAR(TransactionDate) = YEAR(GETDATE()) AND MONTH(TransactionDate) = MONTH(GETDATE()) AND TransactionType = 'Sale' AND CreatedBy = @username) as salesMonth,
         (SELECT ISNULL(SUM(GrandTotal),0) FROM Transactions WHERE YEAR(TransactionDate) = YEAR(DATEADD(MONTH,-1,GETDATE())) AND MONTH(TransactionDate) = MONTH(DATEADD(MONTH,-1,GETDATE())) AND TransactionType = 'Sale' AND CreatedBy = @username) as salesPrevMonth,
-        (SELECT COUNT(*) FROM Notifications WHERE RecipientUser = @username AND IsRead = 0) as unreadCount
+        (SELECT COUNT(*) FROM Notifications WHERE RecipientUser = @username AND IsRead = 0) as unreadCount,
+        (SELECT STUFF((SELECT ',' + CONVERT(VARCHAR, COUNT(*)) FROM Parties WHERE CAST(CreatedAt AS DATE) = d.dt AND CreatedBy = @username GROUP BY CAST(CreatedAt AS DATE) FOR XML PATH('')), 1, 1, '') FROM (SELECT TOP 7 CAST(DATEADD(DAY, -n, GETDATE()) AS DATE) as dt FROM (SELECT 0 n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6) nums) d) as clientsTrend7,
+        (SELECT STUFF((SELECT ',' + CONVERT(VARCHAR, COUNT(*)) FROM CRM_Tasks WHERE CAST(DueDate AS DATE) = d.dt AND Status != 'Completed' AND AssignedTo = @employeeId GROUP BY CAST(DueDate AS DATE) FOR XML PATH('')), 1, 1, '') FROM (SELECT TOP 7 CAST(DATEADD(DAY, -n, GETDATE()) AS DATE) as dt FROM (SELECT 0 n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6) nums) d) as tasksTrend7,
+        (SELECT STUFF((SELECT ',' + CONVERT(VARCHAR, ISNULL(SUM(GrandTotal),0)) FROM Transactions WHERE CAST(TransactionDate AS DATE) = d.dt AND TransactionType = 'Sale' AND CreatedBy = @username GROUP BY CAST(TransactionDate AS DATE) FOR XML PATH('')), 1, 1, '') FROM (SELECT TOP 7 CAST(DATEADD(DAY, -n, GETDATE()) AS DATE) as dt FROM (SELECT 0 n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6) nums) d) as salesTrend7
     `;
   } else if (role === 'AccountManager' || role === 'Account') {
     // الحسابات يشوفوا إحصائيات مالية
