@@ -46,11 +46,11 @@ async function getSummary(req, res) {
 // جلب حركات الخزينة
 async function getTransactions(req, res) {
   try {
-    const { cashboxId, startDate, endDate, transactionType, referenceType } = req.query;
-    const transactions = await cashboxQueries.getCashboxTransactions(
-    cashboxId, startDate, endDate, transactionType, referenceType
-);
-    return res.json(transactions);
+    const { cashboxId, startDate, endDate, transactionType, referenceType, search, page, limit } = req.query;
+    const result = await cashboxQueries.getCashboxTransactions(
+      cashboxId, startDate, endDate, transactionType, referenceType, search, page, limit
+    );
+    return res.json(result);
   } catch (err) {
     console.error('خطأ في جلب الحركات:', err);
     return errorResponse(res, 'فشل تحميل الحركات', 500, err.message);

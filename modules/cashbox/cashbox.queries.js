@@ -7,13 +7,14 @@ async function getAllCashboxes() {
     .query(`
       SELECT 
         c.CashBoxID, c.CashBoxName, c.Description,
+        c.CashBoxKind, c.Icon, c.Color, c.IsActive, c.IsDefault,
         c.CreatedBy, c.CreatedAt,
         ISNULL((
           SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE -Amount END)
           FROM CashboxTransactions WHERE CashBoxID = c.CashBoxID
         ), 0) AS CurrentBalance
       FROM CashBoxes c
-      ORDER BY c.CashBoxName
+      ORDER BY c.IsDefault DESC, c.CashBoxName
     `);
   return result.recordset;
 }
@@ -37,53 +38,320 @@ async function getCashboxById(id) {
   return result.recordset[0] || null;
 }
 
-// جلب حركات الخزينة
-async function getCashboxTransactions(cashboxId = null, startDate = null, endDate = null, transactionType = null, referenceType = null) {
+// ═══════════════════════════════════════════════════════════
+// 📚 خريطة أنواع المراجع (مطابقة لبلازور CashBoxRefTypes)
+// ═══════════════════════════════════════════════════════════
+const CASHBOX_REF_LABELS = {
+  SaleInvoice: 'فاتورة مبيعات',
+  PurchaseInvoice: 'فاتورة مشتريات',
+  Expense: 'مصروف',
+  Payroll: 'راتب',
+  BonusSeparate: 'مكافأة منفصلة',
+  CommissionSeparate: 'عمولة منفصلة',
+  Loan: 'قرض',
+  TransferIn: 'تحويل وارد',
+  TransferOut: 'تحويل صادر',
+  AdvanceCharge: 'رسوم معاينة',
+  ManualReceipt: 'سند قبض يدوي',
+  ManualPayment: 'سند صرف يدوي',
+  OpeningBalance: 'رصيد افتتاحي',
+};
+
+const CASHBOX_REF_COLORS = {
+  SaleInvoice: '#10b981',
+  PurchaseInvoice: '#ef4444',
+  Expense: '#f59e0b',
+  Payroll: '#8b5cf6',
+  BonusSeparate: '#0ea5e9',
+  CommissionSeparate: '#06b6d4',
+  Loan: '#3b82f6',
+  TransferIn: '#06b6d4',
+  TransferOut: '#06b6d4',
+  AdvanceCharge: '#84cc16',
+  ManualReceipt: '#22c55e',
+  ManualPayment: '#dc2626',
+  OpeningBalance: '#6366f1',
+};
+
+// إثراء الحركات بمعلومات المصدر (مطابق لمنطق بلازور EnrichTransactionsSourceInfoAsync)
+async function enrichCashboxTransactions(items) {
+  if (!items.length) return items;
+
+  const ids = (arr) => (arr.length ? arr.join(',') : '0');
+
+  // الفواتير (مبيعات/مشتريات)
+  const invoiceIds = items
+    .filter((t) => (t.ReferenceType === 'SaleInvoice' || t.ReferenceType === 'PurchaseInvoice') && t.ReferenceID)
+    .map((t) => t.ReferenceID);
+  const invoices = new Map();
+  if (invoiceIds.length) {
+    const pool = await connectDB();
+    try {
+      const res = await pool.request().query(
+        `SELECT TransactionID, ReferenceNumber, PartyID
+         FROM Transactions WHERE TransactionID IN (${ids(invoiceIds)})`
+      );
+      for (const r of res.recordset) invoices.set(r.TransactionID, r);
+    } catch (e) { console.error('⚠️ enrich invoices:', e.message); }
+  }
+
+  // العملاء/الموردين
+  const partyIds = [...new Set([...invoices.values()].map((i) => i.PartyID).filter(Boolean))];
+  const parties = new Map();
+  if (partyIds.length) {
+    const pool = await connectDB();
+    try {
+      const res = await pool.request().query(
+        `SELECT PartyID, PartyName FROM Parties WHERE PartyID IN (${ids(partyIds)})`
+      );
+      for (const r of res.recordset) parties.set(r.PartyID, r.PartyName);
+    } catch (e) { console.error('⚠️ enrich parties:', e.message); }
+  }
+
+  // المصروفات
+  const expenseIds = items
+    .filter((t) => t.ReferenceType === 'Expense' && t.ReferenceID)
+    .map((t) => t.ReferenceID);
+  const expenses = new Map();
+  if (expenseIds.length) {
+    const pool = await connectDB();
+    try {
+      const res = await pool.request().query(
+        `SELECT ExpenseID, ExpenseName, Torecipient
+         FROM Expenses WHERE ExpenseID IN (${ids(expenseIds)})`
+      );
+      for (const r of res.recordset) expenses.set(r.ExpenseID, r);
+    } catch (e) { console.error('⚠️ enrich expenses:', e.message); }
+  }
+
+  // الرواتب والمكافآت
+  const payrollIds = items
+    .filter((t) => (t.ReferenceType === 'Payroll' || t.ReferenceType === 'BonusSeparate' || t.ReferenceType === 'CommissionSeparate') && t.ReferenceID)
+    .map((t) => t.ReferenceID);
+  const payrolls = new Map();
+  if (payrollIds.length) {
+    const pool = await connectDB();
+    try {
+      const res = await pool.request().query(
+        `SELECT p.PayrollID, p.Notes, e.FullName
+         FROM Payroll p
+         INNER JOIN Employees e ON p.EmployeeID = e.EmployeeID
+         WHERE p.PayrollID IN (${ids(payrollIds)})`
+      );
+      for (const r of res.recordset) payrolls.set(r.PayrollID, r);
+    } catch (e) { console.error('⚠️ enrich payrolls:', e.message); }
+  }
+
+  // الحسابات الشخصية (قروض)
+  const accountIds = items
+    .filter((t) => t.ReferenceType === 'Loan' && t.ReferenceID)
+    .map((t) => t.ReferenceID);
+  const accounts = new Map();
+  if (accountIds.length) {
+    const pool = await connectDB();
+    try {
+      const res = await pool.request().query(
+        `SELECT PersonalAccountID, AccountName
+         FROM PersonalAccounts WHERE PersonalAccountID IN (${ids(accountIds)})`
+      );
+      for (const r of res.recordset) accounts.set(r.PersonalAccountID, r.AccountName);
+    } catch (e) { console.error('⚠️ enrich personal accounts:', e.message); }
+  }
+
+  // تحويلات (خزائن)
+  const transferIds = items
+    .filter((t) => (t.ReferenceType === 'TransferIn' || t.ReferenceType === 'TransferOut') && t.ReferenceID)
+    .map((t) => t.ReferenceID);
+  const transferBoxes = new Map();
+  if (transferIds.length) {
+    const pool = await connectDB();
+    try {
+      const res = await pool.request().query(
+        `SELECT CashBoxID, CashBoxName FROM CashBoxes WHERE CashBoxID IN (${ids(transferIds)})`
+      );
+      for (const r of res.recordset) transferBoxes.set(r.CashBoxID, r.CashBoxName);
+    } catch (e) { console.error('⚠️ enrich transfers:', e.message); }
+  }
+
+  for (const t of items) {
+    // أسماء وألوان الأنواع
+    t.ReferenceTypeAr = CASHBOX_REF_LABELS[t.ReferenceType] || t.ReferenceType || '-';
+    t.ReferenceColor = CASHBOX_REF_COLORS[t.ReferenceType] || '#94a3b8';
+    t.SourceTitle = null;
+    t.SourceUrl = null;
+    t.PartyName = null;
+    t.PersonalAccountName = null;
+
+    switch (t.ReferenceType) {
+      case 'SaleInvoice': {
+        const inv = invoices.get(t.ReferenceID);
+        if (inv) {
+          t.SourceTitle = `فاتورة ${inv.ReferenceNumber || t.ReferenceID}`;
+          t.SourceUrl = `/sales/invoices/${t.ReferenceID}`;
+          t.PartyName = parties.get(inv.PartyID) || null;
+        }
+        break;
+      }
+      case 'PurchaseInvoice': {
+        const inv = invoices.get(t.ReferenceID);
+        if (inv) {
+          t.SourceTitle = `فاتورة شراء ${inv.ReferenceNumber || t.ReferenceID}`;
+          t.SourceUrl = `/sales/invoices/${t.ReferenceID}`;
+          t.PartyName = parties.get(inv.PartyID) || null;
+        }
+        break;
+      }
+      case 'Expense': {
+        const exp = expenses.get(t.ReferenceID);
+        if (exp) {
+          t.SourceTitle = `مصروف: ${exp.ExpenseName}`;
+          t.SourceUrl = '/expenses';
+          t.PartyName = exp.Torecipient || null;
+        }
+        break;
+      }
+      case 'Loan': {
+        const acc = accounts.get(t.ReferenceID);
+        if (acc) {
+          t.SourceTitle = `حساب: ${acc}`;
+          t.SourceUrl = `/cashbox/personal-accounts/${t.ReferenceID}/statement`;
+          t.PersonalAccountName = acc;
+        }
+        break;
+      }
+      case 'TransferIn':
+      case 'TransferOut': {
+        const box = transferBoxes.get(t.ReferenceID);
+        if (box) {
+          t.SourceTitle = `تحويل ↔ ${box}`;
+          t.SourceUrl = `/cashbox/transactions?cashBoxId=${t.ReferenceID}`;
+        }
+        break;
+      }
+      case 'Payroll':
+      case 'BonusSeparate':
+      case 'CommissionSeparate': {
+        const pay = payrolls.get(t.ReferenceID);
+        if (pay) {
+          t.SourceTitle = t.ReferenceType === 'Payroll'
+            ? `راتب ${pay.FullName}`
+            : `دفعة منفصلة ${pay.FullName}`;
+          t.SourceUrl = '/hr/payroll';
+          t.PartyName = pay.FullName;
+        }
+        break;
+      }
+      case 'AdvanceCharge':
+        t.SourceTitle = 'رسوم معاينة';
+        t.SourceUrl = '/additional-charges';
+        break;
+      case 'OpeningBalance':
+        t.SourceTitle = 'رصيد افتتاحي';
+        break;
+      case 'ManualReceipt':
+        t.SourceTitle = 'سند قبض يدوي';
+        break;
+      case 'ManualPayment':
+        t.SourceTitle = 'سند صرف يدوي';
+        break;
+      default:
+        break;
+    }
+  }
+
+  return items;
+}
+
+// جلب حركات الخزينة (مع بحث + ترقيم صفحات + إحصائيات + إثراء)
+async function getCashboxTransactions(cashboxId = null, startDate = null, endDate = null, transactionType = null, referenceType = null, search = null, page = 1, limit = 25) {
   const pool = await connectDB();
 
-  let query = `
-    SELECT 
-      ct.CashboxTransactionID, ct.CashBoxID, ct.PaymentID,
-      ct.ReferenceID, ct.ReferenceType, ct.TransactionType,
-      ct.Amount, ct.TransactionDate, ct.Notes,
-      ct.CreatedBy, ct.CreatedAt,
-      c.CashBoxName
-    FROM CashboxTransactions ct
-    INNER JOIN CashBoxes c ON ct.CashBoxID = c.CashBoxID
-    WHERE 1=1
-  `;
-
   const request = pool.request();
+  let where = ' WHERE 1=1';
 
   if (cashboxId) {
-    query += ` AND ct.CashBoxID = @cashboxId`;
+    where += ' AND ct.CashBoxID = @cashboxId';
     request.input('cashboxId', sql.Int, cashboxId);
   }
 
   if (startDate) {
-    query += ` AND CAST(ct.TransactionDate AS DATE) >= @startDate`;
+    where += ' AND CAST(ct.TransactionDate AS DATE) >= @startDate';
     request.input('startDate', sql.Date, startDate);
   }
 
   if (endDate) {
-    query += ` AND CAST(ct.TransactionDate AS DATE) <= @endDate`;
+    where += ' AND CAST(ct.TransactionDate AS DATE) <= @endDate';
     request.input('endDate', sql.Date, endDate);
   }
 
-  if (transactionType) {
-    query += ` AND ct.TransactionType = @transactionType`;
+  if (transactionType && transactionType !== 'All') {
+    where += ' AND ct.TransactionType = @transactionType';
     request.input('transactionType', sql.NVarChar(20), transactionType);
   }
-  
-  if (referenceType) {
-  query += ` AND ct.ReferenceType = @referenceType`;
-  request.input('referenceType', sql.NVarChar(20), referenceType);
+
+  if (referenceType && referenceType !== 'All') {
+    where += ' AND ct.ReferenceType = @referenceType';
+    request.input('referenceType', sql.NVarChar(50), referenceType);
   }
 
-  query += ` ORDER BY ct.TransactionDate DESC, ct.CashboxTransactionID DESC`;
+  if (search && search.trim()) {
+    const s = `%${search.trim()}%`;
+    where += ' AND (ct.Notes LIKE @search OR ct.CreatedBy LIKE @search)';
+    request.input('search', sql.NVarChar(200), s);
+  }
 
-  const result = await request.query(query);
-  return result.recordset;
+  // 1) العدد الكلي
+  const countRes = await request.query(
+    `SELECT COUNT(*) AS Total FROM CashboxTransactions ct${where}`
+  );
+  const total = countRes.recordset[0]?.Total || 0;
+
+  // 2) الإحصائيات (على المفلتر كله مش الصفحة)
+  const statsRes = await request.query(
+    `SELECT
+       ISNULL(SUM(CASE WHEN ct.TransactionType = N'قبض' THEN ct.Amount ELSE 0 END), 0) AS TotalIn,
+       ISNULL(SUM(CASE WHEN ct.TransactionType = N'صرف' THEN ct.Amount ELSE 0 END), 0) AS TotalOut
+     FROM CashboxTransactions ct${where}`
+  );
+  const st = statsRes.recordset[0] || { TotalIn: 0, TotalOut: 0 };
+  const stats = {
+    TotalIn: st.TotalIn ?? 0,
+    TotalOut: st.TotalOut ?? 0,
+    Net: (st.TotalIn ?? 0) - (st.TotalOut ?? 0),
+  };
+
+  // 3) الصفحة الحالية
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const pageSize = Math.min(200, Math.max(1, parseInt(limit, 10) || 25));
+  const offset = (pageNum - 1) * pageSize;
+
+  const pageRes = await request
+    .input('pageSize', sql.Int, pageSize)
+    .input('offset', sql.Int, offset)
+    .query(`
+    SELECT
+      ct.CashboxTransactionID, ct.CashBoxID, ct.PaymentID,
+      ct.ReferenceID, ct.ReferenceType, ct.TransactionType,
+      ct.Amount, ct.TransactionDate, ct.Notes,
+      ct.CreatedBy, ct.CreatedAt,
+      c.CashBoxName, c.Color AS CashBoxColor
+    FROM CashboxTransactions ct
+    INNER JOIN CashBoxes c ON ct.CashBoxID = c.CashBoxID
+    ${where}
+    ORDER BY ct.TransactionDate DESC, ct.CashboxTransactionID DESC
+    OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY
+  `);
+
+  const data = await enrichCashboxTransactions(pageRes.recordset);
+
+  return {
+    data,
+    total,
+    page: pageNum,
+    limit: pageSize,
+    totalPages: Math.ceil(total / pageSize),
+    stats,
+  };
 }
 
 // ملخص الخزينة
