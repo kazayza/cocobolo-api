@@ -207,5 +207,6 @@ module.exports = {
   markAsRead,
   create,
   createSmart,
-  sendPush
+  sendPush,
+  broadcast
 };

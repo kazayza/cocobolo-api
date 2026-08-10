@@ -160,6 +160,19 @@ async function getFcmToken(username) {
   return result.recordset[0]?.FCMToken || null;
 }
 
+// ═══════════════════════════════════════════════════════════
+// كل توكنات FCM للمستخدمين النشطين (للبث المباشر)
+// ═══════════════════════════════════════════════════════════
+async function getAllFcmTokens() {
+  const pool = await connectDB();
+  const result = await pool.request().query(`
+    SELECT Username, FCMToken
+    FROM Users
+    WHERE IsActive = 1 AND FCMToken IS NOT NULL AND FCMToken != ''
+  `);
+  return result.recordset;
+}
+
 // تصدير الدوال
 module.exports = {
   getUnreadNotifications,
@@ -168,5 +181,6 @@ module.exports = {
   markAsRead,
   createNotification,
   createNotificationSmart,
-  getFcmToken
+  getFcmToken,
+  getAllFcmTokens
 };

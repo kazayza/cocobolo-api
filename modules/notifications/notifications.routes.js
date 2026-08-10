@@ -33,5 +33,10 @@ router.post('/smart', notificationsController.createSmart);
 // POST /api/notifications/send-push
 router.post('/send-push', notificationsController.sendPush);
 
+// 📢 بث إشعار لجميع المستخدمين (خاص بالأدمن — من غير حفظ في الجدول)
+// POST /api/notifications/broadcast
+// Body: { title, message, sender? }
+router.post('/broadcast', notificationsController.broadcast);
+
 // تصدير الراوتر
 module.exports = router;
