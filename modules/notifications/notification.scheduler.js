@@ -513,7 +513,102 @@ async function sendNotificationToUser(
   }
 }
 
+
+// ═══════════════════════════════════════════════════════════
+// تذكيرات التسليم — متأخرة / اليوم (للمسؤولين المخولين فقط)
+// ═══════════════════════════════════════════════════════════
+async function checkDeliveryReminders() {
+  const pool = await connectDB();
+
+  try {
+    // 1. جلب الإحصائيات
+    const statsRes = await pool.request().query(`
+      SELECT 
+        COUNT(*) AS TotalPending,
+        SUM(CASE WHEN DATEDIFF(DAY, GETDATE(), DueDate) < 0 THEN 1 ELSE 0 END) AS Overdue,
+        SUM(CASE WHEN CAST(DueDate AS DATE) = CAST(GETDATE() AS DATE) THEN 1 ELSE 0 END) AS Today
+      FROM Transactions
+      WHERE TransactionType = 'Sale'
+        AND (IsDelivered = 0 OR IsDelivered IS NULL)
+        AND DueDate IS NOT NULL
+    `);
+    const stats = statsRes.recordset[0] || {};
+
+    const overdue = stats.Overdue || 0;
+    const today = stats.Today || 0;
+    const total = stats.TotalPending || 0;
+
+    if (overdue === 0 && today === 0) return;
+
+    // 2. المستخدمون المخولون بالتسليمات (Admin + SalesManager + Sales + User)
+    const usersRes = await pool.request().query(`
+      SELECT Username FROM Users
+      WHERE IsActive = 1
+        AND (Role IN ('Admin', 'SalesManager', 'Sales', 'User')
+             OR Username IN (
+               SELECT u.Username FROM UserPermissions up
+               INNER JOIN Permissions p ON up.PermissionID = p.PermissionID
+               INNER JOIN Users u ON up.UserID = u.UserID
+               WHERE p.FormName = 'frmInvoiceDeliveryStatus' AND up.CanView = 1
+             ))
+    `);
+    const recipients = usersRes.recordset.map(r => r.Username);
+
+    if (recipients.length === 0) return;
+
+    // 3. منع التكرار: نتأكد إن نفس الرسالة مبعوتة اليوم للمستخدم
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const dedupeKey = `delivery_${todayStr}_${overdue}_${today}`;
+
+    // في ذاكرة
+    if (sentCache.has(dedupeKey)) return;
+    sentCache.add(dedupeKey);
+
+    // 4. إرسال الإشعارات
+    for (const username of recipients) {
+      try {
+        const title = overdue > 0
+          ? `⚠️ تسليمات متأخرة (${overdue})`
+          : `🔔 تسليمات اليوم (${today})`;
+        const message = overdue > 0 && today > 0
+          ? `لديك ${overdue} فاتورة متأخرة و ${today} فاتورة مستحقة اليوم`
+          : overdue > 0
+            ? `لديك ${overdue} فاتورة متأخرة عن موعد التسليم`
+            : `لديك ${today} فاتورة موعد تسليمها اليوم`;
+
+        // حفظ في الجدول (ليظهر في شاشة الإشعارات)
+        await pool.request()
+          .input('title', sql.NVarChar(200), title)
+          .input('msg', sql.NVarChar(sql.MAX), message)
+          .input('username', sql.NVarChar(100), username)
+          .query(`
+            INSERT INTO Notifications (Title, Message, RecipientUser, CreatedBy, FormName, RelatedTable, IsRead, CreatedAt)
+            VALUES (@title, @msg, @username, 'System', 'frmInvoiceDeliveryStatus', 'Delivery', 0, GETDATE())
+          `);
+
+        // FCM فوري
+        if (isFirebaseReady()) {
+          const token = await notificationsQueries.getFcmToken(username);
+          if (token) {
+            await sendPushNotification(token, title, message, {
+              formName: 'frmInvoiceDeliveryStatus',
+              filter: overdue > 0 ? 'overdue' : 'today',
+            });
+          }
+        }
+      } catch (e) {
+        console.error(`⚠️ فشل إشعار تسليم لـ ${username}:`, e.message);
+      }
+    }
+
+    console.log(`📦 تذكير تسليمات: متأخرة=${overdue} اليوم=${today} → ${recipients.length} مستخدم`);
+  } catch (err) {
+    console.error('❌ خطأ في فحص تذكيرات التسليم:', err.message);
+  }
+}
+
 module.exports = {
+  checkDeliveryReminders,
   startNotificationScheduler,
   checkShiftReminders,
   checkCrmFollowUps,

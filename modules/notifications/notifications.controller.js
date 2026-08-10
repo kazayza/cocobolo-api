@@ -81,13 +81,43 @@ async function markAsRead(req, res) {
 // إنشاء إشعار جديد
 async function create(req, res) {
   try {
-    const { title, message, recipientUser, createdBy } = req.body;
+    const { title, message, recipientUser, createdBy, skipSave } = req.body;
 
     if (!title || !message || !recipientUser) {
       return errorResponse(res, 'العنوان والرسالة والمستلم مطلوبين', 400);
     }
 
-    const notificationId = await notificationsQueries.createNotification(req.body);
+    // ── منع التكرار: بلازور بيحفظ في الجدول بنفسه قبل ما يبعت هنا ──
+    // لو skipSave = true → منحفظش تاني (نفس قاعدة البيانات!) ونبعت FCM بس
+    let notificationId = null;
+    if (skipSave === true || skipSave === 'true') {
+      console.log(`📣 إشعار من بلازور (بدون حفظ): "${title}" → ${recipientUser}`);
+    } else {
+      // 1. حفظ الإشعار في قاعدة البيانات (للمصادر اللي محفظتش)
+      notificationId = await notificationsQueries.createNotification(req.body);
+    }
+
+    // 2. إرسال Push فوري عبر Firebase (لو مفعّل)
+    //    — من غير ما يوقف الرد لو فشل
+    try {
+      if (isFirebaseReady()) {
+        const token = await notificationsQueries.getFcmToken(recipientUser);
+        if (token) {
+          await sendPushNotification(
+            token,
+            title,
+            message,
+            {
+              formName: req.body.formName || '',
+              relatedTable: req.body.relatedTable || '',
+              relatedId: (req.body.relatedId || '').toString(),
+            }
+          );
+        }
+      }
+    } catch (pushErr) {
+      console.error('⚠️ فشل إرسال Push (لكن الإشعار محفوظ):', pushErr.message);
+    }
 
     return res.json({
       success: true,
