@@ -774,12 +774,12 @@ async function convertLeadToClient(leadId, dto = {}, userName = 'System') {
       return { success: false, message: 'رقم الهاتف موجود بالفعل في العملاء' };
     }
 
-    // Initial stage: Potential / مهتم else first active
+    // Initial stage: المرحلة 1 = عميل مؤهل (Lead) else أول مرحلة مفعّلة
     let stageRes = await new sql.Request(transaction).query(`
       SELECT TOP 1 StageID
       FROM SalesStages
       WHERE IsActive = 1
-        AND (StageName = 'Potential' OR StageNameAr = N'مهتم')
+        AND (StageName = 'Lead' OR StageNameAr = N'عميل مؤهل')
       ORDER BY StageOrder
     `);
     let stageId = stageRes.recordset[0]?.StageID;
@@ -797,13 +797,47 @@ async function convertLeadToClient(leadId, dto = {}, userName = 'System') {
 
     const expectedValue = toDecimal(dto.expectedValue ?? dto.ExpectedValue, 0);
     const notes = dto.notes ?? dto.Notes ?? lead.Notes ?? null;
-    const sourceId = toInt(dto.sourceId ?? dto.SourceId, null);
-    const adTypeId = toInt(dto.adTypeId ?? dto.AdTypeId, null);
     const categoryId = toInt(dto.categoryId ?? dto.CategoryId, null);
     const taskTypeId = toInt(dto.taskTypeId ?? dto.TaskTypeId, null);
     const oldLeadStatus = lead.LeadStatus;
 
-    const guidance = buildGuidanceFromLead(lead);
+    // قراءة البيانات الإضافية المحفوظة عند إضافة الليد اليدوي (JSON)
+    let leadExtra = {};
+    try { leadExtra = lead.ExtraData ? JSON.parse(lead.ExtraData) : {}; } catch (_) {}
+
+    // المصدر: لو مفيش sourceId من الشاشة → نجيبه من Platform المحفوظ
+    let sourceId = toInt(dto.sourceId ?? dto.SourceId, null);
+    if (!sourceId && lead.Platform) {
+      const sRes = await new sql.Request(transaction)
+        .input('p', sql.NVarChar(50), String(lead.Platform).trim())
+        .query(`
+          SELECT TOP 1 SourceID FROM ContactSources
+          WHERE SourceName = @p AND ISNULL(IsActive, 1) = 1
+        `);
+      sourceId = sRes.recordset[0]?.SourceID ?? null;
+    }
+
+    // الحملة: لو مفيش adTypeId → نجيبه من CampaignName المحفوظ
+    let adTypeId = toInt(dto.adTypeId ?? dto.AdTypeId, null);
+    if (!adTypeId && lead.CampaignName) {
+      const aRes = await new sql.Request(transaction)
+        .input('c', sql.NVarChar(300), String(lead.CampaignName).trim())
+        .query(`
+          SELECT TOP 1 AdTypeID FROM AdTypes
+          WHERE AdTypeName = @c AND ISNULL(IsActive, 1) = 1
+        `);
+      adTypeId = aRes.recordset[0]?.AdTypeID ?? null;
+    }
+
+    // التوجيهات: من ExtraData لو موجودة، وإلا نبنيها من بيانات الليد
+    const guidance = leadExtra.guidance || buildGuidanceFromLead(lead);
+
+    // تاريخ المتابعة: من ExtraData لو موجود، وإلا غداً
+    let nextFollowUpDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    if (leadExtra.nextFollowUp) {
+      const parsed = new Date(leadExtra.nextFollowUp);
+      if (!isNaN(parsed.getTime())) nextFollowUpDate = parsed;
+    }
 
     // 1) Party
     const partyResult = await new sql.Request(transaction)
@@ -815,17 +849,19 @@ async function convertLeadToClient(leadId, dto = {}, userName = 'System') {
       .input('referralSourceId', sql.Int, sourceId || null)
       .input('createdBy', sql.NVarChar(100), userName)
       .query(`
+        DECLARE @ids TABLE (id INT);
         INSERT INTO Parties (
           PartyName, PartyType, Phone, Phone2, Email, Address,
           ReferralSourceID, IsActive, CreatedBy, CreatedAt
         )
-        OUTPUT INSERTED.PartyID
+        OUTPUT INSERTED.PartyID INTO @ids
         VALUES (
           @partyName, 1, @phone, @phone2, @email, @address,
           @referralSourceId, 1, @createdBy, GETDATE()
-        )
+        );
+        SELECT id FROM @ids;
       `);
-    const partyId = partyResult.recordset[0].PartyID;
+    const partyId = partyResult.recordset[0].id;
 
     // 2) Opportunity (column set matches working opportunities module)
     const oppResult = await new sql.Request(transaction)
@@ -836,27 +872,29 @@ async function convertLeadToClient(leadId, dto = {}, userName = 'System') {
       .input('stageId', sql.Int, stageId)
       .input('categoryId', sql.Int, categoryId)
       .input('interestedProduct', sql.NVarChar(255), lead.ProjectType || null)
-      .input('nextFollowUp', sql.DateTime, new Date(Date.now() + 24 * 60 * 60 * 1000))
+      .input('nextFollowUp', sql.DateTime, nextFollowUpDate)
       .input('notes', sql.NVarChar(sql.MAX), notes)
       .input('expectedValue', sql.Decimal(18, 2), expectedValue)
       .input('guidance', sql.NVarChar(sql.MAX), guidance)
       .input('createdBy', sql.NVarChar(50), userName)
       .query(`
+        DECLARE @ids TABLE (id INT);
         INSERT INTO SalesOpportunities (
           PartyID, EmployeeID, SourceID, AdTypeID, CategoryID,
           StageID, InterestedProduct, ExpectedValue,
           Notes, Guidance, NextFollowUpDate, FirstContactDate,
           CreatedBy, CreatedAt, IsActive
         )
-        OUTPUT INSERTED.OpportunityID
+        OUTPUT INSERTED.OpportunityID INTO @ids
         VALUES (
           @partyId, @employeeId, @sourceId, @adTypeId, @categoryId,
           @stageId, @interestedProduct, @expectedValue,
           @notes, @guidance, @nextFollowUp, GETDATE(),
           @createdBy, GETDATE(), 1
-        )
+        );
+        SELECT id FROM @ids;
       `);
-    const opportunityId = oppResult.recordset[0].OpportunityID;
+    const opportunityId = oppResult.recordset[0].id;
 
     // 3) Customer interaction
     await new sql.Request(transaction)
@@ -866,8 +904,8 @@ async function convertLeadToClient(leadId, dto = {}, userName = 'System') {
       .input('sourceId', sql.Int, sourceId)
       .input('stageAfterId', sql.Int, stageId)
       .input('summary', sql.NVarChar(1000),
-        `تحويل Lead من إعلان Meta - كامبين: ${lead.CampaignName || 'غير محدد'}`)
-      .input('nextFollowUp', sql.DateTime, new Date(Date.now() + 24 * 60 * 60 * 1000))
+        `تحويل Lead يدوي - المصدر: ${leadExtra.sourceAr || lead.Platform || 'غير محدد'}${lead.CampaignName ? ` - الحملة: ${lead.CampaignName}` : ''}`)
+      .input('nextFollowUp', sql.DateTime, nextFollowUpDate)
       .input('notes', sql.NVarChar(500), notes)
       .input('createdBy', sql.NVarChar(50), userName)
       .query(`
@@ -1047,26 +1085,48 @@ async function createLead(data, userName = 'System') {
     return { success: false, message: 'الاسم والهاتف مطلوبان' };
   }
 
+  // بيانات إضافية (JSON في عمود ExtraData — من غير أي عمود جديد)
+  const extra = {};
+  if (data.guidance) extra.guidance = String(data.guidance);
+  if (data.nextFollowUp) extra.nextFollowUp = String(data.nextFollowUp);
+  if (data.sourceNameAr) extra.sourceAr = String(data.sourceNameAr);
+  if (data.adTypeNameAr) extra.adTypeAr = String(data.adTypeNameAr);
+  const extraDataJson = Object.keys(extra).length ? JSON.stringify(extra) : null;
+
   const result = await pool.request()
     .input('fullName', sql.NVarChar(200), String(data.fullName).trim())
     .input('phone', sql.NVarChar(50), String(data.phone).trim())
     .input('phone2', sql.NVarChar(50), data.phone2 || null)
-    .input('email', sql.NVarChar(100), data.email || null)
+    .input('email', sql.NVarChar(200), data.email || null)
     .input('city', sql.NVarChar(100), data.city || null)
+    .input('area', sql.NVarChar(100), data.area || null)
+    .input('address', sql.NVarChar(500), data.address || null)
+    .input('projectType', sql.NVarChar(200), data.projectType || null)
+    .input('projectStage', sql.NVarChar(200), data.projectStage || null)
+    .input('budget', sql.NVarChar(200), data.budget || null)
+    .input('decisionMaker', sql.NVarChar(200), data.decisionMaker || null)
+    .input('nextAction', sql.NVarChar(200), data.nextAction || null)
+    .input('bestTimeToReach', sql.NVarChar(200), data.bestTimeToReach || null)
     .input('notes', sql.NVarChar(sql.MAX), data.notes || null)
     .input('platform', sql.NVarChar(50), data.platform || 'Manual')
+    .input('campaignName', sql.NVarChar(300), data.campaignName || null)
+    .input('extraData', sql.NVarChar(sql.MAX), extraDataJson)
     .input('employeeId', sql.Int, toInt(data.assignedEmployeeId, null))
     .input('createdBy', sql.NVarChar(100), userName)
     .input('status', sql.NVarChar(50),
       toInt(data.assignedEmployeeId, null) ? STATUSES.ASSIGNED : STATUSES.NEW)
     .query(`
       INSERT INTO LeadsCRM (
-        FullName, Phone, Phone2, Email, City, Notes, Platform,
+        FullName, Phone, Phone2, Email, City, Area, Address,
+        ProjectType, ProjectStage, Budget, DecisionMaker,
+        NextAction, BestTimeToReach, Notes, Platform, CampaignName, ExtraData,
         LeadStatus, AssignedEmployeeId, LeadDate, CreatedAt, CreatedBy, IsConverted
       )
       OUTPUT INSERTED.LeadId
       VALUES (
-        @fullName, @phone, @phone2, @email, @city, @notes, @platform,
+        @fullName, @phone, @phone2, @email, @city, @area, @address,
+        @projectType, @projectStage, @budget, @decisionMaker,
+        @nextAction, @bestTimeToReach, @notes, @platform, @campaignName, @extraData,
         @status, @employeeId, GETDATE(), GETDATE(), @createdBy, 0
       )
     `);
