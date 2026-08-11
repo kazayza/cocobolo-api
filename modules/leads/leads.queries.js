@@ -198,9 +198,40 @@ async function getFilterOptions() {
     WHERE ProjectType IS NOT NULL AND LTRIM(RTRIM(ProjectType)) <> N''
     ORDER BY value
   `);
+  // أفضل أوقات التواصل المتسجلة (بدون تكرار)
+  const bestTimes = await pool.request().query(`
+    SELECT DISTINCT LTRIM(RTRIM(BestTimeToReach)) AS value
+    FROM LeadsCRM
+    WHERE BestTimeToReach IS NOT NULL AND LTRIM(RTRIM(BestTimeToReach)) <> N''
+    ORDER BY value
+  `);
+  // الإجراءات التالية المتسجلة (بدون تكرار)
+  const nextActions = await pool.request().query(`
+    SELECT DISTINCT LTRIM(RTRIM(NextAction)) AS value
+    FROM LeadsCRM
+    WHERE NextAction IS NOT NULL AND LTRIM(RTRIM(NextAction)) <> N''
+    ORDER BY value
+  `);
+  // المناطق المرتبطة بكل مدينة (من الليدز المسجلة)
+  const areasByCityRes = await pool.request().query(`
+    SELECT LTRIM(RTRIM(City)) AS city, LTRIM(RTRIM(Area)) AS area
+    FROM LeadsCRM
+    WHERE Area IS NOT NULL AND LTRIM(RTRIM(Area)) <> N''
+      AND City IS NOT NULL AND LTRIM(RTRIM(City)) <> N''
+    GROUP BY LTRIM(RTRIM(City)), LTRIM(RTRIM(Area))
+    ORDER BY city, area
+  `);
+  const areasByCity = {};
+  for (const r of areasByCityRes.recordset || []) {
+    if (!areasByCity[r.city]) areasByCity[r.city] = [];
+    areasByCity[r.city].push(r.area);
+  }
   return {
     cities: (cities.recordset || []).map((r) => r.value).filter(Boolean),
     projectTypes: (projectTypes.recordset || []).map((r) => r.value).filter(Boolean),
+    bestTimes: (bestTimes.recordset || []).map((r) => r.value).filter(Boolean),
+    nextActions: (nextActions.recordset || []).map((r) => r.value).filter(Boolean),
+    areasByCity,
   };
 }
 
