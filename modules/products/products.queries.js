@@ -112,7 +112,7 @@ async function getProductById(id) {
   const imagesResult = await pool.request()
     .input('id', sql.Int, id)
     .query(`
-      SELECT ProductImagesID, ImageNote, CAST(ImageProduct AS VARBINARY(MAX)) AS ImageProduct
+      SELECT ProductImagesID, ImageNote, ImagePath, CAST(ImageProduct AS VARBINARY(MAX)) AS ImageProduct
       FROM ProductImages WHERE ProductID = @id
     `);
 
@@ -126,6 +126,7 @@ async function getProductById(id) {
     images: imagesResult.recordset.map(img => ({
       id: img.ProductImagesID,
       note: img.ImageNote,
+      imagePath: img.ImagePath || null,
       image: img.ImageProduct ? Buffer.from(img.ImageProduct).toString('base64') : null
     })),
     components: componentsResult.recordset
