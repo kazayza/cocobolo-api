@@ -10,8 +10,16 @@ const productsController = require('./products.controller');
 // GET /api/products/groups
 router.get('/groups', productsController.getGroups);
 
+// إحصائيات المنتجات
+// GET /api/products/stats
+router.get('/stats', productsController.getStats);
+
+// حالات التسعير (للفلتر)
+// GET /api/products/pricing-statuses
+router.get('/pricing-statuses', productsController.getPricingStatuses);
+
 // جلب كل المنتجات
-// GET /api/products?search=xxx&groupId=xxx
+// GET /api/products?search=xxx&groupId=xxx&statusId=xxx&ownership=all|showroom|linked&priced=all|priced|unpriced
 router.get('/', productsController.getAll);
 
 // جلب منتج بالـ ID

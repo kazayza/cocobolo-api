@@ -66,25 +66,58 @@ app.get('/api/product-images/:id', async (req, res) => {
     const result = await pool.request()
       .input('id', sql.Int, req.params.id)
       .query(`
-        SELECT TOP 1 ImageProduct
+        SELECT TOP 1 ProductImagesID, ImageProduct, ImagePath
         FROM ProductImages
         WHERE ProductImagesID = @id
       `);
 
-    if (!result.recordset.length || !result.recordset[0].ImageProduct) {
+    if (!result.recordset.length) {
       return res.status(404).send('Image not found');
     }
 
-    const imgBuffer = Buffer.from(result.recordset[0].ImageProduct);
+    const row = result.recordset[0];
 
-    // تقدر تغيّر الـ Content-Type لو صورك PNG مثلاً
-    res.set('Content-Type', 'image/jpeg');
-    return res.send(imgBuffer);
+    // 1) لو فيه بايتات في الداتابيز → نخدمها مباشرة
+    if (row.ImageProduct && row.ImageProduct.length > 0) {
+      const imgBuffer = Buffer.from(row.ImageProduct);
+      res.set('Content-Type', detectImageMime(imgBuffer));
+      return res.send(imgBuffer);
+    }
+
+    // 2) لو الصورة مش موجودة عندنا → نجربها من بلازور
+    //    (بيشوف ImagePath عندهم + ImageProduct عندهم — endpoint عام بدون auth)
+    try {
+      const upstreamUrl = `https://cocobolo.runasp.net/api/product-image-by-id/${req.params.id}`;
+      const upstreamRes = await fetch(upstreamUrl, {
+        headers: { 'Accept': 'image/*' },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (upstreamRes.ok) {
+        const buf = Buffer.from(await upstreamRes.arrayBuffer());
+        res.set('Content-Type', upstreamRes.headers.get('content-type') || detectImageMime(buf));
+        res.set('Cache-Control', 'public, max-age=86400');
+        return res.send(buf);
+      }
+      console.warn(`صورة ${req.params.id} غير موجودة على بلازور (${upstreamRes.status})`);
+    } catch (proxyErr) {
+      console.error(`proxy image ${req.params.id}:`, proxyErr.message);
+    }
+    return res.status(404).send('Image not found');
   } catch (err) {
     console.error('خطأ في جلب صورة المنتج:', err);
     return res.status(500).send('Error fetching image');
   }
 });
+
+// كشف نوع الصورة من أول بايتات (JPEG/PNG/GIF/WebP)
+function detectImageMime(buf) {
+  if (!buf || buf.length < 4) return 'image/jpeg';
+  if (buf[0] === 0xFF && buf[1] === 0xD8) return 'image/jpeg';
+  if (buf[0] === 0x89 && buf[1] === 0x50) return 'image/png';
+  if (buf[0] === 0x47 && buf[1] === 0x49) return 'image/gif';
+  if (buf[0] === 0x52 && buf[1] === 0x49) return 'image/webp'; // RIFF....WEBP
+  return 'image/jpeg';
+}
 
 // ===================================
 // 🏠 الصفحة الرئيسية واختبار الاتصال

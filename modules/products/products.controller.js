@@ -15,15 +15,39 @@ async function getGroups(req, res) {
   }
 }
 
-// جلب كل المنتجات
+// جلب كل المنتجات (بحث + مجموعة + حالة + ملكية + مسعرة)
 async function getAll(req, res) {
   try {
-    const { search, groupId } = req.query;
-    const products = await productsQueries.getAllProducts(search, groupId);
+    const { search, groupId, statusId, ownership, priced } = req.query;
+    const products = await productsQueries.getAllProducts(
+      search, groupId, statusId, ownership || 'all', priced || 'all'
+    );
     return res.json(products);
   } catch (err) {
     console.error('خطأ في جلب المنتجات:', err);
     return errorResponse(res, 'فشل تحميل المنتجات', 500, err.message);
+  }
+}
+
+// إحصائيات المنتجات
+async function getStats(req, res) {
+  try {
+    const stats = await productsQueries.getProductStats();
+    return res.json(stats);
+  } catch (err) {
+    console.error('خطأ في جلب إحصائيات المنتجات:', err);
+    return errorResponse(res, 'فشل تحميل الإحصائيات', 500, err.message);
+  }
+}
+
+// حالات التسعير
+async function getPricingStatuses(req, res) {
+  try {
+    const statuses = await productsQueries.getPricingStatuses();
+    return res.json(statuses);
+  } catch (err) {
+    console.error('خطأ في جلب حالات التسعير:', err);
+    return errorResponse(res, 'فشل تحميل الحالات', 500, err.message);
   }
 }
 
@@ -205,6 +229,8 @@ async function getProductPdf(req, res) {
 module.exports = {
   getGroups,
   getAll,
+  getStats,
+  getPricingStatuses,
   getById,
   create,
   update,

@@ -8,8 +8,8 @@ async function getProductGroups() {
   return result.recordset;
 }
 
-// جلب كل المنتجات مع الفلترة
-async function getAllProducts(search = '', groupId = null) {
+// جلب كل المنتجات مع الفلترة (بحث + مجموعة + حالة + ملكية + مسعرة/غير مسعرة)
+async function getAllProducts(search = '', groupId = null, statusId = null, ownership = 'all', priced = 'all') {
   const pool = await connectDB();
 
     let query = `
@@ -17,14 +17,20 @@ async function getAllProducts(search = '', groupId = null) {
       p.ProductID,
       p.ProductName,
       p.ProductDescription,
-      p.SuggestedSalePrice,
-      p.PurchasePrice,
-      p.QTY,
-      p.Period,
       p.PricingType,
       p.Customer,
-      p.PurchasePriceElite,
+      p.PricingStatusID,
+      ps.StatusName AS PricingStatusName,
+      p.SuggestedSalePrice,
+      p.SuggestedSalePriceCClass,
       p.SuggestedSalePriceElite,
+      p.PurchasePrice,
+      p.PurchasePriceCClass,
+      p.PurchasePriceElite,
+      p.QTY,
+      p.Period,
+      p.PdfPath,
+      CASE WHEN p.PdfPath IS NOT NULL AND p.PdfPath <> '' THEN 1 ELSE 0 END AS HasOldPdf,
       pg.ProductGroupID,
       pg.GroupName,
       pa.PartyName AS CustomerName,
@@ -33,10 +39,11 @@ async function getAllProducts(search = '', groupId = null) {
         FROM ProductImages
         WHERE ProductID = p.ProductID
         ORDER BY ProductImagesID
-      ) AS MainImageId              -- ✅ ده بس اللي زودناه
+      ) AS MainImageId
     FROM Products p
     INNER JOIN ProductGroups pg ON p.ProductGroupID = pg.ProductGroupID
     LEFT JOIN Parties pa ON p.Customer = pa.PartyID
+    LEFT JOIN ProductPricingStatus ps ON p.PricingStatusID = ps.PricingStatusID
     WHERE 1=1
   `;
 
@@ -52,6 +59,26 @@ async function getAllProducts(search = '', groupId = null) {
   if (groupId && groupId !== '' && groupId !== '0') {
     query += ` AND p.ProductGroupID = @groupId`;
     request.input('groupId', sql.Int, groupId);
+  }
+
+  // فلتر الحالة (PricingStatusID)
+  if (statusId && statusId !== '' && statusId !== '0') {
+    query += ` AND p.PricingStatusID = @statusId`;
+    request.input('statusId', sql.Int, parseInt(statusId, 10));
+  }
+
+  // فلتر الملكية: showroom = من غير عميل / linked = مرتبطة بعميل
+  if (ownership === 'showroom') {
+    query += ` AND p.Customer IS NULL`;
+  } else if (ownership === 'linked') {
+    query += ` AND p.Customer IS NOT NULL`;
+  }
+
+  // فلتر المسعرة/غير المسعرة
+  if (priced === 'priced') {
+    query += ` AND (p.SuggestedSalePrice IS NOT NULL OR p.SuggestedSalePriceCClass IS NOT NULL OR p.SuggestedSalePriceElite IS NOT NULL)`;
+  } else if (priced === 'unpriced') {
+    query += ` AND p.SuggestedSalePrice IS NULL AND p.SuggestedSalePriceCClass IS NULL AND p.SuggestedSalePriceElite IS NULL`;
   }
 
   query += ` ORDER BY p.ProductID DESC`;
@@ -219,6 +246,37 @@ async function saveProductComponents(productId, components, createdBy) {
   return true;
 }
 
+// إحصائيات المنتجات (إجمالي + مسعرة + معرض + مرتبطة بعميل)
+async function getProductStats() {
+  const pool = await connectDB();
+  const result = await pool.request().query(`
+    SELECT
+      COUNT(*) AS Total,
+      SUM(CASE WHEN (SuggestedSalePrice IS NOT NULL
+                  OR SuggestedSalePriceCClass IS NOT NULL
+                  OR SuggestedSalePriceElite IS NOT NULL) THEN 1 ELSE 0 END) AS Priced,
+      SUM(CASE WHEN Customer IS NULL THEN 1 ELSE 0 END) AS Showroom,
+      SUM(CASE WHEN Customer IS NOT NULL THEN 1 ELSE 0 END) AS Linked
+    FROM Products
+  `);
+  const s = result.recordset[0] || {};
+  return {
+    total: s.Total || 0,
+    priced: s.Priced || 0,
+    unpriced: (s.Total || 0) - (s.Priced || 0),
+    showroom: s.Showroom || 0,
+    linked: s.Linked || 0,
+  };
+}
+
+// حالات التسعير (للفلتر)
+async function getPricingStatuses() {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .query('SELECT PricingStatusID, StatusName FROM ProductPricingStatus ORDER BY PricingStatusID');
+  return result.recordset;
+}
+
 // تصدير الدوال
 module.exports = {
   getProductGroups,
@@ -228,5 +286,7 @@ module.exports = {
   updateProduct,
   addProductImage,
   deleteProductImage,
-  saveProductComponents
+  saveProductComponents,
+  getProductStats,
+  getPricingStatuses
 };
