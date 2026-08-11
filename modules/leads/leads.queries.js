@@ -1148,7 +1148,47 @@ async function createLead(data, userName = 'System') {
     await notifyLeadAssigned(lead, empId, userName);
   }
 
+  // 📥 إشعار "ليد جديد وصل" فوري لنفس مستقبلي إشعار الليد الجديد
+  // (نفس أدوار الـ scheduler: Admin + SalesManager + GeneralManager)
+  try {
+    const freshLead = await getLeadById(leadId);
+    await notifyNewLeadArrived(freshLead, userName);
+  } catch (e) {
+    console.error('notifyNewLeadArrived:', e.message);
+  }
+
   return { success: true, leadId, message: 'تم إنشاء الـ Lead' };
+}
+
+// إشعار وصول ليد جديد — نفس رسالة الـ scheduler (checkNewLeadsWithoutNotify)
+async function notifyNewLeadArrived(lead, createdBy = 'System') {
+  if (!lead?.LeadId) return;
+  const campaignPart = lead.CampaignName ? ` من حملة: ${lead.CampaignName}` : '';
+  const sourcePart = lead.Platform && lead.Platform !== 'Manual'
+    ? ` - المصدر: ${lead.Platform}`
+    : '';
+  const title = '📥 Lead جديد وصل';
+  const message =
+    `وصل Lead جديد: ${lead.FullName} - ${lead.Phone}${campaignPart}${sourcePart}. برجاء المتابعة.`;
+
+  // نفس الأدوار اللي بيبعتلهم الـ scheduler
+  const users = await getUsersByRoles(['Admin', 'SalesManager', 'GeneralManager']);
+  for (const u of users) {
+    if (!u?.Username) continue;
+    try {
+      await notificationsQueries.createNotification({
+        title,
+        message,
+        recipientUser: u.Username,
+        relatedTable: 'LeadsCRM',
+        relatedId: lead.LeadId,
+        formName: 'lead_detail_screen',
+        createdBy: createdBy || 'System',
+      });
+    } catch (e) {
+      console.error(`notifyNewLeadArrived user=${u.Username}:`, e.message);
+    }
+  }
 }
 
 
