@@ -144,6 +144,8 @@ async function createProduct(productData) {
     .input('customerId', sql.Int, productData.customerId || null)
     .input('purchasePrice', sql.Decimal(18, 2), productData.purchasePrice || 0)
     .input('suggestedSalePrice', sql.Decimal(18, 2), productData.suggestedSalePrice || 0)
+    .input('purchasePriceCClass', sql.Decimal(18, 2), productData.purchasePriceCClass || 0)
+    .input('suggestedSalePriceCClass', sql.Decimal(18, 2), productData.suggestedSalePriceCClass || 0)
     .input('purchasePriceElite', sql.Decimal(18, 2), productData.purchasePriceElite || 0)          // ✅
     .input('suggestedSalePriceElite', sql.Decimal(18, 2), productData.suggestedSalePriceElite || 0)// ✅
     .input('pricingType', sql.NVarChar(50), productData.pricingType)
@@ -154,6 +156,7 @@ async function createProduct(productData) {
       INSERT INTO Products (
         ProductName, ProductDescription, ManufacturingDescription,
         ProductGroupID, Customer, PurchasePrice, SuggestedSalePrice,
+        PurchasePriceCClass, SuggestedSalePriceCClass,
         PurchasePriceElite, SuggestedSalePriceElite,                -- ✅
         PricingType, QTY, Period, CreatedBy, CreatedAt
       )
@@ -161,6 +164,7 @@ async function createProduct(productData) {
       VALUES (
         @productName, @productDescription, @manufacturingDescription,
         @productGroupId, @customerId, @purchasePrice, @suggestedSalePrice,
+        @purchasePriceCClass, @suggestedSalePriceCClass,
         @purchasePriceElite, @suggestedSalePriceElite,              -- ✅
         @pricingType, @qty, @period, @createdBy, GETDATE()
       )
@@ -180,6 +184,8 @@ async function updateProduct(id, productData) {
     .input('customerId', sql.Int, productData.customerId || null)
     .input('purchasePrice', sql.Decimal(18, 2), productData.purchasePrice || 0)
     .input('suggestedSalePrice', sql.Decimal(18, 2), productData.suggestedSalePrice || 0)
+    .input('purchasePriceCClass', sql.Decimal(18, 2), productData.purchasePriceCClass || 0)
+    .input('suggestedSalePriceCClass', sql.Decimal(18, 2), productData.suggestedSalePriceCClass || 0)
      .input('purchasePriceElite', sql.Decimal(18, 2), productData.purchasePriceElite || 0)          // ✅
     .input('suggestedSalePriceElite', sql.Decimal(18, 2), productData.suggestedSalePriceElite || 0)// ✅
     .input('pricingType', sql.NVarChar(50), productData.pricingType)
@@ -191,6 +197,7 @@ async function updateProduct(id, productData) {
         ManufacturingDescription = @manufacturingDescription,
         ProductGroupID = @productGroupId, Customer = @customerId,
         PurchasePrice = @purchasePrice, SuggestedSalePrice = @suggestedSalePrice,
+        PurchasePriceCClass = @purchasePriceCClass, SuggestedSalePriceCClass = @suggestedSalePriceCClass,
          PurchasePriceElite = @purchasePriceElite,                      -- ✅
         SuggestedSalePriceElite = @suggestedSalePriceElite,            -- ✅
         PricingType = @pricingType, QTY = @qty, Period = @period
