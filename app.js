@@ -191,6 +191,9 @@ app.use('/api/quotations', require('./modules/quotations/quotations.routes'));
 // Cashbox Module
 app.use('/api/cashbox', require('./modules/cashbox/cashbox.routes'));
 
+// Personal Accounts Module
+app.use('/api/personal-accounts', require('./modules/personal-accounts/personal-accounts.routes'));
+
 // Tasks Module
 app.use('/api/tasks', require('./modules/tasks/tasks.routes'));
 
