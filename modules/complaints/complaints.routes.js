@@ -17,6 +17,12 @@ router.post('/', complaintsController.create);
 // ✅ 👈 هنا ضيف راوت المتابعات (مهم يكون قبل routes الـ /:id)
 router.use('/:complaintId/followups', require('../complaint-followups/complaint-followups.routes'));
 
+// ✅ 📎 راوتات المرفقات (كلها قبل مسارات الـ /:id)
+router.get('/attachments/:attachmentId/file', complaintsController.getAttachmentFile);
+router.get('/:complaintId/attachments', complaintsController.getAttachments);
+router.post('/:complaintId/attachments', complaintsController.upload, complaintsController.uploadAttachment);
+router.delete('/:complaintId/attachments/:attachmentId', complaintsController.deleteAttachment);
+
 // ✅ المسارات اللي فيها :id
 router.get('/:id', complaintsController.getById);
 router.put('/:id', complaintsController.update);

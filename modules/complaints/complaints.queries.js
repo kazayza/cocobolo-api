@@ -429,6 +429,86 @@ async function checkComplaintExists(id) {
   return result.recordset.length > 0;
 }
 
+// ═══════════════════════════════════════════════
+// 📎 المرفقات (مطابقة لبلازور)
+// ═══════════════════════════════════════════════
+
+// جلب مرفقات شكوى
+async function getComplaintAttachments(complaintId) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('complaintId', sql.Int, complaintId)
+    .query(`
+      SELECT 
+        a.AttachmentId,
+        a.ComplaintId,
+        a.FileName,
+        a.OriginalFileName,
+        a.FilePath,
+        a.FileSize,
+        a.MimeType,
+        a.UploadedByUserId,
+        a.UploadedAt,
+        u.FullName AS UploadedByName
+      FROM ComplaintAttachments a
+      LEFT JOIN Users u ON u.UserID = a.UploadedByUserId
+      WHERE a.ComplaintId = @complaintId
+      ORDER BY a.UploadedAt ASC
+    `);
+  return result.recordset;
+}
+
+// إضافة مرفق (الملف بيتحفظ على قرص السيرفر — من غير أي عمود جديد في الداتابيز)
+async function insertComplaintAttachment({
+  complaintId, fileName, originalFileName, filePath,
+  fileSize, mimeType, uploadedByUserId
+}) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('complaintId', sql.Int, complaintId)
+    .input('fileName', sql.NVarChar(255), fileName)
+    .input('originalFileName', sql.NVarChar(255), originalFileName)
+    .input('filePath', sql.NVarChar(500), filePath)
+    .input('fileSize', sql.BigInt, fileSize)
+    .input('mimeType', sql.NVarChar(100), mimeType)
+    .input('uploadedByUserId', sql.Int, uploadedByUserId || null)
+    .query(`
+      INSERT INTO ComplaintAttachments
+        (ComplaintId, FileName, OriginalFileName, FilePath, FileSize, MimeType, UploadedByUserId, UploadedAt)
+      VALUES
+        (@complaintId, @fileName, @originalFileName, @filePath, @fileSize, @mimeType, @uploadedByUserId, GETDATE());
+      SELECT SCOPE_IDENTITY() AS AttachmentId;
+    `);
+  return result.recordset[0].AttachmentId;
+}
+
+// جلب مرفق واحد (للتشغيل/التحميل)
+async function getComplaintAttachment(attachmentId) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('attachmentId', sql.Int, attachmentId)
+    .query(`
+      SELECT a.AttachmentId, a.ComplaintId, a.FileName, a.OriginalFileName,
+             a.FilePath, a.FileSize, a.MimeType
+      FROM ComplaintAttachments a
+      WHERE a.AttachmentId = @attachmentId
+    `);
+  return result.recordset.length > 0 ? result.recordset[0] : null;
+}
+
+// حذف مرفق (بيرجع الصف قبل الحذف عشان نقدر نمسح الملف المحلي لو موجود)
+async function deleteComplaintAttachment(attachmentId) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('attachmentId', sql.Int, attachmentId)
+    .query(`
+      DELETE FROM ComplaintAttachments
+      OUTPUT DELETED.AttachmentId, DELETED.FilePath
+      WHERE AttachmentId = @attachmentId
+    `);
+  return result.recordset.length > 0 ? result.recordset[0] : null;
+}
+
 // ===================================
 // تصدير الدوال
 // ===================================
@@ -443,5 +523,9 @@ module.exports = {
   getComplaintStats,
   assignComplaint,
   changeComplaintStatus,
-  rateComplaint
+  rateComplaint,
+  getComplaintAttachments,
+  insertComplaintAttachment,
+  getComplaintAttachment,
+  deleteComplaintAttachment
 };

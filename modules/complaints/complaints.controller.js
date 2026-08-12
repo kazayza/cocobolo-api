@@ -1,5 +1,27 @@
 const complaintsQueries = require('./complaints.queries');
 const { successResponse, errorResponse, notFoundResponse } = require('../../shared/response.helper');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
+// ===================================
+// رفع المرفقات (نفس امتدادات بلازور)
+// ===================================
+const UPLOAD_FOLDER = 'uploads/complaints';
+const ALLOWED_EXT = ['.jpg', '.jpeg', '.png', '.gif', '.pdf', '.doc', '.docx', '.xlsx', '.xls'];
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB زي بلازور بالظبط
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_FILE_SIZE },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (!ALLOWED_EXT.includes(ext)) {
+      return cb(new Error('صيغة الملف غير مدعومة'));
+    }
+    cb(null, true);
+  }
+}).single('file');
 
 // ===================================
 // دوال مساعدة لضبط الوقت بتوقيت مصر
@@ -324,5 +346,149 @@ module.exports = {
   getStats,
   assign,
   changeStatus,
-  rate
+  rate,
+  upload,
+  getAttachments,
+  uploadAttachment,
+  getAttachmentFile,
+  deleteAttachment
 };
+
+// ═══════════════════════════════════════════════
+// 📎 المرفقات (مطابقة لبلازور: رفع/عرض/حذف)
+// ═══════════════════════════════════════════════
+
+// جلب مرفقات شكوى
+async function getAttachments(req, res) {
+  try {
+    const { complaintId } = req.params;
+    const exists = await complaintsQueries.checkComplaintExists(complaintId);
+    if (!exists) return notFoundResponse(res, 'الشكوى غير موجودة');
+
+    const attachments = await complaintsQueries.getComplaintAttachments(complaintId);
+    return res.json(attachments.map(a => ({
+      ...a,
+      IsImage: (a.MimeType || '').toLowerCase().startsWith('image/'),
+      FileSizeFormatted: formatFileSize(a.FileSize)
+    })));
+  } catch (err) {
+    console.error('خطأ في جلب المرفقات:', err);
+    return errorResponse(res, 'فشل جلب المرفقات', 500, err.message);
+  }
+}
+
+// رفع مرفق جديد
+async function uploadAttachment(req, res) {
+  try {
+    const { complaintId } = req.params;
+    const exists = await complaintsQueries.checkComplaintExists(complaintId);
+    if (!exists) return notFoundResponse(res, 'الشكوى غير موجودة');
+
+    if (!req.file) return errorResponse(res, 'الملف مطلوب', 400);
+    if (req.file.size === 0) return errorResponse(res, 'الملف فارغ', 400);
+    if (req.file.size > MAX_FILE_SIZE) return errorResponse(res, 'الحجم يتجاوز 10 ميجا', 400);
+
+    const ext = path.extname(req.file.originalname).toLowerCase();
+    const safeName = `${require('crypto').randomBytes(16).toString('hex')}${ext}`;
+    const filePath = `/${UPLOAD_FOLDER}/${safeName}`;
+
+    // 🗂️ نحفظ الملف على قرص السيرفر (من غير أي عمود جديد في الداتابيز)
+    try {
+      const localDir = path.join(process.cwd(), UPLOAD_FOLDER);
+      fs.mkdirSync(localDir, { recursive: true });
+      fs.writeFileSync(path.join(localDir, safeName), req.file.buffer);
+    } catch (localErr) {
+      return errorResponse(res, 'فشل حفظ الملف على السيرفر', 500, localErr.message);
+    }
+
+    const attachmentId = await complaintsQueries.insertComplaintAttachment({
+      complaintId: Number(complaintId),
+      fileName: safeName,
+      originalFileName: req.file.originalname,
+      filePath,
+      fileSize: req.file.size,
+      mimeType: req.file.mimetype || 'application/octet-stream',
+      uploadedByUserId: req.body.uploadedByUserId || null
+    });
+
+    return res.json({
+      success: true,
+      attachmentId,
+      message: 'تم رفع المرفق بنجاح'
+    });
+  } catch (err) {
+    console.error('خطأ في رفع المرفق:', err);
+    if (err.message === 'صيغة الملف غير مدعومة') {
+      return errorResponse(res, 'صيغة الملف غير مدعومة (المسموح: صور، PDF، Word، Excel)', 400);
+    }
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return errorResponse(res, 'الحجم يتجاوز 10 ميجا', 400);
+    }
+    return errorResponse(res, 'فشل رفع المرفق', 500, err.message);
+  }
+}
+
+// تشغيل/تحميل المرفق: من قرص السيرفر الأول، وبعدين من سيرفر بلازور
+async function getAttachmentFile(req, res) {
+  try {
+    const { attachmentId } = req.params;
+    const att = await complaintsQueries.getComplaintAttachment(attachmentId);
+    if (!att) return notFoundResponse(res, 'المرفق غير موجود');
+
+    const mime = att.MimeType || 'application/octet-stream';
+    const filename = encodeURIComponent(att.OriginalFileName || 'file');
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${filename}`);
+
+    // 1️⃣ ملف محلي على نفس السيرفر (المرفوع من الموبايل)
+    const localPath = path.join(process.cwd(), att.FilePath.replace(/^\//, ''));
+    if (fs.existsSync(localPath)) {
+      return res.sendFile(localPath);
+    }
+
+    // 2️⃣ الملف على سيرفر بلازور (المرفوع من الويب) — نعمل Proxy
+    const upstreamUrl = `https://cocobolo.runasp.net${att.FilePath}`;
+    const upstreamRes = await fetch(upstreamUrl);
+    if (!upstreamRes.ok) {
+      return errorResponse(res, 'الملف غير متاح', 404);
+    }
+    const buffer = Buffer.from(await upstreamRes.arrayBuffer());
+    return res.send(buffer);
+  } catch (err) {
+    console.error('خطأ في تشغيل المرفق:', err);
+    return errorResponse(res, 'فشل تشغيل المرفق', 500, err.message);
+  }
+}
+
+// حذف مرفق
+async function deleteAttachment(req, res) {
+  try {
+    const { complaintId, attachmentId } = req.params;
+    const exists = await complaintsQueries.checkComplaintExists(complaintId);
+    if (!exists) return notFoundResponse(res, 'الشكوى غير موجودة');
+
+    const deleted = await complaintsQueries.deleteComplaintAttachment(attachmentId);
+    if (!deleted) return notFoundResponse(res, 'المرفق غير موجود');
+
+    // نشيل النسخة المحلية لو موجودة
+    try {
+      const localPath = path.join(process.cwd(), deleted.FilePath.replace(/^\//, ''));
+      if (fs.existsSync(localPath)) fs.unlinkSync(localPath);
+    } catch (e) { /* مش مشكلة */ }
+
+    return res.json({ success: true, message: 'تم حذف المرفق بنجاح' });
+  } catch (err) {
+    console.error('خطأ في حذف المرفق:', err);
+    return errorResponse(res, 'فشل حذف المرفق', 500, err.message);
+  }
+}
+
+// ===================================
+// تنسيق حجم الملف (زي بلازور)
+// ===================================
+function formatFileSize(size) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(size / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
