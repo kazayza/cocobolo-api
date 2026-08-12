@@ -39,13 +39,13 @@ async function createComplaint(complaintData) {
 async function getAllComplaints(filters = {}) {
   const pool = await connectDB();
   const request = pool.request();
-  
+
   let query = `
     SELECT 
       c.ComplaintID,
       c.PartyID,
       p.PartyName AS ClientName,
-      p.Phone,
+      p.Phone AS ClientPhone,
       c.TypeID,
       ct.TypeNameAr AS ComplaintType,
       c.Subject,
@@ -53,49 +53,192 @@ async function getAllComplaints(filters = {}) {
       c.Priority,
       c.Status,
       c.AssignedTo,
-      e.FullName AS AssignedToName,
-      CAST(c.ComplaintDate AS DATE) AS ComplaintDate,  -- 👈 تاريخ فقط
+      e.FullName AS EmployeeName,
+      c.ComplaintDate,
+      c.SolvedDate,
       c.CreatedBy,
       c.CreatedAt,
-      ISNULL(c.Escalated, 0) AS Escalated
+      c.TransactionID,
+      c.ProductID,
+      pr.ProductName,
+      c.SatisfactionLevel,
+      ISNULL(c.Escalated, 0) AS Escalated,
+      DATEDIFF(DAY, c.ComplaintDate, GETDATE()) AS DaysOpen,
+      (SELECT COUNT(*) FROM ComplaintAttachments ca WHERE ca.ComplaintId = c.ComplaintID) AS AttachmentsCount,
+      (SELECT COUNT(*) FROM ComplaintFollowUps cf WHERE cf.ComplaintID = c.ComplaintID) AS FollowUpsCount
     FROM Complaints c
     LEFT JOIN Parties p ON c.PartyID = p.PartyID
     LEFT JOIN ComplaintTypes ct ON c.TypeID = ct.TypeID
     LEFT JOIN Employees e ON c.AssignedTo = e.EmployeeID
-    WHERE 1=1
+    LEFT JOIN Products pr ON c.ProductID = pr.ProductID
+    WHERE 1=1 AND ISNULL(c.IsActive, 1) = 1
   `;
-  
-  // تطبيق الفلاتر لو موجودة
+
+  // ── الفلاتر الكاملة (مطابقة لبلازور) ──
   if (filters.status) {
     request.input('status', sql.TinyInt, filters.status);
-    query += ` AND c.Status = @status`;
+    query += ' AND c.Status = @status';
   }
-  
   if (filters.priority) {
     request.input('priority', sql.TinyInt, filters.priority);
-    query += ` AND c.Priority = @priority`;
+    query += ' AND c.Priority = @priority';
   }
-  
   if (filters.typeId) {
     request.input('typeId', sql.Int, filters.typeId);
-    query += ` AND c.TypeID = @typeId`;
+    query += ' AND c.TypeID = @typeId';
   }
-  
   if (filters.assignedTo) {
     request.input('assignedTo', sql.Int, filters.assignedTo);
-    query += ` AND c.AssignedTo = @assignedTo`;
+    query += ' AND c.AssignedTo = @assignedTo';
   }
-  
-  if (filters.escalated !== undefined) {
-    request.input('escalated', sql.Bit, filters.escalated);
-    query += ` AND ISNULL(c.Escalated, 0) = @escalated`;
+  if (filters.partyId) {
+    request.input('partyId', sql.Int, filters.partyId);
+    query += ' AND c.PartyID = @partyId';
   }
-  
-  query += ` ORDER BY c.CreatedAt DESC`;
-  
+  if (filters.search && String(filters.search).trim()) {
+    request.input('search', sql.NVarChar(200), `%${String(filters.search).trim()}%`);
+    query += ` AND (c.Subject LIKE @search OR c.Details LIKE @search OR p.PartyName LIKE @search OR p.Phone LIKE @search)`;
+  }
+  if (filters.dateFrom) {
+    request.input('dateFrom', sql.Date, filters.dateFrom);
+    query += ' AND CAST(c.ComplaintDate AS DATE) >= @dateFrom';
+  }
+  if (filters.dateTo) {
+    request.input('dateTo', sql.Date, filters.dateTo);
+    query += ' AND CAST(c.ComplaintDate AS DATE) <= @dateTo';
+  }
+  // المفتوحة فقط (غير المغلقة: مش 4 ولا 5)
+  if (filters.openOnly === 'true' || filters.openOnly === '1') {
+    query += ' AND c.Status NOT IN (4, 5)';
+  }
+  if (filters.escalated !== undefined && filters.escalated !== '') {
+    const esc = filters.escalated === 'true' || filters.escalated === '1';
+    request.input('escalated', sql.Bit, esc ? 1 : 0);
+    query += ' AND ISNULL(c.Escalated, 0) = @escalated';
+  }
+
+  query += ' ORDER BY c.CreatedAt DESC';
+
   const result = await request.query(query);
   return result.recordset;
 }
+
+// ═══════════════════════════════════════════════
+// إحصائيات الشكاوى (مطابقة لكروت بلازور)
+// ═══════════════════════════════════════════════
+async function getComplaintStats(filters = {}) {
+  const pool = await connectDB();
+  const request = pool.request();
+  let where = ' WHERE 1=1 AND ISNULL(IsActive, 1) = 1';
+
+  if (filters.status) {
+    request.input('status', sql.TinyInt, filters.status);
+    where += ' AND Status = @status';
+  }
+  if (filters.priority) {
+    request.input('priority', sql.TinyInt, filters.priority);
+    where += ' AND Priority = @priority';
+  }
+  if (filters.typeId) {
+    request.input('typeId', sql.Int, filters.typeId);
+    where += ' AND TypeID = @typeId';
+  }
+  if (filters.assignedTo) {
+    request.input('assignedTo', sql.Int, filters.assignedTo);
+    where += ' AND AssignedTo = @assignedTo';
+  }
+  if (filters.search && String(filters.search).trim()) {
+    request.input('search', sql.NVarChar(200), `%${String(filters.search).trim()}%`);
+    where += ` AND (Subject LIKE @search OR Details LIKE @search)`;
+  }
+  if (filters.dateFrom) {
+    request.input('dateFrom', sql.Date, filters.dateFrom);
+    where += ' AND CAST(ComplaintDate AS DATE) >= @dateFrom';
+  }
+  if (filters.dateTo) {
+    request.input('dateTo', sql.Date, filters.dateTo);
+    where += ' AND CAST(ComplaintDate AS DATE) <= @dateTo';
+  }
+
+  const result = await request.query(`
+    SELECT
+      COUNT(*) AS TotalCount,
+      SUM(CASE WHEN Status = 1 THEN 1 ELSE 0 END) AS NewCount,
+      SUM(CASE WHEN Status = 2 THEN 1 ELSE 0 END) AS InProgressCount,
+      SUM(CASE WHEN Status = 3 THEN 1 ELSE 0 END) AS AwaitingClientCount,
+      SUM(CASE WHEN Status = 4 THEN 1 ELSE 0 END) AS ResolvedCount,
+      SUM(CASE WHEN Status = 5 THEN 1 ELSE 0 END) AS RejectedCount,
+      SUM(CASE WHEN Status = 6 THEN 1 ELSE 0 END) AS EscalatedCount
+    FROM Complaints
+    ${where}
+  `);
+  const r = result.recordset[0] || {};
+  return {
+    totalCount: r.TotalCount || 0,
+    newCount: r.NewCount || 0,
+    inProgressCount: r.InProgressCount || 0,
+    awaitingClientCount: r.AwaitingClientCount || 0,
+    resolvedCount: r.ResolvedCount || 0,
+    rejectedCount: r.RejectedCount || 0,
+    escalatedCount: r.EscalatedCount || 0,
+  };
+}
+
+// ═══════════════════════════════════════════════
+// إسناد شكوى لموظف
+// ═══════════════════════════════════════════════
+async function assignComplaint(id, assignedTo, updatedBy) {
+  const pool = await connectDB();
+  await pool.request()
+    .input('id', sql.Int, id)
+    .input('assignedTo', sql.Int, assignedTo || null)
+    .input('updatedBy', sql.NVarChar(100), updatedBy || 'System')
+    .query(`
+      UPDATE Complaints SET
+        AssignedTo = @assignedTo,
+        Status = CASE WHEN Status = 1 THEN 2 ELSE Status END
+      WHERE ComplaintID = @id
+    `);
+  return true;
+}
+
+// ═══════════════════════════════════════════════
+// تغيير حالة الشكوى (مع الحل عند الإغلاق)
+// ═══════════════════════════════════════════════
+async function changeComplaintStatus(id, newStatus, solution, updatedBy) {
+  const pool = await connectDB();
+  await pool.request()
+    .input('id', sql.Int, id)
+    .input('newStatus', sql.TinyInt, newStatus)
+    .input('solution', sql.NVarChar(sql.MAX), solution || null)
+    .input('updatedBy', sql.NVarChar(100), updatedBy || 'System')
+    .query(`
+      UPDATE Complaints SET
+        Status = @newStatus,
+        Solution = CASE WHEN @newStatus = 4 THEN @solution ELSE Solution END,
+        SolvedDate = CASE WHEN @newStatus = 4 THEN GETDATE() ELSE SolvedDate END
+      WHERE ComplaintID = @id
+    `);
+  return true;
+}
+
+// ═══════════════════════════════════════════════
+// تقييم رضا العميل (بعد الحل)
+// ═══════════════════════════════════════════════
+async function rateComplaint(id, satisfactionLevel, updatedBy) {
+  const pool = await connectDB();
+  await pool.request()
+    .input('id', sql.Int, id)
+    .input('satisfactionLevel', sql.TinyInt, satisfactionLevel)
+    .input('updatedBy', sql.NVarChar(100), updatedBy || 'System')
+    .query(`
+      UPDATE Complaints SET
+        SatisfactionLevel = @satisfactionLevel
+      WHERE ComplaintID = @id
+    `);
+  return true;
+}
+
 
 // ===================================
 // جلب شكوى واحدة بالتفاصيل
@@ -296,5 +439,9 @@ module.exports = {
   updateComplaint,
   deleteComplaint,
   getComplaintTypes,
-  checkComplaintExists
+  checkComplaintExists,
+  getComplaintStats,
+  assignComplaint,
+  changeComplaintStatus,
+  rateComplaint
 };

@@ -92,7 +92,12 @@ async function getAll(req, res) {
       priority: req.query.priority,
       typeId: req.query.typeId,
       assignedTo: req.query.assignedTo,
-      escalated: req.query.escalated
+      escalated: req.query.escalated,
+      search: req.query.search,
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+      openOnly: req.query.openOnly,
+      partyId: req.query.partyId
     };
 
     const complaints = await complaintsQueries.getAllComplaints(filters);
@@ -244,6 +249,67 @@ async function escalate(req, res) {
   }
 }
 
+
+// ===================================
+// 📊 إحصائيات الشكاوى
+// ===================================
+async function getStats(req, res) {
+  try {
+    const stats = await complaintsQueries.getComplaintStats(req.query);
+    return res.json({ success: true, data: stats });
+  } catch (err) {
+    console.error('خطأ في جلب الإحصائيات:', err);
+    return errorResponse(res, 'فشل جلب الإحصائيات', 500, err.message);
+  }
+}
+
+// ===================================
+// 👤 إسناد شكوى لموظف
+// ===================================
+async function assign(req, res) {
+  try {
+    const { id } = req.params;
+    const { assignedTo, updatedBy } = req.body;
+    await complaintsQueries.assignComplaint(id, assignedTo, updatedBy || req.headers['x-user']);
+    return res.json({ success: true, message: 'تم إسناد الشكوى بنجاح' });
+  } catch (err) {
+    console.error('خطأ في إسناد الشكوى:', err);
+    return errorResponse(res, 'فشل إسناد الشكوى', 500, err.message);
+  }
+}
+
+// ===================================
+// 🔄 تغيير حالة الشكوى (مع الحل)
+// ===================================
+async function changeStatus(req, res) {
+  try {
+    const { id } = req.params;
+    const { newStatus, solution, updatedBy } = req.body;
+    if (!newStatus) return errorResponse(res, 'الحالة الجديدة مطلوبة', 400);
+    await complaintsQueries.changeComplaintStatus(id, newStatus, solution, updatedBy || req.headers['x-user']);
+    return res.json({ success: true, message: 'تم تحديث حالة الشكوى بنجاح' });
+  } catch (err) {
+    console.error('خطأ في تغيير الحالة:', err);
+    return errorResponse(res, 'فشل تغيير الحالة', 500, err.message);
+  }
+}
+
+// ===================================
+// ⭐ تقييم رضا العميل
+// ===================================
+async function rate(req, res) {
+  try {
+    const { id } = req.params;
+    const { satisfactionLevel, updatedBy } = req.body;
+    if (!satisfactionLevel) return errorResponse(res, 'التقييم مطلوب', 400);
+    await complaintsQueries.rateComplaint(id, satisfactionLevel, updatedBy || req.headers['x-user']);
+    return res.json({ success: true, message: 'تم تسجيل التقييم بنجاح' });
+  } catch (err) {
+    console.error('خطأ في تسجيل التقييم:', err);
+    return errorResponse(res, 'فشل تسجيل التقييم', 500, err.message);
+  }
+}
+
 // ===================================
 // تصدير الدوال
 // ===================================
@@ -254,5 +320,9 @@ module.exports = {
   update,
   remove,
   getTypes,
-  escalate
+  escalate,
+  getStats,
+  assign,
+  changeStatus,
+  rate
 };

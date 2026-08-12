@@ -8,6 +8,7 @@ const complaintsController = require('./complaints.controller');
 
 // ✅ مسارات ثابتة
 router.get('/types', complaintsController.getTypes);
+router.get('/stats', complaintsController.getStats);
 router.get('/', complaintsController.getAll);
 
 // ✅ إضافة شكوى جديدة
@@ -23,5 +24,14 @@ router.delete('/:id', complaintsController.remove);
 
 // ✅ مسار التصعيد
 router.post('/:id/escalate', complaintsController.escalate);
+
+// ✅ إسناد شكوى
+router.put('/:id/assign', complaintsController.assign);
+
+// ✅ تغيير الحالة (مع الحل)
+router.put('/:id/status', complaintsController.changeStatus);
+
+// ✅ تقييم الرضا
+router.put('/:id/rate', complaintsController.rate);
 
 module.exports = router;
