@@ -115,6 +115,20 @@ async function getLeads(filters = {}) {
     where += ' AND l.Platform = @platform ';
   }
 
+  // فلتر المصدر (FormId = رقم المصدر المحفوظ)
+  const sourceId = toInt(filters.sourceId);
+  if (sourceId) {
+    request.input('sourceId', sql.NVarChar(50), String(sourceId));
+    where += ' AND l.FormId = @sourceId ';
+  }
+
+  // فلتر الحملة (CampaignId = رقم الحملة المحفوظ)
+  const adTypeId = toInt(filters.adTypeId);
+  if (adTypeId) {
+    request.input('adTypeId', sql.NVarChar(50), String(adTypeId));
+    where += ' AND l.CampaignId = @adTypeId ';
+  }
+
   if (filters.lateFollowUpOnly === '1' || filters.lateFollowUpOnly === true) {
     where += `
       AND l.LeadStatus NOT IN (N'محول', N'مرفوض')
@@ -144,6 +158,8 @@ async function getLeads(filters = {}) {
   if (projectType && projectType !== 'الكل') {
     dataReq.input('projectType', sql.NVarChar(150), projectType);
   }
+  if (sourceId) dataReq.input('sourceId', sql.NVarChar(50), String(sourceId));
+  if (adTypeId) dataReq.input('adTypeId', sql.NVarChar(50), String(adTypeId));
   if (filters.dateFrom) dataReq.input('dateFrom', sql.DateTime, new Date(filters.dateFrom));
   if (filters.dateTo) {
     const d = new Date(filters.dateTo);
@@ -794,16 +810,25 @@ async function convertLeadToClient(leadId, dto = {}, userName = 'System') {
       return { success: false, message: 'بيانات الـ Lead ناقصة (الاسم أو الموبايل)' };
     }
 
-    const phoneCheck = await new sql.Request(transaction)
-      .input('phone', sql.NVarChar(50), String(lead.Phone).trim())
-      .query(`
-        SELECT TOP 1 PartyID FROM Parties
-        WHERE Phone = @phone AND ISNULL(IsActive, 1) = 1
+    // ── البحث عن عميل موجود بنفس أرقام الليد (زي بلازور) ──
+    const candidatePhones = [lead.Phone?.trim(), lead.Phone2?.trim()]
+      .filter((p) => p && p.length > 0)
+      .filter((v, i, arr) => arr.indexOf(v) === i);
+
+    let existingParty = null;
+    if (candidatePhones.length > 0) {
+      const phones = candidatePhones;
+      const phoneCond = phones.map((_, i) => `(Phone = @p${i} OR Phone2 = @p${i})`).join(' OR ');
+      const req = new sql.Request(transaction);
+      phones.forEach((p, i) => req.input(`p${i}`, sql.NVarChar(50), p));
+      const partyRes = await req.query(`
+        SELECT TOP 1 PartyID, PartyName, Phone, Phone2
+        FROM Parties
+        WHERE (${phoneCond}) AND ISNULL(IsActive, 1) = 1
       `);
-    if (phoneCheck.recordset[0]) {
-      await transaction.rollback();
-      return { success: false, message: 'رقم الهاتف موجود بالفعل في العملاء' };
+      existingParty = partyRes.recordset[0] || null;
     }
+    const isExistingParty = existingParty != null;
 
     // Initial stage: المرحلة 1 = عميل مؤهل (Lead) else أول مرحلة مفعّلة
     let stageRes = await new sql.Request(transaction).query(`
@@ -836,28 +861,18 @@ async function convertLeadToClient(leadId, dto = {}, userName = 'System') {
     let leadExtra = {};
     try { leadExtra = lead.ExtraData ? JSON.parse(lead.ExtraData) : {}; } catch (_) {}
 
-    // المصدر: لو مفيش sourceId من الشاشة → نجيبه من Platform المحفوظ
+    // المصدر: من الشاشة، وإلا من FormId (رقم المصدر المحفوظ — زي بلازور)
     let sourceId = toInt(dto.sourceId ?? dto.SourceId, null);
-    if (!sourceId && lead.Platform) {
-      const sRes = await new sql.Request(transaction)
-        .input('p', sql.NVarChar(50), String(lead.Platform).trim())
-        .query(`
-          SELECT TOP 1 SourceID FROM ContactSources
-          WHERE SourceName = @p AND ISNULL(IsActive, 1) = 1
-        `);
-      sourceId = sRes.recordset[0]?.SourceID ?? null;
+    if (!sourceId && lead.FormName === 'manual' && lead.FormId) {
+      const parsed = parseInt(String(lead.FormId), 10);
+      if (!isNaN(parsed)) sourceId = parsed;
     }
 
-    // الحملة: لو مفيش adTypeId → نجيبه من CampaignName المحفوظ
+    // الحملة: من الشاشة، وإلا من CampaignId (رقم الحملة المحفوظ — زي بلازور)
     let adTypeId = toInt(dto.adTypeId ?? dto.AdTypeId, null);
-    if (!adTypeId && lead.CampaignName) {
-      const aRes = await new sql.Request(transaction)
-        .input('c', sql.NVarChar(300), String(lead.CampaignName).trim())
-        .query(`
-          SELECT TOP 1 AdTypeID FROM AdTypes
-          WHERE AdTypeName = @c AND ISNULL(IsActive, 1) = 1
-        `);
-      adTypeId = aRes.recordset[0]?.AdTypeID ?? null;
+    if (!adTypeId && lead.FormName === 'manual' && lead.CampaignId) {
+      const parsed = parseInt(String(lead.CampaignId), 10);
+      if (!isNaN(parsed)) adTypeId = parsed;
     }
 
     // التوجيهات: من ExtraData لو موجودة، وإلا نبنيها من بيانات الليد
@@ -870,29 +885,34 @@ async function convertLeadToClient(leadId, dto = {}, userName = 'System') {
       if (!isNaN(parsed.getTime())) nextFollowUpDate = parsed;
     }
 
-    // 1) Party
-    const partyResult = await new sql.Request(transaction)
-      .input('partyName', sql.NVarChar(200), String(lead.FullName).trim())
-      .input('phone', sql.NVarChar(50), String(lead.Phone).trim())
-      .input('phone2', sql.NVarChar(50), lead.Phone2 || null)
-      .input('email', sql.NVarChar(100), lead.Email || null)
-      .input('address', sql.NVarChar(250), lead.Address || lead.City || null)
-      .input('referralSourceId', sql.Int, sourceId || null)
-      .input('createdBy', sql.NVarChar(100), userName)
-      .query(`
-        DECLARE @ids TABLE (id INT);
-        INSERT INTO Parties (
-          PartyName, PartyType, Phone, Phone2, Email, Address,
-          ReferralSourceID, IsActive, CreatedBy, CreatedAt
-        )
-        OUTPUT INSERTED.PartyID INTO @ids
-        VALUES (
-          @partyName, 1, @phone, @phone2, @email, @address,
-          @referralSourceId, 1, @createdBy, GETDATE()
-        );
-        SELECT id FROM @ids;
-      `);
-    const partyId = partyResult.recordset[0].id;
+    // 1) Party — استخدم العميل الموجود أو أنشئ جديد (زي بلازور بالظبط)
+    let partyId;
+    if (isExistingParty) {
+      partyId = existingParty.PartyID;
+    } else {
+      const partyResult = await new sql.Request(transaction)
+        .input('partyName', sql.NVarChar(200), String(lead.FullName).trim())
+        .input('phone', sql.NVarChar(50), String(lead.Phone).trim())
+        .input('phone2', sql.NVarChar(50), lead.Phone2 || null)
+        .input('email', sql.NVarChar(100), lead.Email || null)
+        .input('address', sql.NVarChar(250), lead.Address || lead.City || null)
+        .input('referralSourceId', sql.Int, sourceId || null)
+        .input('createdBy', sql.NVarChar(100), userName)
+        .query(`
+          DECLARE @ids TABLE (id INT);
+          INSERT INTO Parties (
+            PartyName, PartyType, Phone, Phone2, Email, Address,
+            ReferralSourceID, IsActive, CreatedBy, CreatedAt
+          )
+          OUTPUT INSERTED.PartyID INTO @ids
+          VALUES (
+            @partyName, 1, @phone, @phone2, @email, @address,
+            @referralSourceId, 1, @createdBy, GETDATE()
+          );
+          SELECT id FROM @ids;
+        `);
+      partyId = partyResult.recordset[0].id;
+    }
 
     // 2) Opportunity (column set matches working opportunities module)
     const oppResult = await new sql.Request(transaction)
@@ -1116,12 +1136,46 @@ async function createLead(data, userName = 'System') {
     return { success: false, message: 'الاسم والهاتف مطلوبان' };
   }
 
-  // بيانات إضافية (JSON في عمود ExtraData — من غير أي عمود جديد)
+  // ── المصدر وتاريخ المتابعة إجباريين (زي بلازور) ──
+  const sourceId = toInt(data.sourceId, null);
+  if (!sourceId) {
+    return { success: false, message: 'مصدر الـ Lead مطلوب' };
+  }
+  const adTypeId = toInt(data.adTypeId, null);
+  const followUpDate = data.nextFollowUp ? new Date(data.nextFollowUp) : null;
+  if (!followUpDate || isNaN(followUpDate.getTime())) {
+    return { success: false, message: 'تاريخ المتابعة مطلوب' };
+  }
+
+  // ── جلب أسماء المصدر والحملة من الجداول (زي بلازور) ──
+  const sourceRes = await pool.request()
+    .input('sid', sql.Int, sourceId)
+    .query(`SELECT SourceID, SourceName, SourceNameAr FROM ContactSources WHERE SourceID = @sid AND ISNULL(IsActive,1)=1`);
+  const source = sourceRes.recordset[0];
+  if (!source) {
+    return { success: false, message: 'المصدر المختار غير موجود أو غير مفعل' };
+  }
+
+  let adType = null;
+  if (adTypeId) {
+    const adRes = await pool.request()
+      .input('aid', sql.Int, adTypeId)
+      .query(`SELECT AdTypeID, AdTypeName, AdTypeNameAr FROM AdTypes WHERE AdTypeID = @aid AND ISNULL(IsActive,1)=1`);
+    adType = adRes.recordset[0];
+    if (!adType) {
+      return { success: false, message: 'الحملة المختارة غير موجودة أو غير مفعلة' };
+    }
+  }
+
+  // اسم المصدر بالعربي (أو الإنجليزي لو مفيش عربي) — زي بلازور بالظبط
+  const platformName = (source.SourceNameAr || '').trim() || (source.SourceName || '').trim();
+  const campaignName = adType
+    ? ((adType.AdTypeNameAr || '').trim() || (adType.AdTypeName || '').trim())
+    : null;
+
+  // ── بيانات إضافية (JSON في ExtraData — التوجيهات فقط) ──
   const extra = {};
   if (data.guidance) extra.guidance = String(data.guidance);
-  if (data.nextFollowUp) extra.nextFollowUp = String(data.nextFollowUp);
-  if (data.sourceNameAr) extra.sourceAr = String(data.sourceNameAr);
-  if (data.adTypeNameAr) extra.adTypeAr = String(data.adTypeNameAr);
   const extraDataJson = Object.keys(extra).length ? JSON.stringify(extra) : null;
 
   const result = await pool.request()
@@ -1139,8 +1193,11 @@ async function createLead(data, userName = 'System') {
     .input('nextAction', sql.NVarChar(200), data.nextAction || null)
     .input('bestTimeToReach', sql.NVarChar(200), data.bestTimeToReach || null)
     .input('notes', sql.NVarChar(sql.MAX), data.notes || null)
-    .input('platform', sql.NVarChar(50), data.platform || 'Manual')
-    .input('campaignName', sql.NVarChar(300), data.campaignName || null)
+    .input('formId', sql.NVarChar(100), String(sourceId))
+    .input('formName', sql.NVarChar(50), 'manual')
+    .input('platform', sql.NVarChar(50), platformName)
+    .input('campaignId', sql.NVarChar(100), adTypeId ? String(adTypeId) : null)
+    .input('campaignName', sql.NVarChar(300), campaignName)
     .input('extraData', sql.NVarChar(sql.MAX), extraDataJson)
     .input('employeeId', sql.Int, toInt(data.assignedEmployeeId, null))
     .input('createdBy', sql.NVarChar(100), userName)
@@ -1150,20 +1207,38 @@ async function createLead(data, userName = 'System') {
       INSERT INTO LeadsCRM (
         FullName, Phone, Phone2, Email, City, Area, Address,
         ProjectType, ProjectStage, Budget, DecisionMaker,
-        NextAction, BestTimeToReach, Notes, Platform, CampaignName, ExtraData,
+        NextAction, BestTimeToReach, Notes,
+        FormId, FormName, Platform, CampaignId, CampaignName, ExtraData,
         LeadStatus, AssignedEmployeeId, LeadDate, CreatedAt, CreatedBy, IsConverted
       )
       OUTPUT INSERTED.LeadId
       VALUES (
         @fullName, @phone, @phone2, @email, @city, @area, @address,
         @projectType, @projectStage, @budget, @decisionMaker,
-        @nextAction, @bestTimeToReach, @notes, @platform, @campaignName, @extraData,
+        @nextAction, @bestTimeToReach, @notes,
+        @formId, @formName, @platform, @campaignId, @campaignName, @extraData,
         @status, @employeeId, GETDATE(), GETDATE(), @createdBy, 0
       )
     `);
 
   const leadId = result.recordset[0].LeadId;
   const empId = toInt(data.assignedEmployeeId, null);
+
+  // ── تفاعل المتابعة الأولية (زي بلازور بالظبط) ──
+  await insertLeadInteraction(null, {
+    leadId,
+    employeeId: empId,
+    interactionType: 'متابعة',
+    summary: 'تحديد متابعة أولية عند إنشاء الـ Lead',
+    notes: 'تم إنشاء متابعة أولية تلقائياً من شاشة إضافة الـ Leads.',
+    oldLeadStatus: STATUSES.NEW,
+    newLeadStatus: null,
+    nextFollowUpDate: followUpDate,
+    isSystemGenerated: true,
+    createdBy: userName,
+  });
+
+  // ── إشعار الإسناد لو في موظف مسؤول ──
   if (empId) {
     await insertLeadInteraction(null, {
       leadId,
@@ -1179,8 +1254,7 @@ async function createLead(data, userName = 'System') {
     await notifyLeadAssigned(lead, empId, userName);
   }
 
-  // 📥 إشعار "ليد جديد وصل" فوري لنفس مستقبلي إشعار الليد الجديد
-  // (نفس أدوار الـ scheduler: Admin + SalesManager + GeneralManager)
+  // ── إشعار "ليد جديد وصل" فوري ──
   try {
     const freshLead = await getLeadById(leadId);
     await notifyNewLeadArrived(freshLead, userName);
