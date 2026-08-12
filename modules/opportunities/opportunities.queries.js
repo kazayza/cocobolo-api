@@ -992,6 +992,148 @@ async function searchClients(searchText) {
 // 📤 تصدير الدوال
 // ===================================
 
+
+// ═══════════════════════════════════════════════════════════
+// 📋 KANBAN BOARD (مطابق لمنطق بلازور GetKanbanBoardAsync)
+// ═══════════════════════════════════════════════════════════
+async function getKanbanBoard(filters = {}) {
+  const pool = await connectDB();
+  const { employeeId, sourceId, adTypeId, dateFrom, dateTo, search, stageId, isOverdue, hasFollowUp } = filters;
+
+  // 1️⃣ المراحل النشطة
+  const stagesRes = await pool.request().query(`
+    SELECT StageID, StageName, StageNameAr, StageColor, StageOrder
+    FROM SalesStages WHERE IsActive = 1 ORDER BY StageOrder
+  `);
+  const stages = stagesRes.recordset;
+
+  // 2️⃣ الفرص المفلترة
+  let where = ' WHERE o.IsActive = 1';
+  const req = pool.request();
+  if (employeeId && employeeId !== '0' && employeeId !== 'null') {
+    where += ' AND o.EmployeeID = @employeeId';
+    req.input('employeeId', sql.Int, employeeId);
+  }
+  if (sourceId && sourceId !== '0' && sourceId !== 'null') {
+    where += ' AND o.SourceID = @sourceId';
+    req.input('sourceId', sql.Int, sourceId);
+  }
+  if (adTypeId && adTypeId !== '0' && adTypeId !== 'null') {
+    where += ' AND o.AdTypeID = @adTypeId';
+    req.input('adTypeId', sql.Int, adTypeId);
+  }
+  if (stageId && stageId !== '0' && stageId !== 'null') {
+    where += ' AND o.StageID = @stageId';
+    req.input('stageId', sql.Int, stageId);
+  }
+  if (dateFrom) {
+    where += ' AND CAST(o.CreatedAt AS DATE) >= @dateFrom';
+    req.input('dateFrom', sql.Date, dateFrom);
+  }
+  if (dateTo) {
+    where += ' AND CAST(o.CreatedAt AS DATE) <= @dateTo';
+    req.input('dateTo', sql.Date, dateTo);
+  }
+  if (search && String(search).trim()) {
+    where += ' AND (p.PartyName LIKE @search OR p.Phone LIKE @search OR o.InterestedProduct LIKE @search)';
+    req.input('search', sql.NVarChar(200), `%${String(search).trim()}%`);
+  }
+
+  const oppsRes = await req.query(`
+    SELECT o.OpportunityID, o.PartyID, o.StageID, o.ExpectedValue, o.EmployeeID,
+           o.NextFollowUpDate, o.InterestedProduct, o.SourceID, o.CreatedAt, o.ClosedAt,
+           p.PartyName, p.Phone,
+           e.FullName AS EmployeeName,
+           cs.SourceName AS SourceName
+    FROM SalesOpportunities o
+    INNER JOIN Parties p ON o.PartyID = p.PartyID
+    LEFT JOIN Employees e ON o.EmployeeID = e.EmployeeID
+    LEFT JOIN ContactSources cs ON o.SourceID = cs.SourceID
+    ${where}
+  `);
+
+  const opps = oppsRes.recordset;
+
+  // فلاتر إضافية (على مستوى العميل)
+  let filtered = opps;
+  if (isOverdue === 'true' || isOverdue === '1') {
+    filtered = filtered.filter(o => o.NextFollowUpDate && new Date(o.NextFollowUpDate) < new Date());
+  }
+  if (hasFollowUp === 'true' || hasFollowUp === '1') {
+    filtered = filtered.filter(o => o.NextFollowUpDate != null);
+  }
+
+  // 3️⃣ عدد التفاعلات والمهام لكل فرصة
+  const oppIds = filtered.map(o => o.OpportunityID);
+  let icDict = {};
+  let tcDict = {};
+  if (oppIds.length) {
+    const ids = oppIds.join(',');
+    const ic = await pool.request().query(`
+      SELECT OpportunityID, COUNT(*) AS Cnt FROM CustomerInteractions
+      WHERE OpportunityID IN (${ids}) GROUP BY OpportunityID
+    `);
+    ic.recordset.forEach(r => icDict[r.OpportunityID] = r.Cnt);
+
+    const tc = await pool.request().query(`
+      SELECT OpportunityID, COUNT(*) AS Cnt FROM CRM_Tasks
+      WHERE OpportunityID IN (${ids}) GROUP BY OpportunityID
+    `);
+    tc.recordset.forEach(r => tcDict[r.OpportunityID] = r.Cnt);
+  }
+
+  // 4️⃣ بناء الأعمدة
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const columns = stages.map(s => {
+    const cards = filtered
+      .filter(o => o.StageID === s.StageID)
+      .map(o => {
+        const created = new Date(o.CreatedAt);
+        const closed = o.ClosedAt ? new Date(o.ClosedAt) : null;
+        const lifecycleDays = Math.floor(
+          ((closed || new Date()) - created) / (1000 * 60 * 60 * 24)
+        );
+        const followUp = o.NextFollowUpDate ? new Date(o.NextFollowUpDate) : null;
+        return {
+          OpportunityId: o.OpportunityID,
+          PartyId: o.PartyID,
+          ClientName: o.PartyName || '—',
+          Phone: o.Phone,
+          ExpectedValue: o.ExpectedValue || 0,
+          EmployeeId: o.EmployeeID,
+          EmployeeName: o.EmployeeName || null,
+          InterestedProduct: o.InterestedProduct,
+          SourceId: o.SourceID,
+          SourceName: o.SourceName || null,
+          NextFollowUpDate: o.NextFollowUpDate,
+          StageId: o.StageID,
+          InteractionsCount: icDict[o.OpportunityID] || 0,
+          TasksCount: tcDict[o.OpportunityID] || 0,
+          IsOverdue: followUp ? followUp < today : false,
+          CreatedAt: o.CreatedAt,
+          ClosedAt: o.ClosedAt,
+          LifecycleDays: lifecycleDays,
+        };
+      });
+
+    return {
+      StageId: s.StageID,
+      StageName: s.StageName,
+      StageNameAr: s.StageNameAr || s.StageName,
+      StageColor: s.StageColor || '#94a3b8',
+      StageOrder: s.StageOrder,
+      Count: cards.length,
+      Value: cards.reduce((sum, c) => sum + (c.ExpectedValue || 0), 0),
+      Cards: cards,
+    };
+  });
+
+  return { columns };
+}
+
+
 module.exports = {
   // Lookups
   getStages,
@@ -1006,6 +1148,7 @@ module.exports = {
   // Summary
   getOpportunitiesSummary,
   getPipelineSummary,
+  getKanbanBoard,
   
   // CRUD
   getAllOpportunities,

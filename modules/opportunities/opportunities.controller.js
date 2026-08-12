@@ -367,6 +367,19 @@ async function searchClients(req, res) {
 }
 
 // تصدير الكل
+
+// KANBAN BOARD
+async function getKanban(req, res) {
+  try {
+    const board = await opportunitiesQueries.getKanbanBoard(req.query);
+    return res.json({ success: true, data: board });
+  } catch (err) {
+    console.error('opportunities.getKanban:', err);
+    return errorResponse(res, 'فشل تحميل لوحة المبيعات', 500, err.message);
+  }
+}
+
+
 module.exports = {
   getStages,
   getSources,
@@ -378,6 +391,7 @@ module.exports = {
   getEmployees,
   getSummary,
   getPipelineSummary,
+  getKanban,
   getAll,
   checkOpenOpportunity,
   getById,

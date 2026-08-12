@@ -61,6 +61,10 @@ router.get('/summary', opportunitiesController.getSummary);
 // ✅ ملخص الـ Pipeline - لازم يكون قبل /:id
 router.get('/pipeline-summary', opportunitiesController.getPipelineSummary);
 
+// KANBAN BOARD
+// GET /api/opportunities/kanban?employeeId=&sourceId=&adTypeId=&dateFrom=&dateTo=&search=&stageId=&isOverdue=&hasFollowUp=
+router.get('/kanban', opportunitiesController.getKanban);
+
 // ===================================
 // 🎯 الفرص - CRUD
 // ===================================
