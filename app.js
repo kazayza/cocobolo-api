@@ -1,4 +1,6 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 
 // إنشاء التطبيق أولاً
 const app = express();
@@ -59,8 +61,124 @@ app.post('/api/notifications/send-push', notificationsController.sendPush);
 
 // ===================================
 // 🖼️ Product Images (for thumbnails)
+//  - /api/product-images/:id       → بمعرف المنتج ProductID (نفس سلوك بلازور)
+//  - /api/product-image-by-id/:id  → بمعرف صف الصورة ProductImagesID
 // ===================================
+
+// يخدم صورة من ملف محلي على السيرفر (رفع الموبايل → uploads/images)
+function serveLocalImageFile(res, row) {
+  if (!row.ImagePath) return false;
+  const filePath = path.join(process.cwd(), String(row.ImagePath).replace(/^\/+/, ''));
+  try {
+    if (fs.existsSync(filePath)) {
+      const buf = fs.readFileSync(filePath);
+      res.set('Content-Type', getMimeFromExt(filePath));
+      res.set('Cache-Control', 'public, max-age=86400');
+      res.send(buf);
+      return true;
+    }
+  } catch (err) {
+    console.error('خطأ في قراءة ملف الصورة المحلي:', err.message);
+  }
+  return false;
+}
+
+function getMimeFromExt(filePath) {
+  const ext = (filePath.split('.').pop() || '').toLowerCase();
+  switch (ext) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'bmp':
+      return 'image/bmp';
+    case 'svg':
+      return 'image/svg+xml';
+    default:
+      return 'image/png';
+  }
+}
+
+// تجربة الصورة من بلازور (الصور المرفوعة من الويب — الملف عندهم)
+async function proxyImageFromBlazor(res, pathSuffix) {
+  try {
+    const upstreamUrl = `https://cocobolo.runasp.net${pathSuffix}`;
+    const upstreamRes = await fetch(upstreamUrl, {
+      headers: { 'Accept': 'image/*' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (upstreamRes.ok) {
+      const buf = Buffer.from(await upstreamRes.arrayBuffer());
+      res.set('Content-Type', upstreamRes.headers.get('content-type') || detectImageMime(buf));
+      res.set('Cache-Control', 'public, max-age=86400');
+      res.send(buf);
+      return true;
+    }
+    console.warn(`صورة بلازور غير موجودة (${upstreamRes.status}): ${pathSuffix}`);
+  } catch (proxyErr) {
+    console.error(`proxy image ${pathSuffix}:`, proxyErr.message);
+  }
+  return false;
+}
+
+// ✅ صورة المنتج بمعرف المنتج (ProductID) — نفس ترتيب بلازور: الأساسية → الأحدث
+//    ذكي: لو معرف المنتج ملاقاش، يجرب معرف صف الصورة (ProductImagesID)
+//    عشان يشتغل مع أي نسخة من الموبايل (قديمة بتبعت رقم صف الصورة / جديدة بتبعت رقم المنتج)
 app.get('/api/product-images/:id', async (req, res) => {
+  try {
+    const pool = await connectDB();
+    const result = await pool.request()
+      .input('id', sql.Int, req.params.id)
+      .query(`
+        SELECT TOP 1 ProductImagesID, ImageProduct, ImagePath
+        FROM ProductImages
+        WHERE ProductID = @id
+        ORDER BY IsPrimary DESC, CreatedAt DESC, ProductImagesID DESC
+      `);
+
+    let row = result.recordset[0];
+
+    // 1) لو الرقم ده ProductID ملاقاش → نجرب إنه ProductImagesID (رقم صف الصورة)
+    if (!row) {
+      const byImg = await pool.request()
+        .input('id', sql.Int, req.params.id)
+        .query(`
+          SELECT TOP 1 ProductImagesID, ImageProduct, ImagePath
+          FROM ProductImages
+          WHERE ProductImagesID = @id
+        `);
+      row = byImg.recordset[0];
+    }
+
+    if (!row) {
+      return res.status(404).send('Image not found');
+    }
+
+    // 1) لو فيه بايتات في الداتابيز → نخدمها مباشرة
+    if (row.ImageProduct && row.ImageProduct.length > 0) {
+      const imgBuffer = Buffer.from(row.ImageProduct);
+      res.set('Content-Type', detectImageMime(imgBuffer));
+      return res.send(imgBuffer);
+    }
+
+    // 2) لو الصورة ملف محلي على السيرفر (رفع من الموبايل)
+    if (serveLocalImageFile(res, row)) return;
+
+    // 3) لو الصورة مرفوعة من بلازور (الملف عندهم) → endpoint عام بدون auth
+    if (await proxyImageFromBlazor(res, `/api/public/product-images/${req.params.id}`)) return;
+
+    return res.status(404).send('Image not found');
+  } catch (err) {
+    console.error('خطأ في جلب صورة المنتج:', err);
+    return res.status(500).send('Error fetching image');
+  }
+});
+
+// ✅ صورة محددة بمعرف صف الصورة (ProductImagesID) — زي بلازور product-image-by-id
+app.get('/api/product-image-by-id/:id', async (req, res) => {
   try {
     const pool = await connectDB();
     const result = await pool.request()
@@ -77,31 +195,19 @@ app.get('/api/product-images/:id', async (req, res) => {
 
     const row = result.recordset[0];
 
-    // 1) لو فيه بايتات في الداتابيز → نخدمها مباشرة
+    // 1) بايتات في الداتابيز → مباشرة
     if (row.ImageProduct && row.ImageProduct.length > 0) {
       const imgBuffer = Buffer.from(row.ImageProduct);
       res.set('Content-Type', detectImageMime(imgBuffer));
       return res.send(imgBuffer);
     }
 
-    // 2) لو الصورة مش موجودة عندنا → نجربها من بلازور
-    //    (بيشوف ImagePath عندهم + ImageProduct عندهم — endpoint عام بدون auth)
-    try {
-      const upstreamUrl = `https://cocobolo.runasp.net/api/product-image-by-id/${req.params.id}`;
-      const upstreamRes = await fetch(upstreamUrl, {
-        headers: { 'Accept': 'image/*' },
-        signal: AbortSignal.timeout(10000),
-      });
-      if (upstreamRes.ok) {
-        const buf = Buffer.from(await upstreamRes.arrayBuffer());
-        res.set('Content-Type', upstreamRes.headers.get('content-type') || detectImageMime(buf));
-        res.set('Cache-Control', 'public, max-age=86400');
-        return res.send(buf);
-      }
-      console.warn(`صورة ${req.params.id} غير موجودة على بلازور (${upstreamRes.status})`);
-    } catch (proxyErr) {
-      console.error(`proxy image ${req.params.id}:`, proxyErr.message);
-    }
+    // 2) ملف محلي على السيرفر
+    if (serveLocalImageFile(res, row)) return;
+
+    // 3) من بلازور
+    if (await proxyImageFromBlazor(res, `/api/product-image-by-id/${req.params.id}`)) return;
+
     return res.status(404).send('Image not found');
   } catch (err) {
     console.error('خطأ في جلب صورة المنتج:', err);
