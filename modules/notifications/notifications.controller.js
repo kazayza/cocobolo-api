@@ -205,14 +205,27 @@ async function createSmart(req, res) {
 // ═══════════════════════════════════════════════════════════
 async function broadcast(req, res) {
   try {
-    const { title, message, sender } = req.body;
+    const { title, message, sender, targetType, target } = req.body;
 
     if (!title || !message) {
       return errorResponse(res, 'العنوان والرسالة مطلوبان', 400);
     }
 
-    // 1. جلب كل المستخدمين النشطين اللي عندهم tokens
-    const users = await notificationsQueries.getAllFcmTokens();
+    // 1. تحديد المستلمين حسب النوع:
+    //    targetType = 'all'   → كل المستخدمين النشطين
+    //    targetType = 'role'  → صلاحية محددة (target = الدور)
+    //    targetType = 'user'  → مستخدم محدد (target = اسم المستخدم)
+    let users;
+    if (targetType === 'role' && target) {
+      users = await notificationsQueries.getFcmTokensByRole(target);
+    } else if (targetType === 'user' && target) {
+      const token = await notificationsQueries.getFcmToken(target);
+      users = token
+        ? [{ Username: target, FCMToken: token }]
+        : [];
+    } else {
+      users = await notificationsQueries.getAllFcmTokens();
+    }
 
     if (users.length === 0) {
       return res.json({
@@ -252,12 +265,18 @@ async function broadcast(req, res) {
       }
     }
 
-    console.log(`📢 بث إشعار: "${title}" → نجح=${sent} فشل=${failed}`);
+    const targetLabel =
+      targetType === 'role' ? `دور: ${target}`
+      : targetType === 'user' ? `مستخدم: ${target}`
+      : 'جميع المستخدمين';
+
+    console.log(`📢 بث إشعار: "${title}" → ${targetLabel} → نجح=${sent} فشل=${failed}`);
     return res.json({
       success: true,
       sent,
       failed,
-      message: `تم إرسال الإشعار لـ ${sent} مستخدم${failed > 0 ? ` (فشل ${failed})` : ''}`,
+      targetType: targetType || 'all',
+      message: `تم إرسال الإشعار إلى ${targetLabel} — نجح ${sent}${failed > 0 ? ` / فشل ${failed}` : ''}`,
     });
   } catch (err) {
     console.error('❌ خطأ في البث:', err.message);

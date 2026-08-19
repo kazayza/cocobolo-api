@@ -151,6 +151,20 @@ async function createNotificationSmart(data, target) {
   return insertedCount;
 }
 
+// جلب FCM Tokens لدور محدد
+async function getFcmTokensByRole(role) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('role', sql.NVarChar, role)
+    .query(`
+      SELECT Username, FCMToken
+      FROM Users
+      WHERE IsActive = 1 AND FCMToken IS NOT NULL AND FCMToken != ''
+        AND LOWER(LTRIM(RTRIM(Role))) = LOWER(LTRIM(RTRIM(@role)))
+    `);
+  return result.recordset;
+}
+
 // جلب FCM Token للمستخدم
 async function getFcmToken(username) {
   const pool = await connectDB();
@@ -182,5 +196,6 @@ module.exports = {
   createNotification,
   createNotificationSmart,
   getFcmToken,
-  getAllFcmTokens
+  getAllFcmTokens,
+  getFcmTokensByRole
 };
