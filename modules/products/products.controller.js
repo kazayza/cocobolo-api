@@ -2,6 +2,29 @@ const { sql, connectDB } = require('../../core/database');
 const productsQueries = require('./products.queries');
 const notificationsQueries = require('../notifications/notifications.queries');
 const { successResponse, errorResponse, notFoundResponse } = require('../../shared/response.helper');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+
+// ===================================
+// رفع صور المنتجات (زي بلازور — ملف على القرص)
+// ===================================
+const PRODUCT_IMG_FOLDER = 'uploads/images';
+const MAX_IMG_SIZE = 8 * 1024 * 1024; // 8 ميجا
+
+const uploadProductImage = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_IMG_SIZE },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (!allowed.includes(ext)) {
+      return cb(new Error('صيغة الصورة غير مدعومة'));
+    }
+    cb(null, true);
+  }
+}).single('image');
 
 
 // جلب مجموعات المنتجات
@@ -126,22 +149,45 @@ async function update(req, res) {
   }
 }
 
-// إضافة صورة للمنتج
+// إضافة صورة للمنتج (multipart — زي بلازور)
+// ✅ الصورة بتتحفظ على القرص + مسارها في الداتابيز
 async function addImage(req, res) {
   try {
     const { id } = req.params;
-    const { imageBase64, imageNote } = req.body;
+    const imageNote = req.body.imageNote || '';
 
-    if (!imageBase64) {
-      return errorResponse(res, 'الصورة مطلوبة', 400);
+    // 1) الملف الجديد (multipart)
+    if (req.file) {
+      const ext = path.extname(req.file.originalname).toLowerCase();
+      const safeName = `${crypto.randomBytes(16).toString('hex')}${ext}`;
+      const filePath = `/${PRODUCT_IMG_FOLDER}/${safeName}`;
+
+      // نحفظ الملف على القرص
+      const localDir = path.join(process.cwd(), PRODUCT_IMG_FOLDER);
+      fs.mkdirSync(localDir, { recursive: true });
+      fs.writeFileSync(path.join(localDir, safeName), req.file.buffer);
+
+      // نسجل المسار في الداتابيز
+      await productsQueries.addProductImageByPath(id, filePath, imageNote);
+
+      return res.json({
+        success: true,
+        message: 'تم إضافة الصورة بنجاح',
+        imagePath: filePath
+      });
     }
 
-    await productsQueries.addProductImage(id, imageBase64, imageNote);
+    // 2) التوافق القديم (base64) — للموبايل القديم
+    const { imageBase64 } = req.body;
+    if (imageBase64) {
+      await productsQueries.addProductImage(id, imageBase64, imageNote);
+      return res.json({
+        success: true,
+        message: 'تم إضافة الصورة بنجاح (base64)'
+      });
+    }
 
-    return res.json({
-      success: true,
-      message: 'تم إضافة الصورة بنجاح'
-    });
+    return errorResponse(res, 'الصورة مطلوبة', 400);
   } catch (err) {
     console.error('خطأ في إضافة الصورة:', err);
     return errorResponse(res, 'فشل إضافة الصورة', 500, err.message);
@@ -234,6 +280,7 @@ module.exports = {
   getById,
   create,
   update,
+  uploadProductImage,
   addImage,
   deleteImage,
   saveComponents,

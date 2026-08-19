@@ -221,6 +221,20 @@ async function addProductImage(productId, imageBase64, imageNote) {
   return true;
 }
 
+// إضافة صورة بالمسار (زي بلازور — ملف على القرص + ImagePath)
+async function addProductImageByPath(productId, imagePath, imageNote) {
+  const pool = await connectDB();
+  await pool.request()
+    .input('productId', sql.Int, productId)
+    .input('imagePath', sql.NVarChar(500), imagePath)
+    .input('imageNote', sql.NVarChar(255), imageNote || '')
+    .query(`
+      INSERT INTO ProductImages (ProductID, ImageProduct, ImagePath, ImageNote, CreatedAt)
+      VALUES (@productId, NULL, @imagePath, @imageNote, GETDATE())
+    `);
+  return true;
+}
+
 // حذف صورة
 async function deleteProductImage(imageId) {
   const pool = await connectDB();
@@ -293,6 +307,7 @@ module.exports = {
   createProduct,
   updateProduct,
   addProductImage,
+  addProductImageByPath,
   deleteProductImage,
   saveProductComponents,
   getProductStats,

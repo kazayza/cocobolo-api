@@ -35,8 +35,8 @@ router.post('/', productsController.create);
 router.put('/:id', productsController.update);
 
 // إضافة صورة للمنتج
-// POST /api/products/:id/images
-router.post('/:id/images', productsController.addImage);
+// POST /api/products/:id/images  (multipart — زي بلازور)
+router.post('/:id/images', productsController.uploadProductImage, productsController.addImage);
 
 // حذف صورة
 // DELETE /api/products/images/:id
