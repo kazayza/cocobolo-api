@@ -94,7 +94,7 @@ async function create(req, res) {
   }
 }
 
-// PUT /api/leads/:id
+// PUT /api/leads/:id - تم إلغاء طلب المدير من الليدز - رفض مباشر مسموح للجميع
 async function update(req, res) {
   try {
     const body = {
@@ -105,15 +105,6 @@ async function update(req, res) {
       feedback: req.body.feedback ?? req.body.Feedback,
       rejectedReason: req.body.rejectedReason ?? req.body.RejectedReason,
     };
-
-    // Direct reject only for GeneralManager / Admin - FIXED: لا يعتبر غياب الدور كـ GM
-    const actorRole = (req.body.actorRole || req.headers['x-user-role'] || '').toString();
-    const roleNorm = actorRole.toLowerCase().replace(/\s+/g, '').replace(/_/g, '');
-    const isGm = roleNorm === 'generalmanager' || roleNorm === 'admin' || roleNorm === 'gm' || roleNorm === 'generalmanager' || roleNorm === 'general';
-    // أي محاولة رفض مباشرة بدون GM → بلوك، يجب استخدام طلب الرفض
-    if (!isGm && body.leadStatus === 'مرفوض') {
-      return errorResponse(res, 'رفض الـ Lead يحتاج موافقة المدير العام — استخدم طلب الرفض', 403);
-    }
 
     // Support explicit null unassign
     if (
@@ -177,7 +168,7 @@ async function getInteractions(req, res) {
   }
 }
 
-// POST /api/leads/:id/interactions
+// POST /api/leads/:id/interactions - تم إلغاء طلب المدير من الليدز - رفض مباشر مسموح
 async function addInteraction(req, res) {
   try {
     const data = {
@@ -192,21 +183,6 @@ async function addInteraction(req, res) {
 
     if (!data.notes && !data.summary && !data.interactionType) {
       return errorResponse(res, 'محتوى التواصل مطلوب', 400);
-    }
-
-    // Block direct reject via interaction unless actor is GM/Admin (client should use reject-request) - FIXED
-    const actorRole = (req.body.actorRole || req.headers['x-user-role'] || '').toString();
-    const roleNorm = actorRole.toLowerCase().replace(/\s+/g, '').replace(/_/g, '');
-    const isGm = roleNorm === 'generalmanager' || roleNorm === 'admin' || roleNorm === 'gm' || roleNorm === 'general';
-    if (
-      !isGm &&
-      (data.newLeadStatus === 'مرفوض' || data.interactionType === 'رفض' || data.interactionType === 'مرفوض')
-    ) {
-      return errorResponse(
-        res,
-        'رفض الـ Lead يحتاج موافقة المدير العام — استخدم طلب الرفض من زر (طلب رفض)',
-        403
-      );
     }
 
     const result = await leadsQueries.addLeadInteraction(
