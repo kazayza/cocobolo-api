@@ -66,6 +66,17 @@ router.get('/pipeline-summary', opportunitiesController.getPipelineSummary);
 router.get('/kanban', opportunitiesController.getKanban);
 
 // ===================================
+// 🛑 طلبات موافقة إغلاق الفرص - مطابقة بلازور
+// ===================================
+router.get('/closure-requests/pending', opportunitiesController.getClosureRequests);
+router.get('/closure-requests', opportunitiesController.getClosureRequests);
+router.get('/:id/closure-request', opportunitiesController.getPendingClosureByOpp);
+router.post('/:id/request-closure', opportunitiesController.requestClosure);
+router.post('/closure-requests/:requestId/approve', opportunitiesController.approveClosure);
+router.post('/closure-requests/:requestId/reject', opportunitiesController.rejectClosure);
+router.post('/:id/execute-closure', opportunitiesController.executeClosure);
+
+// ===================================
 // 🎯 الفرص - CRUD
 // ===================================
 

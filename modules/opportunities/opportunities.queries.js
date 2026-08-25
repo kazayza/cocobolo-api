@@ -451,7 +451,7 @@ async function createOpportunity(data) {
 }
 
 // ===================================
-// ✏️ تحديث فرصة
+// ✏️ تحديث فرصة - نسخة احترافية كاملة
 // ===================================
 
 async function updateOpportunity(id, data) {
@@ -468,41 +468,67 @@ async function updateOpportunity(id, data) {
     location,
     notes,
     guidance,
+    summary,
     nextFollowUpDate,
+    firstContactDate,
+    lostReasonId,
+    lostNotes,
+    taskTypeId,
     updatedBy
   } = data;
 
+  // منطق مثل بلازور: لو خسارة امسح المتابعة، لو مش خسارة امسح سبب الخسارة
+  const isLost = stageId == 4 || stageId == 5;
+  const isClosed = stageId == 3 || stageId == 4 || stageId == 5;
+
   await pool.request()
     .input('id', sql.Int, id)
-    .input('employeeId', sql.Int, employeeId)
-    .input('sourceId', sql.Int, sourceId)
+    .input('employeeId', sql.Int, employeeId || null)
+    .input('sourceId', sql.Int, sourceId || null)
     .input('adTypeId', sql.Int, adTypeId || null)
     .input('categoryId', sql.Int, categoryId || null)
-    .input('stageId', sql.Int, stageId)
-    .input('statusId', sql.Int, statusId)
+    .input('stageId', sql.Int, stageId || null)
+    .input('statusId', sql.Int, statusId || null)
+    .input('taskTypeId', sql.Int, taskTypeId || null)
     .input('interestedProduct', sql.NVarChar(255), interestedProduct || null)
     .input('expectedValue', sql.Decimal(18, 2), expectedValue || 0)
     .input('location', sql.NVarChar(255), location || null)
-    .input('notes', sql.NVarChar(sql.MAX), notes || null)
+    .input('notes', sql.NVarChar(sql.MAX), notes || summary || null)
     .input('guidance', sql.NVarChar(sql.MAX), guidance || null)
-    .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate ? new Date(nextFollowUpDate) : null)
-    .input('updatedBy', sql.NVarChar(50), updatedBy)
+    .input('nextFollowUpDate', sql.DateTime, isLost ? null : (nextFollowUpDate ? new Date(nextFollowUpDate) : null))
+    .input('firstContactDate', sql.DateTime, firstContactDate ? new Date(firstContactDate) : null)
+    .input('lostReasonId', sql.Int, isLost ? (lostReasonId || null) : null)
+    .input('lostNotes', sql.NVarChar(sql.MAX), isLost ? (lostNotes || null) : null)
+    .input('updatedBy', sql.NVarChar(50), updatedBy || 'System')
     .query(`
       UPDATE SalesOpportunities SET
-        EmployeeID = @employeeId,
-        SourceID = @sourceId,
+        EmployeeID = COALESCE(@employeeId, EmployeeID),
+        SourceID = COALESCE(@sourceId, SourceID),
         AdTypeID = @adTypeId,
         CategoryID = @categoryId,
-        StageID = @stageId,
-        StatusID = @statusId,
-        InterestedProduct = @interestedProduct,
-        ExpectedValue = @expectedValue,
-        Location = @location,
-        Notes = @notes,
-        Guidance = @guidance,
+        StageID = COALESCE(@stageId, StageID),
+        StatusID = COALESCE(@statusId, StatusID),
+        InterestedProduct = COALESCE(@interestedProduct, InterestedProduct),
+        ExpectedValue = COALESCE(@expectedValue, ExpectedValue),
+        Location = COALESCE(@location, Location),
+        Notes = COALESCE(@notes, Notes),
+        Guidance = COALESCE(@guidance, Guidance),
         NextFollowUpDate = @nextFollowUpDate,
+        FirstContactDate = COALESCE(@firstContactDate, FirstContactDate),
+        LostReasonID = @lostReasonId,
+        LostNotes = @lostNotes,
         LastUpdatedBy = @updatedBy,
-        LastUpdatedAt = GETDATE()
+        LastUpdatedAt = GETDATE(),
+        ClosedAt = CASE 
+          WHEN @stageId IN (3,4,5) THEN ISNULL(ClosedAt, GETDATE())
+          WHEN @stageId NOT IN (3,4,5) THEN NULL
+          ELSE ClosedAt
+        END,
+        ClosedBy = CASE 
+          WHEN @stageId IN (3,4,5) THEN ISNULL(ClosedBy, @updatedBy)
+          WHEN @stageId NOT IN (3,4,5) THEN NULL
+          ELSE ClosedBy
+        END
       WHERE OpportunityID = @id
     `);
 
@@ -988,6 +1014,379 @@ async function searchClients(searchText) {
   return result.recordset;
 }
 
+// ═══════════════════════════════════════════════════════════
+// 🛑 طلبات موافقة إغلاق الفرص - مطابقة بلازور OpportunityService
+// ═══════════════════════════════════════════════════════════
+
+const CLOSURE_STATUSES = {
+  PENDING: 'Pending',
+  APPROVED: 'Approved',
+  REJECTED: 'Rejected',
+  EXECUTED: 'Executed',
+};
+
+async function requestClosureApproval(opportunityId, data = {}, userName = 'System') {
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
+  try {
+    const oppRes = await new sql.Request(transaction)
+      .input('id', sql.Int, opportunityId)
+      .query(`SELECT OpportunityID, PartyID, StageID FROM SalesOpportunities WHERE OpportunityID = @id AND IsActive = 1`);
+    const opp = oppRes.recordset[0];
+    if (!opp) {
+      await transaction.rollback();
+      return { success: false, message: 'الفرصة غير موجودة' };
+    }
+
+    const currentStageId = opp.StageID;
+    const requestedStageId = data.requestedStageId || data.stageId;
+    if (!requestedStageId) {
+      await transaction.rollback();
+      return { success: false, message: 'المرحلة المطلوبة مطلوبة' };
+    }
+
+    const isExit = requestedStageId == 4 || requestedStageId == 5;
+    const isWon = requestedStageId == 3;
+    if (!isExit && !isWon) {
+      await transaction.rollback();
+      return { success: false, message: 'طلبات الموافقة متاحة فقط للبيع أو خسارة' };
+    }
+
+    if (!data.lostReasonId && isExit) {
+      await transaction.rollback();
+      return { success: false, message: 'سبب الخسارة مطلوب' };
+    }
+
+    // Check existing pending
+    const existing = await new sql.Request(transaction)
+      .input('oppId', sql.Int, opportunityId)
+      .query(`SELECT TOP 1 RequestID FROM OpportunityClosureApprovalRequests WHERE OpportunityID = @oppId AND Status = N'Pending' ORDER BY RequestedAt DESC`);
+    if (existing.recordset[0]) {
+      await transaction.rollback();
+      return { success: false, message: 'يوجد طلب موافقة معلق بالفعل لهذه الفرصة', requestId: existing.recordset[0].RequestID };
+    }
+
+    const reqResult = await new sql.Request(transaction)
+      .input('oppId', sql.Int, opportunityId)
+      .input('partyId', sql.Int, opp.PartyID)
+      .input('currentStageId', sql.Int, currentStageId)
+      .input('requestedStageId', sql.Int, requestedStageId)
+      .input('lostReasonId', sql.Int, data.lostReasonId || null)
+      .input('reasonNotes', sql.NVarChar(sql.MAX), data.requestReasonNotes || data.lostNotes || data.reason || '')
+      .input('requestSource', sql.NVarChar(100), data.requestSource || 'Flutter')
+      .input('requestedBy', sql.NVarChar(100), userName)
+      .query(`
+        INSERT INTO OpportunityClosureApprovalRequests (
+          OpportunityID, PartyID, CurrentStageID, RequestedStageID,
+          LostReasonID, RequestReasonNotes, RequestSource,
+          Status, RequestedBy, RequestedAt
+        )
+        OUTPUT INSERTED.RequestID
+        VALUES (
+          @oppId, @partyId, @currentStageId, @requestedStageId,
+          @lostReasonId, @reasonNotes, @requestSource,
+          N'Pending', @requestedBy, GETDATE()
+        )
+      `);
+
+    const requestId = reqResult.recordset[0].RequestID;
+
+    // Add interaction log
+    await new sql.Request(transaction)
+      .input('oppId', sql.Int, opportunityId)
+      .input('partyId', sql.Int, opp.PartyID)
+      .input('summary', sql.NVarChar(1000), `تم إرسال طلب موافقة لتحويل الفرصة إلى ${requestedStageId == 3 ? 'تم البيع' : 'خسارة'} بواسطة ${userName}`)
+      .input('notes', sql.NVarChar(sql.MAX), data.requestReasonNotes || data.lostNotes || '')
+      .input('createdBy', sql.NVarChar(100), userName)
+      .query(`
+        INSERT INTO CustomerInteractions (
+          OpportunityID, PartyID, InteractionDate, Summary, Notes, CreatedBy, CreatedAt
+        ) VALUES (
+          @oppId, @partyId, GETDATE(), @summary, @notes, @createdBy, GETDATE()
+        )
+      `);
+
+    await transaction.commit();
+
+    // Notify SalesManager + GeneralManager
+    try {
+      const notificationsQueries = require('../notifications/notifications.queries');
+      const clientRes = await pool.request().input('pid', sql.Int, opp.PartyID).query(`SELECT PartyName FROM Parties WHERE PartyID = @pid`);
+      const clientName = clientRes.recordset[0]?.PartyName || `عميل #${opp.PartyID}`;
+      const stageName = requestedStageId == 3 ? 'تم البيع' : (requestedStageId == 4 ? 'خسارة' : 'غير مهتم');
+      const msg = `طلب ${userName} تحويل الفرصة #${opportunityId} الخاصة بالعميل ${clientName} إلى ${stageName}. السبب: ${data.requestReasonNotes || data.lostNotes || ''}`;
+
+      // Notify both roles - FIXED for Flutter routing
+      for (const role of ['SalesManager', 'GeneralManager', 'Admin']) {
+        try {
+          const usersRes = await pool.request().input('role', sql.NVarChar(50), role).query(`SELECT Username FROM Users WHERE Role = @role AND ISNULL(IsActive,1)=1`);
+          for (const u of usersRes.recordset) {
+            if (u.Username === userName) continue;
+            await notificationsQueries.createNotification({
+              title: '🛑 طلب موافقة إغلاق فرصة',
+              message: msg + ` [طلب #${requestId}]`,
+              recipientUser: u.Username,
+              // FIXED: استخدم SalesOpportunities عشان الفلاتر يفتح تفاصيل الفرصة مباشرة
+              relatedTable: 'SalesOpportunities',
+              relatedId: opportunityId,
+              // formName يطابق بلازور ويفتح في الفلاتر opportunityDetail
+              formName: 'crm/opportunities',
+              createdBy: userName,
+            });
+          }
+        } catch (e) {
+          console.error(`notify closure ${role}:`, e.message);
+        }
+      }
+    } catch (e) {
+      console.error('notify closure approval:', e.message);
+    }
+
+    return { success: true, message: 'تم إرسال طلب الموافقة إلى المدير العام ومدير المبيعات', requestId };
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) {}
+    throw err;
+  }
+}
+
+async function getClosureApprovalRequests(status = null) {
+  const pool = await connectDB();
+  const req = pool.request();
+  let where = ' WHERE 1=1 ';
+  if (status) {
+    req.input('status', sql.NVarChar(50), status);
+    where += ' AND r.Status = @status ';
+  }
+  const result = await req.query(`
+    SELECT
+      r.RequestID, r.OpportunityID, r.PartyID,
+      p.PartyName AS ClientName, p.Phone,
+      r.CurrentStageID, csCurr.StageNameAr AS CurrentStageName,
+      r.RequestedStageID, csReq.StageNameAr AS RequestedStageName,
+      r.LostReasonID, lr.ReasonNameAr AS LostReasonName,
+      r.RequestReasonNotes, r.RequestSource, r.Status,
+      r.RequestedBy, r.RequestedAt, r.ReviewedBy, r.ReviewedAt, r.ReviewNotes
+    FROM OpportunityClosureApprovalRequests r
+    LEFT JOIN Parties p ON r.PartyID = p.PartyID
+    LEFT JOIN SalesStages csCurr ON r.CurrentStageID = csCurr.StageID
+    LEFT JOIN SalesStages csReq ON r.RequestedStageID = csReq.StageID
+    LEFT JOIN LostReasons lr ON r.LostReasonID = lr.LostReasonID
+    ${where}
+    ORDER BY CASE WHEN r.Status = N'Pending' THEN 0 ELSE 1 END, r.RequestedAt DESC
+  `);
+  return result.recordset;
+}
+
+async function getPendingClosureByOpportunity(opportunityId) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('oppId', sql.Int, opportunityId)
+    .query(`
+      SELECT TOP 1
+        RequestID, OpportunityID, PartyID, CurrentStageID, RequestedStageID,
+        LostReasonID, RequestReasonNotes, RequestSource, Status,
+        RequestedBy, RequestedAt, ReviewedBy, ReviewedAt, ReviewNotes
+      FROM OpportunityClosureApprovalRequests
+      WHERE OpportunityID = @oppId AND Status = N'Pending'
+      ORDER BY RequestedAt DESC
+    `);
+  return result.recordset[0] || null;
+}
+
+async function approveClosureRequest(requestId, userName, reviewNotes = null) {
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
+  try {
+    const reqRes = await new sql.Request(transaction)
+      .input('id', sql.Int, requestId)
+      .query(`SELECT * FROM OpportunityClosureApprovalRequests WHERE RequestID = @id AND Status = N'Pending'`);
+    const reqRow = reqRes.recordset[0];
+    if (!reqRow) {
+      await transaction.rollback();
+      return { success: false, message: 'طلب الموافقة غير موجود أو تم التعامل معه' };
+    }
+
+    await new sql.Request(transaction)
+      .input('id', sql.Int, requestId)
+      .input('reviewedBy', sql.NVarChar(100), userName)
+      .input('reviewNotes', sql.NVarChar(sql.MAX), reviewNotes || null)
+      .query(`
+        UPDATE OpportunityClosureApprovalRequests SET
+          Status = N'Approved',
+          ReviewedBy = @reviewedBy,
+          ReviewedAt = GETDATE(),
+          ReviewNotes = @reviewNotes
+        WHERE RequestID = @id
+      `);
+
+    // Log interaction
+    await new sql.Request(transaction)
+      .input('oppId', sql.Int, reqRow.OpportunityID)
+      .input('partyId', sql.Int, reqRow.PartyID)
+      .input('summary', sql.NVarChar(1000), `تم اعتماد طلب تحويل الفرصة إلى ${reqRow.RequestedStageID == 3 ? 'تم البيع' : 'خسارة'} بواسطة ${userName}`)
+      .input('notes', sql.NVarChar(sql.MAX), reviewNotes || 'تم اعتماد الطلب وبانتظار تنفيذ الإغلاق بواسطة مقدم الطلب')
+      .input('createdBy', sql.NVarChar(100), userName)
+      .query(`
+        INSERT INTO CustomerInteractions (OpportunityID, PartyID, InteractionDate, Summary, Notes, CreatedBy, CreatedAt)
+        VALUES (@oppId, @partyId, GETDATE(), @summary, @notes, @createdBy, GETDATE())
+      `);
+
+    await transaction.commit();
+
+    // Notify requester
+    try {
+      const notificationsQueries = require('../notifications/notifications.queries');
+      const clientRes = await pool.request().input('pid', sql.Int, reqRow.PartyID).query(`SELECT PartyName FROM Parties WHERE PartyID = @pid`);
+      const clientName = clientRes.recordset[0]?.PartyName || `عميل #${reqRow.PartyID}`;
+      const stageName = reqRow.RequestedStageID == 3 ? 'تم البيع' : 'خسارة';
+      if (reqRow.RequestedBy && reqRow.RequestedBy !== userName) {
+        await notificationsQueries.createNotification({
+          title: '✅ تم اعتماد طلب إغلاق الفرصة',
+          message: `وافق ${userName} على تحويل الفرصة #${reqRow.OpportunityID} الخاصة بالعميل ${clientName} إلى ${stageName}. برجاء فتح الفرصة وتنفيذ الإغلاق.`,
+          recipientUser: reqRow.RequestedBy,
+          relatedTable: 'SalesOpportunities',
+          relatedId: reqRow.OpportunityID,
+          formName: 'crm/opportunities',
+          createdBy: userName,
+        });
+      }
+    } catch (e) {
+      console.error('notify approve:', e.message);
+    }
+
+    return { success: true, message: 'تم اعتماد الطلب وإرسال إشعار لمقدم الطلب' };
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) {}
+    throw err;
+  }
+}
+
+async function rejectClosureRequest(requestId, userName, reviewNotes = null) {
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
+  try {
+    const reqRes = await new sql.Request(transaction)
+      .input('id', sql.Int, requestId)
+      .query(`SELECT * FROM OpportunityClosureApprovalRequests WHERE RequestID = @id AND Status = N'Pending'`);
+    const reqRow = reqRes.recordset[0];
+    if (!reqRow) {
+      await transaction.rollback();
+      return { success: false, message: 'طلب الموافقة غير موجود أو تم التعامل معه' };
+    }
+
+    await new sql.Request(transaction)
+      .input('id', sql.Int, requestId)
+      .input('reviewedBy', sql.NVarChar(100), userName)
+      .input('reviewNotes', sql.NVarChar(sql.MAX), reviewNotes || null)
+      .query(`
+        UPDATE OpportunityClosureApprovalRequests SET
+          Status = N'Rejected',
+          ReviewedBy = @reviewedBy,
+          ReviewedAt = GETDATE(),
+          ReviewNotes = @reviewNotes
+        WHERE RequestID = @id
+      `);
+
+    await new sql.Request(transaction)
+      .input('oppId', sql.Int, reqRow.OpportunityID)
+      .input('partyId', sql.Int, reqRow.PartyID)
+      .input('summary', sql.NVarChar(1000), `تم رفض طلب تحويل الفرصة إلى ${reqRow.RequestedStageID == 3 ? 'تم البيع' : 'خسارة'} بواسطة ${userName}`)
+      .input('notes', sql.NVarChar(sql.MAX), reviewNotes || 'رفض طلب الإغلاق')
+      .input('createdBy', sql.NVarChar(100), userName)
+      .query(`
+        INSERT INTO CustomerInteractions (OpportunityID, PartyID, InteractionDate, Summary, Notes, CreatedBy, CreatedAt)
+        VALUES (@oppId, @partyId, GETDATE(), @summary, @notes, @createdBy, GETDATE())
+      `);
+
+    await transaction.commit();
+
+    // Notify requester
+    try {
+      const notificationsQueries = require('../notifications/notifications.queries');
+      const clientRes = await pool.request().input('pid', sql.Int, reqRow.PartyID).query(`SELECT PartyName FROM Parties WHERE PartyID = @pid`);
+      const clientName = clientRes.recordset[0]?.PartyName || `عميل #${reqRow.PartyID}`;
+      const stageName = reqRow.RequestedStageID == 3 ? 'تم البيع' : 'خسارة';
+      if (reqRow.RequestedBy && reqRow.RequestedBy !== userName) {
+        await notificationsQueries.createNotification({
+          title: '❌ تم رفض طلب إغلاق الفرصة',
+          message: `رفض ${userName} طلب تحويل الفرصة #${reqRow.OpportunityID} الخاصة بالعميل ${clientName} إلى ${stageName}. ${reviewNotes || ''}`,
+          recipientUser: reqRow.RequestedBy,
+          relatedTable: 'SalesOpportunities',
+          relatedId: reqRow.OpportunityID,
+          formName: 'crm/opportunities',
+          createdBy: userName,
+        });
+      }
+    } catch (e) {
+      console.error('notify reject:', e.message);
+    }
+
+    return { success: true, message: 'تم رفض طلب الإغلاق' };
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) {}
+    throw err;
+  }
+}
+
+async function executeApprovedClosure(opportunityId, userName) {
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
+  try {
+    const reqRes = await new sql.Request(transaction)
+      .input('oppId', sql.Int, opportunityId)
+      .query(`SELECT TOP 1 * FROM OpportunityClosureApprovalRequests WHERE OpportunityID = @oppId AND Status = N'Approved' ORDER BY ReviewedAt DESC`);
+    const approved = reqRes.recordset[0];
+    if (!approved) {
+      await transaction.rollback();
+      return { success: false, message: 'لا يوجد طلب معتمد لتنفيذ الإغلاق' };
+    }
+
+    // Update opportunity to requested stage
+    await new sql.Request(transaction)
+      .input('oppId', sql.Int, opportunityId)
+      .input('stageId', sql.Int, approved.RequestedStageID)
+      .input('lostReasonId', sql.Int, approved.LostReasonID || null)
+      .input('lostNotes', sql.NVarChar(sql.MAX), approved.RequestReasonNotes || null)
+      .input('closedBy', sql.NVarChar(100), userName)
+      .query(`
+        UPDATE SalesOpportunities SET
+          StageID = @stageId,
+          LostReasonID = @lostReasonId,
+          LostNotes = @lostNotes,
+          ClosedAt = GETDATE(),
+          ClosedBy = @closedBy,
+          LastUpdatedBy = @closedBy,
+          LastUpdatedAt = GETDATE(),
+          NextFollowUpDate = NULL
+        WHERE OpportunityID = @oppId
+      `);
+
+    // Mark request as Executed
+    await new sql.Request(transaction)
+      .input('id', sql.Int, approved.RequestID)
+      .query(`UPDATE OpportunityClosureApprovalRequests SET Status = N'Executed' WHERE RequestID = @id`);
+
+    // Close open tasks
+    await new sql.Request(transaction)
+      .input('oppId', sql.Int, opportunityId)
+      .input('closedBy', sql.NVarChar(100), userName)
+      .query(`
+        UPDATE CRM_Tasks SET Status = N'Completed', CompletedDate = GETDATE(), CompletedBy = @closedBy, CompletionNotes = N'تم الإغلاق بعد موافقة الإدارة'
+        WHERE OpportunityID = @oppId AND Status IN (N'Pending', N'In Progress')
+      `);
+
+    await transaction.commit();
+    return { success: true, message: 'تم تنفيذ الإغلاق بنجاح', stageId: approved.RequestedStageID };
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) {}
+    throw err;
+  }
+}
+
 // ===================================
 // 📤 تصدير الدوال
 // ===================================
@@ -1163,5 +1562,14 @@ module.exports = {
   // ✅ الجديد
   createOpportunityWithClient,
   searchClientByPhone,
-  searchClients
+  searchClients,
+
+  // 🛑 Closure Approval - مطابقة بلازور
+  requestClosureApproval,
+  getClosureApprovalRequests,
+  getPendingClosureByOpportunity,
+  approveClosureRequest,
+  rejectClosureRequest,
+  executeApprovedClosure,
+  CLOSURE_STATUSES,
 };

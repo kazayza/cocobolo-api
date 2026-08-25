@@ -223,11 +223,106 @@ async function create(req, res) {
 async function update(req, res) {
   try {
     const { id } = req.params;
+    const body = req.body;
+    const stageId = body.stageId ?? body.StageID ?? body.StageId ?? body.stageID;
+    const isClosure = stageId == 3 || stageId == 4 || stageId == 5;
+    if (isClosure) {
+      const actorRole = (body.actorRole || req.headers['x-user-role'] || '').toString().toLowerCase().replace(/\s+/g, '').replace(/_/g, '');
+      const canDirect = actorRole === 'admin' || actorRole === 'salesmanager' || actorRole === 'generalmanager' || actorRole === 'gm' || actorRole === 'general';
+      // لو مش مصرح و role موجود (يعني من فلاتر) → حول لطلب موافقة مع إشعار GM
+      if (!canDirect && actorRole) {
+        const result = await opportunitiesQueries.requestClosureApproval(parseInt(id, 10), {
+          requestedStageId: parseInt(stageId, 10),
+          lostReasonId: body.lostReasonId ?? body.LostReasonID,
+          requestReasonNotes: body.lostNotes || body.requestReasonNotes || body.notes || body.reason,
+          requestSource: body.requestSource || 'Flutter-Edit',
+        }, body.updatedBy || body.userName || 'MobileUser');
+        if (!result.success) return res.json(result);
+        return res.json({ success: true, requiresApproval: true, requestId: result.requestId, message: result.message });
+      }
+    }
     await opportunitiesQueries.updateOpportunity(id, req.body);
     return res.json({ success: true, message: 'تم تعديل الفرصة بنجاح' });
   } catch (err) {
     console.error('خطأ في تعديل الفرصة:', err);
     return errorResponse(res, 'فشل تعديل الفرصة', 500, err.message);
+  }
+}
+
+// ── طلبات إغلاق الفرص - مطابقة بلازور ──
+async function requestClosure(req, res) {
+  try {
+    const { id } = req.params;
+    const result = await opportunitiesQueries.requestClosureApproval(parseInt(id, 10), {
+      requestedStageId: req.body.requestedStageId || req.body.stageId || req.body.RequestedStageId,
+      lostReasonId: req.body.lostReasonId || req.body.LostReasonID,
+      requestReasonNotes: req.body.requestReasonNotes || req.body.lostNotes || req.body.reason || req.body.notes,
+      requestSource: req.body.requestSource || 'Flutter',
+    }, req.body.userName || req.body.updatedBy || 'MobileUser');
+    if (!result.success) return res.json(result);
+    return res.json({ success: true, requestId: result.requestId, message: result.message });
+  } catch (err) {
+    console.error('requestClosure:', err);
+    return errorResponse(res, 'فشل إرسال طلب الإغلاق', 500, err.message);
+  }
+}
+
+async function getClosureRequests(req, res) {
+  try {
+    const list = await opportunitiesQueries.getClosureApprovalRequests(req.query.status || null);
+    return res.json(list);
+  } catch (err) {
+    console.error('getClosureRequests:', err);
+    return errorResponse(res, 'فشل تحميل طلبات الإغلاق', 500, err.message);
+  }
+}
+
+async function getPendingClosureByOpp(req, res) {
+  try {
+    const row = await opportunitiesQueries.getPendingClosureByOpportunity(parseInt(req.params.id, 10));
+    return res.json(row || null);
+  } catch (err) {
+    console.error('getPendingClosure:', err);
+    return errorResponse(res, 'فشل جلب طلب الإغلاق', 500, err.message);
+  }
+}
+
+async function approveClosure(req, res) {
+  try {
+    const actorRole = (req.body.actorRole || req.headers['x-user-role'] || '').toString().toLowerCase().replace(/\s+/g, '').replace(/_/g, '');
+    const canApprove = actorRole === 'admin' || actorRole === 'salesmanager' || actorRole === 'generalmanager' || actorRole === 'gm';
+    if (actorRole && !canApprove) return errorResponse(res, 'الاعتماد للمدير العام أو مدير المبيعات فقط', 403);
+    const result = await opportunitiesQueries.approveClosureRequest(parseInt(req.params.requestId, 10), req.body.userName || 'GM', req.body.reviewNotes || req.body.decisionNotes);
+    if (!result.success) return res.json(result);
+    return res.json({ success: true, message: result.message });
+  } catch (err) {
+    console.error('approveClosure:', err);
+    return errorResponse(res, 'فشل اعتماد الطلب', 500, err.message);
+  }
+}
+
+async function rejectClosure(req, res) {
+  try {
+    const actorRole = (req.body.actorRole || req.headers['x-user-role'] || '').toString().toLowerCase().replace(/\s+/g, '').replace(/_/g, '');
+    const canApprove = actorRole === 'admin' || actorRole === 'salesmanager' || actorRole === 'generalmanager' || actorRole === 'gm';
+    if (actorRole && !canApprove) return errorResponse(res, 'الرفض للمدير العام أو مدير المبيعات فقط', 403);
+    const result = await opportunitiesQueries.rejectClosureRequest(parseInt(req.params.requestId, 10), req.body.userName || 'GM', req.body.reviewNotes || req.body.decisionNotes);
+    if (!result.success) return res.json(result);
+    return res.json({ success: true, message: result.message });
+  } catch (err) {
+    console.error('rejectClosure:', err);
+    return errorResponse(res, 'فشل رفض الطلب', 500, err.message);
+  }
+}
+
+async function executeClosure(req, res) {
+  try {
+    const result = await opportunitiesQueries.executeApprovedClosure(parseInt(req.params.id, 10), req.body.userName || 'MobileUser');
+    if (!result.success) return res.json(result);
+    return res.json({ success: true, message: result.message });
+  } catch (err) {
+    console.error('executeClosure:', err);
+    return errorResponse(res, 'فشل تنفيذ الإغلاق', 500, err.message);
   }
 }
 
@@ -401,5 +496,12 @@ module.exports = {
   remove,
   createWithClient,
   searchByPhone,
-  searchClients
+  searchClients,
+  // 🛑 Closure Approval - مطابقة بلازور
+  requestClosure,
+  getClosureRequests,
+  getPendingClosureByOpp,
+  approveClosure,
+  rejectClosure,
+  executeClosure,
 };

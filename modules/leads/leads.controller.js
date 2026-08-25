@@ -106,12 +106,12 @@ async function update(req, res) {
       rejectedReason: req.body.rejectedReason ?? req.body.RejectedReason,
     };
 
-    // Direct reject only for GeneralManager / Admin
+    // Direct reject only for GeneralManager / Admin - FIXED: لا يعتبر غياب الدور كـ GM
     const actorRole = (req.body.actorRole || req.headers['x-user-role'] || '').toString();
-    const roleNorm = actorRole.toLowerCase().replace(/\s+/g, '');
-    const isGm = !actorRole || roleNorm === 'generalmanager' || roleNorm === 'admin' || roleNorm === 'gm' || roleNorm === 'general_manager';
-    // If client sends role and tries reject without GM → block
-    if (actorRole && !isGm && (body.leadStatus === 'مرفوض')) {
+    const roleNorm = actorRole.toLowerCase().replace(/\s+/g, '').replace(/_/g, '');
+    const isGm = roleNorm === 'generalmanager' || roleNorm === 'admin' || roleNorm === 'gm' || roleNorm === 'generalmanager' || roleNorm === 'general';
+    // أي محاولة رفض مباشرة بدون GM → بلوك، يجب استخدام طلب الرفض
+    if (!isGm && body.leadStatus === 'مرفوض') {
       return errorResponse(res, 'رفض الـ Lead يحتاج موافقة المدير العام — استخدم طلب الرفض', 403);
     }
 
@@ -194,17 +194,17 @@ async function addInteraction(req, res) {
       return errorResponse(res, 'محتوى التواصل مطلوب', 400);
     }
 
-    // Block direct reject via interaction unless actor is GM/Admin (client should use reject-request)
+    // Block direct reject via interaction unless actor is GM/Admin (client should use reject-request) - FIXED
     const actorRole = (req.body.actorRole || req.headers['x-user-role'] || '').toString();
-    const roleNorm = actorRole.toLowerCase().replace(/\s+/g, '');
-    const isGm = roleNorm === 'generalmanager' || roleNorm === 'admin' || roleNorm === 'gm';
+    const roleNorm = actorRole.toLowerCase().replace(/\s+/g, '').replace(/_/g, '');
+    const isGm = roleNorm === 'generalmanager' || roleNorm === 'admin' || roleNorm === 'gm' || roleNorm === 'general';
     if (
       !isGm &&
-      (data.newLeadStatus === 'مرفوض' || data.interactionType === 'رفض')
+      (data.newLeadStatus === 'مرفوض' || data.interactionType === 'رفض' || data.interactionType === 'مرفوض')
     ) {
       return errorResponse(
         res,
-        'رفض الـ Lead يحتاج موافقة المدير العام — استخدم طلب الرفض',
+        'رفض الـ Lead يحتاج موافقة المدير العام — استخدم طلب الرفض من زر (طلب رفض)',
         403
       );
     }
@@ -268,15 +268,16 @@ async function leadPendingReject(req, res) {
 async function decideReject(req, res) {
   try {
     const actorRole = (req.body.actorRole || req.headers['x-user-role'] || '').toString();
-    const roleNorm = actorRole.toLowerCase().replace(/\s+/g, '');
+    const roleNorm = actorRole.toLowerCase().replace(/\s+/g, '').replace(/_/g, '');
     const isGm =
       roleNorm === 'generalmanager' ||
       roleNorm === 'admin' ||
       roleNorm === 'gm' ||
-      roleNorm === 'general_manager';
+      roleNorm === 'generalmanager' ||
+      roleNorm === 'general';
 
-    // Soft gate (full auth later). Allow if role says GM/Admin.
-    if (actorRole && !isGm) {
+    // Strict gate: فقط GM/Admin يمكنه البت في طلبات الرفض
+    if (!isGm) {
       return errorResponse(res, 'هذه العملية للمدير العام فقط', 403);
     }
 

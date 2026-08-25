@@ -238,77 +238,58 @@ async function getFollowUps(filters = {}) {
   }
 
   // ═══════════════════════════════════════════════════════
-  // C) Opportunity NextFollowUp (CRM dashboard style)
-  //    included in all/client/opportunity — skip if only lead/task
+  // C) Opportunity NextFollowUp — REMOVED to match Blazor TaskService
+  // السبب: كان يسبب تكرار العميل مرتين في نفس التاريخ (مرة Task ومرة Opportunity)
+  // البلازور المرجع الأساسي لا يدرج NextFollowUpDate كـ item منفصل في GetTasksAsync
+  // فقط: LeadInteractions + CRM_Tasks (TaskScope != General, != Lead)
+  // لو احتجنا مستقبلاً، يمكن إرجاعه مع شرط NOT EXISTS task لنفس الفرصة بنفس التاريخ
   // ═══════════════════════════════════════════════════════
-  if (
-    source === 'all' ||
-    source === 'client' ||
-    source === 'opportunity' ||
-    source === 'crm'
-  ) {
-    const req = pool.request();
-    let where = `
-      WHERE o.IsActive = 1
-        AND o.NextFollowUpDate IS NOT NULL
-        AND o.StageID NOT IN (3, 4, 5)
-        AND ${scopeSql('o.NextFollowUpDate', scope)}
-        -- avoid double-count if open task already covers same opp today (soft: still show opp-level)
-    `;
-    if (employeeId) {
-      req.input('empOpp', sql.Int, employeeId);
-      where += ` AND o.EmployeeID = @empOpp`;
-    }
-    if (search) {
-      req.input('qOpp', sql.NVarChar(120), `%${search}%`);
-      where += ` AND (
-        p.PartyName LIKE @qOpp OR p.Phone LIKE @qOpp
-        OR o.InterestedProduct LIKE @qOpp OR o.Notes LIKE @qOpp
-      )`;
-    }
-    try {
-      const r = await req.query(`
-        SELECT TOP (${limit})
-          N'opportunity' AS ItemType,
-          CAST(0 AS bit) AS IsLeadTask,
-          o.OpportunityID AS ItemId,
-          o.OpportunityID AS RelatedId,
-          N'SalesOpportunities' AS RelatedTable,
-          N'crm/opportunities' AS FormName,
-          p.PartyName AS ClientName,
-          p.Phone AS Phone,
-          NULL AS City,
-          CONCAT(N'متابعة فرصة', CASE WHEN o.InterestedProduct IS NULL THEN N'' ELSE N': ' + o.InterestedProduct END) AS Title,
-          o.Notes AS Notes,
-          N'متابعة فرصة' AS SubType,
-          ISNULL(ss.StageNameAr, ss.StageName) AS StatusLabel,
-          N'Normal' AS Priority,
-          o.NextFollowUpDate AS FollowUpDate,
-          o.EmployeeID AS EmployeeId,
-          e.FullName AS EmployeeName,
-          NULL AS BestTimeToReach,
-          NULL AS CampaignName,
-          NULL AS Platform,
-          o.InterestedProduct AS Extra,
-          o.CreatedAt AS CreatedAt
-        FROM SalesOpportunities o
-        LEFT JOIN Parties p ON o.PartyID = p.PartyID
-        LEFT JOIN Employees e ON o.EmployeeID = e.EmployeeID
-        LEFT JOIN SalesStages ss ON o.StageID = ss.StageID
-        ${where}
-        ORDER BY o.NextFollowUpDate ASC
-      `);
-      parts.push(...(r.recordset || []));
-    } catch (e) {
-      console.error('followups/opportunities:', e.message);
-    }
-  }
 
-  // Map + sort (overdue first by severity, then date)
+  // Map + sort + DEDUP (منع تكرار نفس العميل في نفس اليوم)
+  // السبب الثاني للتكرار: نفس Lead أو نفس Opportunity له أكثر من متابعة بنفس التاريخ
   let items = parts.map(mapRow);
 
-  // If source=client: tasks + opportunities only (already filtered by query set)
-  // If source=lead: leads only
+  // ── DEDUP FIX: نفس العميل ظاهر مرتين في نفس التاريخ ──
+  // المفتاح: RelatedId + تاريخ اليوم فقط (بدون وقت) + نوع المصدر
+  // الأولوية: task > lead > opportunity
+  const seen = new Map();
+  const deduped = [];
+  for (const it of items) {
+    if (!it.followUpDate || !it.relatedId) {
+      deduped.push(it);
+      continue;
+    }
+    const d = new Date(it.followUpDate);
+    const dateKey = isNaN(d.getTime()) ? String(it.followUpDate) : d.toISOString().split('T')[0];
+    const key = `${it.relatedId}-${dateKey}`;
+    if (!seen.has(key)) {
+      seen.set(key, it);
+      deduped.push(it);
+    } else {
+      const existing = seen.get(key);
+      // لو الموجود opportunity والجديد task → استبدل (Task أهم)
+      if (existing.itemType === 'opportunity' && it.itemType === 'task') {
+        const idx = deduped.indexOf(existing);
+        if (idx !== -1) deduped[idx] = it;
+        seen.set(key, it);
+      } else if (existing.itemType === 'opportunity' && it.itemType === 'lead') {
+        const idx = deduped.indexOf(existing);
+        if (idx !== -1) deduped[idx] = it;
+        seen.set(key, it);
+      }
+      // لو نفس النوع و نفس التاريخ، نحتفظ بالأحدث CreatedAt
+      else if (existing.itemType === it.itemType) {
+        const existingCreated = existing.createdAt ? new Date(existing.createdAt).getTime() : 0;
+        const newCreated = it.createdAt ? new Date(it.createdAt).getTime() : 0;
+        if (newCreated > existingCreated) {
+          const idx = deduped.indexOf(existing);
+          if (idx !== -1) deduped[idx] = it;
+          seen.set(key, it);
+        }
+      }
+    }
+  }
+  items = deduped;
 
   items.sort((a, b) => {
     const order = { overdue: 0, today: 1, tomorrow: 2, upcoming: 3 };
