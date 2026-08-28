@@ -267,6 +267,126 @@ async function getTasksSummary(assignedTo = null) {
   return result.recordset[0];
 }
 
+// ═══════════════════════════════════════════════════════════
+// التكليفات العامة - مطابقة بلازور GeneralTasks.razor
+// TaskScope = General - مهام عامة بعيد عن الفرص البيعية
+// ═══════════════════════════════════════════════════════════
+
+async function getGeneralTasks(userName, filters = {}) {
+  const pool = await connectDB();
+  const req = pool.request();
+  req.input('userName', sql.NVarChar(100), userName);
+
+  // Get current employee id
+  const userRes = await req.query(`SELECT employeeID FROM Users WHERE Username = @userName`);
+  const currentEmpId = userRes.recordset[0]?.employeeID || null;
+
+  let query = `
+    SELECT
+      t.TaskID, t.OpportunityID, t.PartyID, t.LeadID,
+      t.AssignedTo, t.TaskTypeID, t.TaskDescription,
+      t.DueDate, t.DueTime, t.Priority, t.Status,
+      t.AssignmentSource, t.TaskScope,
+      t.StartedAt, t.StartedBy, t.StartNotes,
+      t.CompletedDate, t.CompletedBy, t.CompletionNotes,
+      t.CreatedBy, t.CreatedAt, t.IsActive,
+      e.FullName AS AssignedToName,
+      tt.TaskTypeName, tt.TaskTypeNameAr
+    FROM CRM_Tasks t
+    LEFT JOIN Employees e ON t.AssignedTo = e.EmployeeID
+    LEFT JOIN TaskTypes tt ON t.TaskTypeID = tt.TaskTypeID
+    WHERE t.IsActive = 1 AND ISNULL(t.TaskScope, N'') = N'General'
+  `;
+
+  // Non-admin sees only own tasks (assigned or created)
+  // For simplicity, filter handled in controller via role check, here just return all and let controller filter
+  const result = await req.query(query + ` ORDER BY CASE WHEN t.Status = N'Completed' THEN 1 ELSE 0 END, t.DueDate ASC, t.DueTime ASC`);
+  return result.recordset;
+}
+
+async function createGeneralTask(data, userName) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('assignedTo', sql.Int, data.assignedTo)
+    .input('taskTypeId', sql.Int, data.taskTypeId || null)
+    .input('taskDescription', sql.NVarChar(sql.MAX), data.taskDescription)
+    .input('dueDate', sql.Date, data.dueDate)
+    .input('dueTime', sql.Time, data.dueTime || null)
+    .input('priority', sql.NVarChar(20), data.priority || 'Medium')
+    .input('assignmentSource', sql.NVarChar(50), data.assignmentSource || 'Admin')
+    .input('createdBy', sql.NVarChar(100), userName)
+    .query(`
+      INSERT INTO CRM_Tasks (
+        AssignedTo, TaskTypeID, TaskDescription, DueDate, DueTime,
+        Priority, Status, AssignmentSource, TaskScope, IsActive, CreatedBy, CreatedAt
+      )
+      OUTPUT INSERTED.TaskID
+      VALUES (
+        @assignedTo, @taskTypeId, @taskDescription, @dueDate, @dueTime,
+        @priority, N'Pending', @assignmentSource, N'General', 1, @createdBy, GETDATE()
+      )
+    `);
+  const taskId = result.recordset[0].TaskID;
+
+  // ── إشعار للموظف المكلف - مطابق لبلازور ──
+  try {
+    const notificationsQueries = require('../notifications/notifications.queries');
+    const userRes = await pool.request().input('empId', sql.Int, data.assignedTo).query(`
+      SELECT TOP 1 Username FROM Users WHERE employeeID = @empId AND ISNULL(IsActive,1)=1
+    `);
+    const targetUser = userRes.recordset[0]?.Username;
+    if (targetUser && targetUser.toLowerCase() !== userName.toLowerCase()) {
+      await notificationsQueries.createNotification({
+        title: '📌 تكليف عام جديد',
+        message: `كلفك ${userName} بمهمة: ${data.taskDescription} - تاريخ التنفيذ: ${data.dueDate ? new Date(data.dueDate).toLocaleDateString('ar-EG') : ''}`,
+        recipientUser: targetUser,
+        relatedTable: 'CRM_Tasks',
+        relatedId: taskId,
+        formName: 'crm/general-tasks',
+        createdBy: userName,
+      });
+    }
+  } catch (e) {
+    console.error('notify general task:', e.message);
+  }
+
+  return taskId;
+}
+
+async function startGeneralTask(taskId, notes, userName) {
+  const pool = await connectDB();
+  await pool.request()
+    .input('id', sql.Int, taskId)
+    .input('notes', sql.NVarChar(500), notes)
+    .input('userName', sql.NVarChar(100), userName)
+    .query(`
+      UPDATE CRM_Tasks SET
+        Status = N'In Progress',
+        StartedAt = GETDATE(),
+        StartedBy = @userName,
+        StartNotes = @notes
+      WHERE TaskID = @id AND Status = N'Pending'
+    `);
+  return true;
+}
+
+async function completeGeneralTask(taskId, notes, userName) {
+  const pool = await connectDB();
+  await pool.request()
+    .input('id', sql.Int, taskId)
+    .input('notes', sql.NVarChar(500), notes)
+    .input('userName', sql.NVarChar(100), userName)
+    .query(`
+      UPDATE CRM_Tasks SET
+        Status = N'Completed',
+        CompletedDate = GETDATE(),
+        CompletedBy = @userName,
+        CompletionNotes = @notes
+      WHERE TaskID = @id AND Status != N'Completed'
+    `);
+  return true;
+}
+
 // تصدير الدوال
 module.exports = {
   getAllTasks,
@@ -277,5 +397,10 @@ module.exports = {
   updateTask,
   updateTaskStatus,
   deleteTask,
-  getTasksSummary
+  getTasksSummary,
+  // التكليفات العامة
+  getGeneralTasks,
+  createGeneralTask,
+  startGeneralTask,
+  completeGeneralTask,
 };

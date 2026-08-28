@@ -43,4 +43,11 @@ router.put('/:id/status', tasksController.updateStatus);
 router.delete('/:id', tasksController.remove);
 
 // تصدير الراوتر
+
+// ── التكليفات العامة - مطابقة بلازور GeneralTasks ──
+router.get('/general', tasksController.getGeneral);
+router.post('/general', tasksController.createGeneral);
+router.post('/:id/start', tasksController.startTask);
+router.post('/:id/complete', tasksController.completeTask);
+
 module.exports = router;

@@ -147,6 +147,70 @@ async function remove(req, res) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════
+// التكليفات العامة - مطابقة بلازور GeneralTasks
+// ═══════════════════════════════════════════════════════════
+
+async function getGeneral(req, res) {
+  try {
+    const userName = req.query.userName || req.headers['x-username'] || req.body?.userName || 'System';
+    const tasks = await tasksQueries.getGeneralTasks(userName, req.query);
+    return res.json(tasks);
+  } catch (err) {
+    console.error('getGeneral:', err);
+    return errorResponse(res, 'فشل تحميل التكليفات العامة', 500, err.message);
+  }
+}
+
+async function createGeneral(req, res) {
+  try {
+    const { assignedTo, taskDescription, dueDate } = req.body;
+    if (!assignedTo || !taskDescription || !dueDate) {
+      return errorResponse(res, 'الموظف ووصف المهمة وتاريخ التنفيذ مطلوبين', 400);
+    }
+    const userName = req.body.userName || req.headers['x-username'] || 'System';
+    const taskId = await tasksQueries.createGeneralTask({
+      assignedTo: req.body.assignedTo,
+      taskTypeId: req.body.taskTypeId,
+      taskDescription: req.body.taskDescription,
+      dueDate: req.body.dueDate,
+      dueTime: req.body.dueTime,
+      priority: req.body.priority,
+      assignmentSource: req.body.assignmentSource || req.body.actorRole || 'Admin',
+    }, userName);
+    return res.json({ success: true, taskId, message: 'تم إرسال التكليف بنجاح' });
+  } catch (err) {
+    console.error('createGeneral:', err);
+    return errorResponse(res, 'فشل إنشاء التكليف العام', 500, err.message);
+  }
+}
+
+async function startTask(req, res) {
+  try {
+    const { id } = req.params;
+    const { notes, userName } = req.body;
+    if (!notes) return errorResponse(res, 'اكتب ماذا ستبدأ', 400);
+    await tasksQueries.startGeneralTask(parseInt(id, 10), notes, userName || 'System');
+    return res.json({ success: true, message: 'تم بدء التنفيذ' });
+  } catch (err) {
+    console.error('startTask:', err);
+    return errorResponse(res, 'فشل بدء التنفيذ', 500, err.message);
+  }
+}
+
+async function completeTask(req, res) {
+  try {
+    const { id } = req.params;
+    const { notes, userName } = req.body;
+    if (!notes) return errorResponse(res, 'اكتب ما تم تنفيذه', 400);
+    await tasksQueries.completeGeneralTask(parseInt(id, 10), notes, userName || 'System');
+    return res.json({ success: true, message: 'تم إتمام التنفيذ' });
+  } catch (err) {
+    console.error('completeTask:', err);
+    return errorResponse(res, 'فشل إتمام التنفيذ', 500, err.message);
+  }
+}
+
 // تصدير الدوال
 module.exports = {
   getAll,
@@ -157,5 +221,9 @@ module.exports = {
   create,
   update,
   updateStatus,
-  remove
+  remove,
+  getGeneral,
+  createGeneral,
+  startTask,
+  completeTask,
 };
