@@ -8,8 +8,8 @@ async function getProductGroups() {
   return result.recordset;
 }
 
-// جلب كل المنتجات مع الفلترة (بحث + مجموعة + حالة + ملكية + مسعرة/غير مسعرة)
-async function getAllProducts(search = '', groupId = null, statusId = null, ownership = 'all', priced = 'all') {
+// جلب كل المنتجات مع الفلترة (بحث + مجموعة + حالة + ملكية + مسعرة/غير مسعرة + فرع + مخزن + رصيد)
+async function getAllProducts(search = '', groupId = null, statusId = null, ownership = 'all', priced = 'all', branchId = null, warehouseId = null) {
   const pool = await connectDB();
 
     let query = `
@@ -39,7 +39,23 @@ async function getAllProducts(search = '', groupId = null, statusId = null, owne
         FROM ProductImages
         WHERE ProductID = p.ProductID
         ORDER BY ProductImagesID
-      ) AS MainImageId
+      ) AS MainImageId,
+      -- ✅ رصيد المخزون الإجمالي أو حسب الفرع/المخزن (مطابق بلازور ProductService.GetProductsAsync)
+      ISNULL((
+        SELECT SUM(sl.Quantity)
+        FROM StockLevels sl
+        INNER JOIN Warehouses w ON sl.WarehouseID = w.WarehouseID
+        WHERE sl.ProductID = p.ProductID
+          ${warehouseId ? `AND sl.WarehouseID = @warehouseId` : ''}
+          ${!warehouseId && branchId ? `AND w.BranchId = @branchId` : ''}
+      ), 0) AS StockQuantity,
+      p.CreatedAt,
+      -- ✅ تاريخ أول تسعير من المصنع
+      (
+        SELECT MIN(ph.ChangedAt)
+        FROM PriceHistories ph
+        WHERE ph.ProductID = p.ProductID
+      ) AS FactoryPricedAt
     FROM Products p
     INNER JOIN ProductGroups pg ON p.ProductGroupID = pg.ProductGroupID
     LEFT JOIN Parties pa ON p.Customer = pa.PartyID
@@ -51,7 +67,7 @@ async function getAllProducts(search = '', groupId = null, statusId = null, owne
 
   // فلتر البحث
   if (search && search.trim() !== '') {
-    query += ` AND (p.ProductName LIKE @search OR pa.PartyName LIKE @search)`;
+    query += ` AND (p.ProductName LIKE @search OR pa.PartyName LIKE @search OR CAST(p.ProductID AS NVARCHAR) LIKE @search)`;
     request.input('search', sql.NVarChar, `%${search}%`);
   }
 
@@ -81,12 +97,27 @@ async function getAllProducts(search = '', groupId = null, statusId = null, owne
     query += ` AND p.SuggestedSalePrice IS NULL AND p.SuggestedSalePriceCClass IS NULL AND p.SuggestedSalePriceElite IS NULL`;
   }
 
+  // ✅ فلتر الفرع والمخزن - مطابق بلازور
+  if (warehouseId && warehouseId !== '' && warehouseId !== '0') {
+    request.input('warehouseId', sql.Int, parseInt(warehouseId, 10));
+  }
+  if (branchId && branchId !== '' && branchId !== '0') {
+    request.input('branchId', sql.Int, parseInt(branchId, 10));
+  }
+
   query += ` ORDER BY p.ProductID DESC`;
 
   const result = await request.query(query);
 
+  let recordset = result.recordset;
+
+  // ✅ لو فيه فلتر فرع أو مخزن → اعرض فقط المنتجات اللي لها رصيد >0 (مطابق بلازور)
+  if ((branchId && branchId !== '' && branchId !== '0') || (warehouseId && warehouseId !== '' && warehouseId !== '0')) {
+    recordset = recordset.filter(p => (p.StockQuantity || 0) > 0);
+  }
+
   // ✅ نرجّع الـ recordset زي ما هو، من غير ما نحول أي صور
-  return result.recordset;
+  return recordset;
 }
 
 // جلب منتج بالـ ID

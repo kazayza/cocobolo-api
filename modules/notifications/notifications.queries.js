@@ -49,17 +49,58 @@ async function markAllAsRead(username) {
   return true;
 }
 
-// تحديد إشعار واحد كمقروء
-async function markAsRead(notificationId) {
+// تحديد إشعار واحد كمقروء - لا يمكن لمستخدم تعليم إشعار مستخدم آخر
+async function markAsRead(notificationId, username) {
   const pool = await connectDB();
-  await pool.request()
+  const result = await pool.request()
     .input('id', sql.Int, notificationId)
+    .input('username', sql.NVarChar(100), username)
     .query(`
-      UPDATE Notifications 
-      SET IsRead = 1, ReadAt = GETDATE() 
-      WHERE NotificationID = @id
+      UPDATE Notifications
+      SET IsRead = 1, ReadAt = GETDATE()
+      WHERE NotificationID = @id AND RecipientUser = @username;
+      SELECT @@ROWCOUNT AS Affected;
     `);
-  return true;
+  return (result.recordset[0]?.Affected || 0) > 0;
+}
+
+function canonicalPushData(data, notificationId = null) {
+  return {
+    routeVersion: '2',
+    notificationId: notificationId == null ? '' : String(notificationId),
+    formName: String(data.formName || ''),
+    relatedTable: String(data.relatedTable || ''),
+    relatedId: data.relatedId == null ? '' : String(data.relatedId),
+    entityType: String(data.relatedTable || ''),
+  };
+}
+
+async function pushToRecipient(pool, data, notificationId = null) {
+  if (!isFirebaseReady()) return { success: false, reason: 'firebase-disabled' };
+
+  const tokenResult = await pool.request()
+    .input('username', sql.NVarChar(100), data.recipientUser)
+    .query(`
+      SELECT FCMToken
+      FROM Users
+      WHERE Username = @username AND IsActive = 1 AND FCMToken IS NOT NULL AND FCMToken != ''
+    `);
+
+  const fcmToken = tokenResult.recordset[0]?.FCMToken;
+  if (!fcmToken) return { success: false, reason: 'missing-token' };
+
+  return sendPushNotification(
+    fcmToken,
+    data.title,
+    data.message,
+    canonicalPushData(data, notificationId),
+  );
+}
+
+// للاستخدام عند وصول إشعار محفوظ أصلًا من Blazor: Push فقط بلا INSERT مكرر
+async function sendPushOnly(data) {
+  const pool = await connectDB();
+  return pushToRecipient(pool, data, data.notificationId || null);
 }
 
 // إنشاء إشعار جديد (مع إرسال Push Notification لحظي عبر Firebase)
@@ -91,28 +132,16 @@ async function createNotification(data) {
 
   const notificationId = result.recordset[0].NotificationID;
 
-  // 2. إرسال Push Notification فوراً (حتى لو التطبيق مقفول)
+  // 2. إرسال Push واحد فقط ببيانات Routing كاملة
   try {
-    if (isFirebaseReady()) {
-      const tokenResult = await pool.request()
-        .input('username', sql.NVarChar(100), data.recipientUser)
-        .query('SELECT FCMToken FROM Users WHERE Username = @username AND FCMToken IS NOT NULL');
-
-      const fcmToken = tokenResult.recordset[0]?.FCMToken;
-
-      if (fcmToken) {
-        await sendPushNotification(fcmToken, data.title, data.message, {
-          formName: data.formName || '',
-          relatedId: String(data.relatedId || ''),
-          notificationId: String(notificationId)
-        });
-        console.log(`🔥 [FCM Push] تم إرسال إشعار لحظي بنجاح إلى المستخدم: ${data.recipientUser}`);
-      } else {
-        console.log(`⚠️ [FCM Push] المستخدم ${data.recipientUser} ليس لديه FCM Token مسجل.`);
-      }
+    const pushResult = await pushToRecipient(pool, data, notificationId);
+    if (pushResult?.success) {
+      console.log(`🔥 [FCM Push] تم إرسال إشعار إلى المستخدم: ${data.recipientUser}`);
+    } else if (pushResult?.reason === 'missing-token') {
+      console.log(`⚠️ [FCM Push] المستخدم ${data.recipientUser} ليس لديه FCM Token مسجل.`);
     }
   } catch (pushErr) {
-    console.error('❌ خطأ في إرسال Push Notification اللحظي:', pushErr.message);
+    console.error('❌ خطأ في إرسال Push Notification:', pushErr.message);
   }
 
   return notificationId;
@@ -195,6 +224,8 @@ module.exports = {
   markAsRead,
   createNotification,
   createNotificationSmart,
+  sendPushOnly,
+  canonicalPushData,
   getFcmToken,
   getAllFcmTokens,
   getFcmTokensByRole

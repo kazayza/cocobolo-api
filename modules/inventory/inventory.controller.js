@@ -15,11 +15,23 @@ async function getWarehouses(req, res) {
 // جلب المخازن النشطة
 async function getActiveWarehouses(req, res) {
   try {
-    const warehouses = await inventoryQueries.getActiveWarehouses();
+    const { branchId } = req.query;
+    const warehouses = await inventoryQueries.getActiveWarehouses(branchId ? parseInt(branchId) : null);
     return res.json(warehouses);
   } catch (err) {
     console.error('خطأ في جلب المخازن:', err);
     return errorResponse(res, 'فشل تحميل المخازن', 500, err.message);
+  }
+}
+
+// جلب الفروع
+async function getBranches(req, res) {
+  try {
+    const branches = await inventoryQueries.getBranches();
+    return res.json(branches);
+  } catch (err) {
+    console.error('خطأ في جلب الفروع:', err);
+    return errorResponse(res, 'فشل تحميل الفروع', 500, err.message);
   }
 }
 
@@ -122,14 +134,51 @@ async function updateWarehouse(req, res) {
   }
 }
 
+// تحويل مخزني
+async function transferStock(req, res) {
+  try {
+    const { fromWarehouseId, toWarehouseId, productId, quantity } = req.body;
+    if (!fromWarehouseId || !toWarehouseId || !productId || !quantity) {
+      return errorResponse(res, 'بيانات التحويل غير مكتملة', 400);
+    }
+    const result = await inventoryQueries.transferStock({
+      fromWarehouseId: parseInt(fromWarehouseId),
+      toWarehouseId: parseInt(toWarehouseId),
+      productId: parseInt(productId),
+      quantity: parseInt(quantity),
+      notes: req.body.notes,
+      createdBy: req.body.createdBy || req.body.userName || 'System',
+    });
+    return res.json(result);
+  } catch (err) {
+    console.error('transferStock:', err.message);
+    return errorResponse(res, err.message || 'فشل التحويل', 500, err.message);
+  }
+}
+
+// رصيد حالي
+async function getCurrentStock(req, res) {
+  try {
+    const { productId, warehouseId } = req.query;
+    if (!productId || !warehouseId) return errorResponse(res, 'productId و warehouseId مطلوبين', 400);
+    const qty = await inventoryQueries.getCurrentStock(parseInt(productId), parseInt(warehouseId));
+    return res.json({ quantity: qty });
+  } catch (err) {
+    return errorResponse(res, 'فشل جلب الرصيد', 500, err.message);
+  }
+}
+
 // تصدير الدوال
 module.exports = {
   getWarehouses,
   getActiveWarehouses,
+  getBranches,
   getStockLevels,
   getProductStock,
+  getCurrentStock,
   getTransactions,
   createTransaction,
+  transferStock,
   createWarehouse,
   updateWarehouse
 };

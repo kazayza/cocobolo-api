@@ -1,5 +1,18 @@
 const transactionsQueries = require('./transactions.queries');
+const fullEditQueries = require('./invoice-full-edit.queries');
+const invoicePolicy = require('../../shared/authorization.policy').invoices;
 const { successResponse, errorResponse, notFoundResponse } = require('../../shared/response.helper');
+
+function sendOperationResult(res, result) {
+  if (!result?.ok) {
+    return errorResponse(res, result?.message || 'فشل تنفيذ الطلب', result?.status || 400);
+  }
+  return res.status(result.status || 200).json({
+    success: true,
+    message: result.message || 'تم التنفيذ بنجاح',
+    data: result.data ?? null,
+  });
+}
 
 // جلب كل الفواتير
 async function getAll(req, res) {
@@ -14,15 +27,36 @@ async function getAll(req, res) {
     const effStart = startDate || dateFrom;
     const effEnd = endDate || dateTo;
 
+    const invoiceType = type || 'Sale';
+    const canView = invoiceType === 'Purchase'
+      ? invoicePolicy.canViewPurchases(req.auth)
+      : invoicePolicy.canViewSales(req.auth);
+    if (!canView) return errorResponse(res, 'ليس لديك صلاحية عرض هذه الفواتير', 403);
+
+    const security = {
+      excludeProtectedAccountManagerSales:
+        !invoicePolicy.canSeeProtectedAccountManagerInvoices(req.auth),
+      includeProfit: invoiceType === 'Sale' && invoicePolicy.canViewProfit(req.auth),
+    };
+
+    const remainingFilter = hasRemaining === 'true' || hasRemaining === true
+      ? true
+      : hasRemaining === 'false' || hasRemaining === false
+        ? false
+        : null;
+
     const transactions = await transactionsQueries.getAllTransactions({
-      type, startDate: effStart, endDate: effEnd, partyId,
-      search, status, hasRemaining, overdue,
+      type: invoiceType, startDate: effStart, endDate: effEnd, partyId,
+      search, status, hasRemaining: remainingFilter, overdue,
       page: parseInt(page, 10) || 1,
       limit: parseInt(limit, 10) || 20,
+      ...security,
     });
 
     const stats = await transactionsQueries.getInvoicesStats({
-      type, startDate: effStart, endDate: effEnd, search, status, hasRemaining, overdue,
+      type: invoiceType, startDate: effStart, endDate: effEnd,
+      search, status, hasRemaining: remainingFilter, overdue,
+      ...security,
     });
 
     return res.json({
@@ -41,22 +75,18 @@ async function getAll(req, res) {
 async function getById(req, res) {
   try {
     const { id } = req.params;
-    const transaction = await transactionsQueries.getTransactionById(id);
-
-    if (!transaction) {
-      return notFoundResponse(res, 'الفاتورة غير موجودة');
-    }
-
-    // جلب التفاصيل والرسوم والمدفوعات
-    const details = await transactionsQueries.getTransactionDetails(id);
-    const charges = await transactionsQueries.getAdditionalCharges(id);
+    const model = await fullEditQueries.getEditModel(parseInt(id, 10), req.auth);
+    if (!model.ok) return sendOperationResult(res, model);
     const payments = await transactionsQueries.getPayments(id);
-
-    transaction.details = details;
-    transaction.charges = charges;
-    transaction.payments = payments;
-
-    return res.json(transaction);
+    return res.json({
+      ...model.data.header,
+      details: model.data.details,
+      charges: model.data.charges,
+      payments,
+      mirror: model.data.mirror,
+      profit: model.data.profit,
+      capabilities: model.data.capabilities,
+    });
   } catch (err) {
     console.error('خطأ في جلب الفاتورة:', err);
     return errorResponse(res, 'فشل تحميل الفاتورة', 500, err.message);
@@ -66,8 +96,22 @@ async function getById(req, res) {
 // ملخص الفواتير
 async function getSummary(req, res) {
   try {
-    const { type } = req.query;
-    const summary = await transactionsQueries.getTransactionsSummary(type);
+    const type = req.query.type || 'Sale';
+    const canView = type === 'Purchase'
+      ? invoicePolicy.canViewPurchases(req.auth)
+      : invoicePolicy.canViewSales(req.auth);
+    if (!canView) return errorResponse(res, 'ليس لديك صلاحية عرض الملخص', 403);
+    const stats = await transactionsQueries.getInvoicesStats({
+      type,
+      excludeProtectedAccountManagerSales:
+        !invoicePolicy.canSeeProtectedAccountManagerInvoices(req.auth),
+    });
+    const summary = {
+      totalCount: stats.TotalCount,
+      totalAmount: stats.TotalSales,
+      totalPaid: stats.TotalPaid,
+      totalRemaining: stats.TotalRemaining,
+    };
     return res.json(summary);
   } catch (err) {
     console.error('خطأ في جلب الملخص:', err);
@@ -78,13 +122,20 @@ async function getSummary(req, res) {
 // إنشاء فاتورة
 async function create(req, res) {
   try {
-    const { partyId, transactionType, warehouseId, createdBy } = req.body;
+    const { partyId, transactionType, warehouseId } = req.body;
 
-    if (!partyId || !transactionType || !warehouseId || !createdBy) {
+    if (!partyId || !transactionType || !warehouseId) {
       return errorResponse(res, 'البيانات غير مكتملة', 400);
     }
+    const canCreate = transactionType === 'Purchase'
+      ? invoicePolicy.canCreatePurchase(req.auth)
+      : invoicePolicy.canCreateSales(req.auth);
+    if (!canCreate) return errorResponse(res, 'ليس لديك صلاحية إنشاء هذه الفاتورة', 403);
 
-    const transactionId = await transactionsQueries.createTransaction(req.body);
+    const transactionId = await transactionsQueries.createTransaction({
+      ...req.body,
+      createdBy: req.auth.username,
+    });
 
     return res.json({
       success: true,
@@ -109,7 +160,8 @@ async function addPayment(req, res) {
 
     const paymentId = await transactionsQueries.addPayment({
       transactionId: id,
-      ...req.body
+      ...req.body,
+      createdBy: req.auth.username,
     });
 
     return res.json({
@@ -127,6 +179,8 @@ async function addPayment(req, res) {
 async function getPayments(req, res) {
   try {
     const { id } = req.params;
+    const access = await fullEditQueries.getEditModel(parseInt(id, 10), req.auth);
+    if (!access.ok) return sendOperationResult(res, access);
     const payments = await transactionsQueries.getPayments(id);
     return res.json(payments);
   } catch (err) {
@@ -147,10 +201,10 @@ async function requestEdit(req, res) {
     const id = parseInt(req.params.id, 10);
     if (!id) return errorResponse(res, 'معرّف فاتورة غير صالح', 400);
 
-    const { requestedBy, reason } = req.body || {};
-    if (!requestedBy) return errorResponse(res, 'اسم المستخدم مطلوب', 400);
+    const { reason } = req.body || {};
+    if (!String(reason || '').trim()) return errorResponse(res, 'سبب التعديل مطلوب', 400);
 
-    await transactionsQueries.requestEdit(id, requestedBy, reason);
+    await transactionsQueries.requestEdit(id, req.auth.username, reason);
     return successResponse(res, null, 'تم إرسال طلب التعديل بنجاح');
   } catch (err) {
     console.error('❌ requestEdit:', err.message);
@@ -178,8 +232,11 @@ async function approveEdit(req, res) {
     const id = parseInt(req.params.id, 10);
     if (!id) return errorResponse(res, 'معرّف فاتورة غير صالح', 400);
 
-    const { approvedBy } = req.body || {};
-    await transactionsQueries.approveEditRequest(id, approvedBy || 'Admin');
+    await transactionsQueries.approveEditRequest(
+      id,
+      req.auth.username,
+      req.body?.notes || req.body?.reviewNotes || null,
+    );
     return successResponse(res, null, 'تمت الموافقة على طلب التعديل');
   } catch (err) {
     console.error('❌ approveEdit:', err.message);
@@ -195,8 +252,8 @@ async function rejectEdit(req, res) {
     const id = parseInt(req.params.id, 10);
     if (!id) return errorResponse(res, 'معرّف فاتورة غير صالح', 400);
 
-    const { rejectedBy, reason } = req.body || {};
-    await transactionsQueries.rejectEditRequest(id, rejectedBy || 'Admin', reason);
+    const { reason } = req.body || {};
+    await transactionsQueries.rejectEditRequest(id, req.auth.username, reason);
     return successResponse(res, null, 'تم رفض طلب التعديل');
   } catch (err) {
     console.error('❌ rejectEdit:', err.message);
@@ -212,14 +269,14 @@ async function applyEdit(req, res) {
     const id = parseInt(req.params.id, 10);
     if (!id) return errorResponse(res, 'معرّف فاتورة غير صالح', 400);
 
-    const { dueDate, discountPercentage, discountAmount, editedBy } = req.body || {};
+    const { dueDate, discountPercentage, discountAmount } = req.body || {};
 
     await transactionsQueries.applyInvoiceEdit({
       transactionId: id,
       dueDate,
       discountPercentage,
       discountAmount,
-      editedBy: editedBy || 'Admin',
+      editedBy: req.auth.username,
     });
     return successResponse(res, null, 'تم تطبيق التعديل بنجاح');
   } catch (err) {
@@ -239,14 +296,14 @@ async function updateDetailPrice(req, res) {
       return errorResponse(res, 'معرّفات غير صالحة', 400);
     }
 
-    const { newUnitPrice, editedBy, changeReason } = req.body || {};
+    const { newUnitPrice, changeReason } = req.body || {};
     if (newUnitPrice === undefined || newUnitPrice === null) {
       return errorResponse(res, 'السعر الجديد مطلوب', 400);
     }
 
     const result = await transactionsQueries.updateDetailPrice(
       transactionId, detailId, newUnitPrice,
-      editedBy || 'Admin', changeReason,
+      req.auth.username, changeReason,
     );
 
     if (!result.success) return errorResponse(res, result.message, 400);
@@ -264,13 +321,110 @@ async function getFullInvoice(req, res) {
     const id = parseInt(req.params.id, 10);
     if (!id) return errorResponse(res, 'معرّف فاتورة غير صالح', 400);
 
-    const data = await transactionsQueries.getFullInvoiceData(id);
-    if (!data.header) return notFoundResponse(res, 'الفاتورة غير موجودة');
+    const editModel = await fullEditQueries.getEditModel(id, req.auth);
+    if (!editModel.ok) return sendOperationResult(res, editModel);
 
+    const payments = await transactionsQueries.getPayments(id);
+    const data = {
+      header: editModel.data.header,
+      details: editModel.data.details,
+      charges: editModel.data.charges,
+      payments,
+      mirror: editModel.data.mirror,
+      profit: editModel.data.profit,
+      capabilities: editModel.data.capabilities,
+    };
     return successResponse(res, data, 'تم جلب بيانات الفاتورة');
   } catch (err) {
     console.error('❌ getFullInvoice:', err.message);
     return errorResponse(res, 'فشل جلب بيانات الفاتورة', 500, err.message);
+  }
+}
+
+// تحديث فاتورة (مطابق بلازور UpdateInvoiceAsync) - يحدث الملاحظات والتسليم والدفع والخصم مع إعادة حساب الإجماليات
+// PUT /api/transactions/:id
+async function update(req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!id) return errorResponse(res, 'معرّف فاتورة غير صالح', 400);
+
+    const result = await transactionsQueries.updateTransaction(id, {
+      ...req.body,
+      editedBy: req.auth.username,
+    });
+    if (!result.success) return errorResponse(res, result.message, 400);
+    return successResponse(res, null, 'تم تحديث الفاتورة بنجاح - تم إعادة حساب الإجماليات');
+  } catch (err) {
+    console.error('❌ update:', err.message);
+    return errorResponse(res, 'فشل تحديث الفاتورة', 500, err.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// التعديل الكامل + السجل + الاسترجاع (Blazor 913cc57)
+// ═══════════════════════════════════════════════════════════
+async function getEditModel(req, res) {
+  try {
+    const result = await fullEditQueries.getEditModel(parseInt(req.params.id, 10), req.auth);
+    return sendOperationResult(res, result);
+  } catch (err) {
+    console.error('getEditModel:', err);
+    return errorResponse(res, 'فشل تحميل نموذج تعديل الفاتورة', 500, err.message);
+  }
+}
+
+async function fullEdit(req, res) {
+  try {
+    const result = await fullEditQueries.fullEditInvoice(
+      parseInt(req.params.id, 10),
+      req.body || {},
+      req.auth,
+    );
+    return sendOperationResult(res, result);
+  } catch (err) {
+    console.error('fullEdit invoice:', err);
+    return errorResponse(res, 'فشل حفظ التعديل الكامل', 500, err.message);
+  }
+}
+
+async function getEditHistory(req, res) {
+  try {
+    const result = await fullEditQueries.getEditHistory(
+      parseInt(req.params.id, 10),
+      req.auth,
+    );
+    return sendOperationResult(res, result);
+  } catch (err) {
+    console.error('getEditHistory:', err);
+    return errorResponse(res, 'فشل تحميل سجل التعديلات', 500, err.message);
+  }
+}
+
+async function restoreSnapshot(req, res) {
+  try {
+    const result = await fullEditQueries.restoreSnapshot(
+      parseInt(req.params.id, 10),
+      req.params.auditId,
+      req.body?.reason,
+      req.auth,
+    );
+    return sendOperationResult(res, result);
+  } catch (err) {
+    console.error('restoreSnapshot:', err);
+    return errorResponse(res, 'فشل استرجاع نسخة الفاتورة', 500, err.message);
+  }
+}
+
+async function syncMirror(req, res) {
+  try {
+    const result = await fullEditQueries.syncMirrorWithSale(
+      parseInt(req.params.mirrorId, 10),
+      req.auth,
+    );
+    return sendOperationResult(res, result);
+  } catch (err) {
+    console.error('syncMirror:', err);
+    return errorResponse(res, 'فشل مزامنة فاتورة الشراء المرآة', 500, err.message);
   }
 }
 
@@ -280,6 +434,7 @@ module.exports = {
   getById,
   getSummary,
   create,
+  update,
   addPayment,
   getPayments,
   requestEdit,
@@ -288,5 +443,10 @@ module.exports = {
   rejectEdit,
   applyEdit,
   updateDetailPrice,
-  getFullInvoice
+  getFullInvoice,
+  getEditModel,
+  fullEdit,
+  getEditHistory,
+  restoreSnapshot,
+  syncMirror,
 };

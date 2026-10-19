@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const notificationsController = require('./notifications.controller');
+const { authenticate, requirePolicy } = require('../../core/auth.middleware');
+const { notifications: notificationPolicy } = require('../../shared/authorization.policy');
 
 // ===================================
 // 🔔 Notifications Routes
@@ -8,35 +10,31 @@ const notificationsController = require('./notifications.controller');
 
 // جلب الإشعارات غير المقروءة
 // GET /api/notifications/unread?username=xxx
-router.get('/unread', notificationsController.getUnread);
+router.get('/unread', authenticate, notificationsController.getUnread);
 
-// جلب كل الإشعارات
-// GET /api/notifications?username=xxx
-router.get('/', notificationsController.getAll);
+// جلب إشعارات المستخدم الحالي فقط
+router.get('/', authenticate, notificationsController.getAll);
 
-// تحديد كل الإشعارات كمقروءة
-// PUT /api/notifications/read-all
-router.put('/read-all', notificationsController.markAllAsRead);
+// تحديد كل إشعارات المستخدم الحالي كمقروءة
+router.put('/read-all', authenticate, notificationsController.markAllAsRead);
 
-// تحديد إشعار واحد كمقروء
-// PUT /api/notifications/:id/read
-router.put('/:id/read', notificationsController.markAsRead);
+// تحديد إشعار يخص المستخدم الحالي فقط كمقروء
+router.put('/:id/read', authenticate, notificationsController.markAsRead);
 
 // إنشاء إشعار جديد
 // POST /api/notifications
 router.post('/', notificationsController.create);
 
 // إرسال إشعار ذكي
-router.post('/smart', notificationsController.createSmart);
+router.post('/smart', authenticate, requirePolicy(notificationPolicy.canBroadcast), notificationsController.createSmart);
 
-// إرسال Push Notification
-// POST /api/notifications/send-push
-router.post('/send-push', notificationsController.sendPush);
+// إرسال Push يدوي - Admin فقط؛ باقي الموديولات تستدعي notifications.queries داخلياً
+router.post('/send-push', authenticate, requirePolicy(notificationPolicy.canBroadcast), notificationsController.sendPush);
 
 // 📢 بث إشعار لجميع المستخدمين (خاص بالأدمن — من غير حفظ في الجدول)
 // POST /api/notifications/broadcast
 // Body: { title, message, sender? }
-router.post('/broadcast', notificationsController.broadcast);
+router.post('/broadcast', authenticate, requirePolicy(notificationPolicy.canBroadcast), notificationsController.broadcast);
 
 // تصدير الراوتر
 module.exports = router;

@@ -38,12 +38,12 @@ async function getGroups(req, res) {
   }
 }
 
-// جلب كل المنتجات (بحث + مجموعة + حالة + ملكية + مسعرة)
+// جلب كل المنتجات (بحث + مجموعة + حالة + ملكية + مسعرة + فرع + مخزن)
 async function getAll(req, res) {
   try {
-    const { search, groupId, statusId, ownership, priced } = req.query;
+    const { search, groupId, statusId, ownership, priced, branchId, warehouseId } = req.query;
     const products = await productsQueries.getAllProducts(
-      search, groupId, statusId, ownership || 'all', priced || 'all'
+      search, groupId, statusId, ownership || 'all', priced || 'all', branchId || null, warehouseId || null
     );
     return res.json(products);
   } catch (err) {

@@ -1,4 +1,10 @@
 const { sql, connectDB } = require('../../core/database');
+let recoveryQueries;
+try {
+  recoveryQueries = require('../recovery/recovery.queries');
+} catch (_) {
+  recoveryQueries = null;
+}
 
 // ===================================
 // 📋 Lookups (الجداول المرجعية)
@@ -532,6 +538,15 @@ async function updateOpportunity(id, data) {
       WHERE OpportunityID = @id
     `);
 
+  // 🔁 لو اتقفلت خسارة/غير مهتم → إسناد تلقائي لخدمة العملاء (مطابق بلازور RecoveryService.EnsureRecoveryAssignmentAsync)
+  try {
+    if ((stageId == 4 || stageId == 5) && recoveryQueries) {
+      await recoveryQueries.ensureRecoveryAssignment(id);
+    }
+  } catch (e) {
+    console.error('ensureRecovery after update:', e.message);
+  }
+
   return true;
 }
 
@@ -549,9 +564,22 @@ async function updateOpportunityStage(id, stageId, updatedBy) {
       UPDATE SalesOpportunities SET 
         StageID = @stageId, 
         LastUpdatedBy = @updatedBy, 
-        LastUpdatedAt = GETDATE() 
+        LastUpdatedAt = GETDATE(),
+        ClosedAt = CASE WHEN @stageId IN (3,4,5) THEN ISNULL(ClosedAt, GETDATE()) WHEN @stageId NOT IN (3,4,5) THEN NULL ELSE ClosedAt END,
+        ClosedBy = CASE WHEN @stageId IN (3,4,5) THEN ISNULL(ClosedBy, @updatedBy) WHEN @stageId NOT IN (3,4,5) THEN NULL ELSE ClosedBy END,
+        NextFollowUpDate = CASE WHEN @stageId IN (4,5) THEN NULL ELSE NextFollowUpDate END
       WHERE OpportunityID = @id
     `);
+
+  // 🔁 إسناد تلقائي لخدمة العملاء لو خسارة
+  try {
+    if ((stageId == 4 || stageId == 5) && recoveryQueries) {
+      await recoveryQueries.ensureRecoveryAssignment(id);
+    }
+  } catch (e) {
+    console.error('ensureRecovery after stage change:', e.message);
+  }
+
   return true;
 }
 
@@ -1047,10 +1075,11 @@ async function requestClosureApproval(opportunityId, data = {}, userName = 'Syst
     }
 
     const isExit = requestedStageId == 4 || requestedStageId == 5;
-    const isWon = requestedStageId == 3;
-    if (!isExit && !isWon) {
+    // ✅ مطابق بلازور: طلبات الموافقة فقط لخسارة/غير مهتم (4,5) - تم البيع (3) مباشر بدون موافقة
+    // المرجع: CrmStages.IsExitStage = 4,5 فقط + OpportunityService.CreateClosureApprovalRequestInternalAsync
+    if (!isExit) {
       await transaction.rollback();
-      return { success: false, message: 'طلبات الموافقة متاحة فقط للبيع أو خسارة' };
+      return { success: false, message: 'طلبات الموافقة متاحة فقط لخسارة أو غير مهتم (4,5). تم البيع (3) يمكن إغلاقه مباشر بدون موافقة.' };
     }
 
     if (!data.lostReasonId && isExit) {
@@ -1380,6 +1409,16 @@ async function executeApprovedClosure(opportunityId, userName) {
       `);
 
     await transaction.commit();
+
+    // 🔁 بعد تنفيذ الإغلاق لو خسارة → إسناد لخدمة العملاء
+    try {
+      if ((approved.RequestedStageID == 4 || approved.RequestedStageID == 5) && recoveryQueries) {
+        await recoveryQueries.ensureRecoveryAssignment(opportunityId);
+      }
+    } catch (e) {
+      console.error('ensureRecovery after executeClosure:', e.message);
+    }
+
     return { success: true, message: 'تم تنفيذ الإغلاق بنجاح', stageId: approved.RequestedStageID };
   } catch (err) {
     try { await transaction.rollback(); } catch (_) {}

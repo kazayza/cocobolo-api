@@ -48,18 +48,25 @@ async function sendPushNotification(token, title, message, data = {}) {
       return { success: false, error: 'Firebase غير مفعل' };
     }
 
+    // FCM يشترط أن تكون كل data values نصوصاً.
+    const normalizedData = {};
+    for (const [key, value] of Object.entries(data || {})) {
+      normalizedData[key] = value == null ? '' : String(value);
+    }
+
     const payload = {
       token: token,
       notification: {
         title: title,
         body: message
       },
-      data: data,
+      data: normalizedData,
       android: {
         priority: 'high',
         notification: {
           sound: 'default',
-          channelId: 'high_importance_channel'
+          channelId: 'high_importance_channel',
+          clickAction: 'FLUTTER_NOTIFICATION_CLICK'
         }
       },
       apns: {

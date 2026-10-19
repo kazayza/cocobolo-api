@@ -5,7 +5,7 @@ const { successResponse, errorResponse } = require('../../shared/response.helper
 // جلب الإشعارات غير المقروءة
 async function getUnread(req, res) {
   try {
-    const { username } = req.query;
+    const username = req.auth?.username || req.query.username;
 
     if (!username) {
       return errorResponse(res, 'اسم المستخدم مطلوب', 400);
@@ -26,7 +26,7 @@ async function getUnread(req, res) {
 // جلب كل الإشعارات
 async function getAll(req, res) {
   try {
-    const { username } = req.query;
+    const username = req.auth?.username || req.query.username;
 
     if (!username) {
       return errorResponse(res, 'اسم المستخدم مطلوب', 400);
@@ -43,7 +43,7 @@ async function getAll(req, res) {
 // تحديد كل الإشعارات كمقروءة
 async function markAllAsRead(req, res) {
   try {
-    const { username } = req.body;
+    const username = req.auth?.username || req.body.username;
 
     if (!username) {
       return errorResponse(res, 'اسم المستخدم مطلوب', 400);
@@ -65,8 +65,11 @@ async function markAllAsRead(req, res) {
 async function markAsRead(req, res) {
   try {
     const { id } = req.params;
+    const username = req.auth?.username || req.body?.username;
+    if (!username) return errorResponse(res, 'اسم المستخدم مطلوب', 400);
 
-    await notificationsQueries.markAsRead(id);
+    const updated = await notificationsQueries.markAsRead(id, username);
+    if (!updated) return errorResponse(res, 'الإشعار غير موجود أو لا يخص هذا المستخدم', 404);
 
     return res.json({
       success: true,
@@ -87,36 +90,14 @@ async function create(req, res) {
       return errorResponse(res, 'العنوان والرسالة والمستلم مطلوبين', 400);
     }
 
-    // ── منع التكرار: بلازور بيحفظ في الجدول بنفسه قبل ما يبعت هنا ──
-    // لو skipSave = true → منحفظش تاني (نفس قاعدة البيانات!) ونبعت FCM بس
+    // منع التكرار: createNotification يحفظ ويرسل Push مرة واحدة.
+    // لو Blazor حفظ الإشعار بالفعل (skipSave) نرسل Push فقط.
     let notificationId = null;
     if (skipSave === true || skipSave === 'true') {
-      console.log(`📣 إشعار من بلازور (بدون حفظ): "${title}" → ${recipientUser}`);
+      console.log(`📣 إشعار محفوظ من Blazor (Push فقط): "${title}" → ${recipientUser}`);
+      await notificationsQueries.sendPushOnly(req.body);
     } else {
-      // 1. حفظ الإشعار في قاعدة البيانات (للمصادر اللي محفظتش)
       notificationId = await notificationsQueries.createNotification(req.body);
-    }
-
-    // 2. إرسال Push فوري عبر Firebase (لو مفعّل)
-    //    — من غير ما يوقف الرد لو فشل
-    try {
-      if (isFirebaseReady()) {
-        const token = await notificationsQueries.getFcmToken(recipientUser);
-        if (token) {
-          await sendPushNotification(
-            token,
-            title,
-            message,
-            {
-              formName: req.body.formName || '',
-              relatedTable: req.body.relatedTable || '',
-              relatedId: (req.body.relatedId || '').toString(),
-            }
-          );
-        }
-      }
-    } catch (pushErr) {
-      console.error('⚠️ فشل إرسال Push (لكن الإشعار محفوظ):', pushErr.message);
     }
 
     return res.json({

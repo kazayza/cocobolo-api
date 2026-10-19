@@ -1,4 +1,38 @@
 const { sql, connectDB } = require('../../core/database');
+const notificationsQueries = require('../notifications/notifications.queries');
+
+
+async function getInvoiceCostMap(pool, transactionIds) {
+  const ids = [...new Set(transactionIds.map(Number).filter((id) => id > 0))];
+  if (!ids.length) return new Map();
+  const request = pool.request();
+  const params = ids.map((id, index) => {
+    request.input(`costId${index}`, sql.Int, id);
+    return `@costId${index}`;
+  });
+  const result = await request.query(`
+    SELECT td.TransactionID,
+      SUM(td.Quantity * CASE
+        WHEN td.SelectedAlternativeID IS NOT NULL AND ISNULL(td.PricingTier, 'Premium') = 'CClass'
+          THEN ISNULL(a.PurchasePriceCClass, 0)
+        WHEN td.SelectedAlternativeID IS NOT NULL AND ISNULL(td.PricingTier, 'Premium') = 'Elite'
+          THEN COALESCE(a.PurchasePriceElite, a.PurchasePricePremium, 0)
+        WHEN td.SelectedAlternativeID IS NOT NULL
+          THEN ISNULL(a.PurchasePricePremium, 0)
+        WHEN ISNULL(td.PricingTier, 'Premium') = 'CClass'
+          THEN ISNULL(p.PurchasePriceCClass, 0)
+        WHEN ISNULL(td.PricingTier, 'Premium') = 'Elite'
+          THEN COALESCE(p.PurchasePriceElite, p.PurchasePrice, 0)
+        ELSE ISNULL(p.PurchasePrice, 0)
+      END) AS TotalCost
+    FROM TransactionDetails td
+    INNER JOIN Products p ON td.ProductID = p.ProductID
+    LEFT JOIN ProductFactoryAlternatives a ON td.SelectedAlternativeID = a.AlternativeID
+    WHERE td.TransactionID IN (${params.join(',')})
+    GROUP BY td.TransactionID
+  `);
+  return new Map(result.recordset.map((row) => [Number(row.TransactionID), Number(row.TotalCost || 0)]));
+}
 
 // جلب كل الفواتير
 async function getAllTransactions({
@@ -12,6 +46,8 @@ async function getAllTransactions({
   overdue = false,
   page = 1,
   limit = 20,
+  excludeProtectedAccountManagerSales = false,
+  includeProfit = false,
 }) {
   const pool = await connectDB();
   const request = pool.request();
@@ -22,6 +58,15 @@ async function getAllTransactions({
   if (type) {
     where += ` AND t.TransactionType = @type`;
     request.input('type', sql.VarChar(20), type);
+  }
+  if (excludeProtectedAccountManagerSales) {
+    where += ` AND NOT (
+      t.TransactionType = 'Sale' AND EXISTS (
+        SELECT 1 FROM Users protectedCreator
+        WHERE protectedCreator.Username = t.CreatedBy
+          AND protectedCreator.Role = N'AccountManager'
+      )
+    )`;
   }
   if (startDate) {
     where += ` AND CAST(t.TransactionDate AS DATE) >= @startDate`;
@@ -80,6 +125,19 @@ async function getAllTransactions({
   `;
 
   const result = await request.query(query);
+  if (includeProfit && result.recordset.length) {
+    const costMap = await getInvoiceCostMap(pool, result.recordset.map((row) => row.TransactionID));
+    for (const row of result.recordset) {
+      const totalCost = Number(costMap.get(Number(row.TransactionID)) || 0);
+      const net = Number(row.NetTotalAmount ?? row.TotalAmount ?? 0);
+      const grossProfit = Math.round((net - totalCost) * 100) / 100;
+      row.TotalCost = totalCost;
+      row.GrossProfit = grossProfit;
+      row.ProfitMarginPercentage = totalCost > 0
+        ? Math.round((grossProfit / totalCost * 100) * 100) / 100
+        : null;
+    }
+  }
   return result.recordset;
 }
 
@@ -94,6 +152,7 @@ async function getInvoicesStats({
   status = null,
   hasRemaining = null,
   overdue = false,
+  excludeProtectedAccountManagerSales = false,
 }) {
   const pool = await connectDB();
   const request = pool.request();
@@ -102,6 +161,15 @@ async function getInvoicesStats({
   if (type) {
     where += ` AND t.TransactionType = @type`;
     request.input('type', sql.VarChar(20), type);
+  }
+  if (excludeProtectedAccountManagerSales) {
+    where += ` AND NOT (
+      t.TransactionType = 'Sale' AND EXISTS (
+        SELECT 1 FROM Users protectedCreator
+        WHERE protectedCreator.Username = t.CreatedBy
+          AND protectedCreator.Role = N'AccountManager'
+      )
+    )`;
   }
   if (startDate) {
     where += ` AND CAST(t.TransactionDate AS DATE) >= @startDate`;
@@ -370,30 +438,63 @@ async function getTransactionsSummary(type = null) {
 // 🧾 نظام طلبات تعديل الفواتير (Edit Status)
 // ═══════════════════════════════════════════════════════════
 
-// طلب تعديل فاتورة (المندوب/أي مخول)
+// طلب تعديل فاتورة بيع + Audit + إشعار مدير الإنتاج
 async function requestEdit(transactionId, requestedBy, reason) {
   const pool = await connectDB();
+  const current = await pool.request().input('id', sql.Int, transactionId).query(`
+    SELECT t.TransactionID, t.TransactionType, t.InvoiceStatus, t.ReferenceNumber,
+           t.PartyID, p.PartyName
+    FROM Transactions t
+    INNER JOIN Parties p ON t.PartyID = p.PartyID
+    WHERE t.TransactionID = @id
+  `);
+  const invoice = current.recordset[0];
+  if (!invoice) throw new Error('الفاتورة غير موجودة');
+  if (invoice.TransactionType !== 'Sale') throw new Error('طلب التعديل متاح لفواتير البيع فقط');
+  if (invoice.InvoiceStatus === 'Cancelled') throw new Error('لا يمكن طلب تعديل فاتورة ملغية');
+
   await pool.request()
     .input('id', sql.Int, transactionId)
-    .input('editBy', sql.NVarChar(50), requestedBy)
-    .input('editReason', sql.NVarChar(500), reason || null)
+    .input('editBy', sql.NVarChar(100), requestedBy)
+    .input('editReason', sql.NVarChar(500), reason)
     .query(`
-      UPDATE Transactions 
-      SET EditStatus = 1, EditBy = @editBy, 
-          EditRequestDate = GETDATE(), EditReason = @editReason
-      WHERE TransactionID = @id
+      UPDATE Transactions SET
+        EditStatus = 1, EditBy = @editBy,
+        EditRequestDate = GETDATE(), EditReason = @editReason,
+        EditReviewedBy = NULL, EditReviewedAt = NULL,
+        EditReviewNotes = NULL, EditDone = NULL
+      WHERE TransactionID = @id;
+
+      INSERT INTO AuditLogs
+        (TableName, ActionType, PrimaryKeyValue, OldData, NewData,
+         ActionDate, LoginName, AppName, AccessUserName)
+      VALUES
+        (N'Transactions', N'EditRequest', CONVERT(NVARCHAR(100), @id), NULL,
+         (SELECT @editReason AS Reason, @editBy AS RequestedBy FOR JSON PATH, WITHOUT_ARRAY_WRAPPER),
+         GETDATE(), @editBy, N'COCOBOLO Flutter', @editBy);
     `);
+
+  const message = `طلب تعديل الفاتورة ${invoice.ReferenceNumber || `#${transactionId}`} للعميل ${invoice.PartyName} بواسطة ${requestedBy}.\nالسبب: ${reason}\nبرجاء متابعة الطلب من شاشة أوامر التشغيل.`;
+  try {
+    await notificationsQueries.createNotificationSmart({
+      title: '🧾 طلب تعديل فاتورة',
+      message,
+      createdBy: requestedBy,
+      formName: 'production/job-orders',
+      relatedTable: 'Transactions',
+      relatedId: transactionId,
+    }, 'ProductionManager');
+  } catch (e) { console.error('invoice edit request notify:', e.message); }
   return true;
 }
 
-// قائمة طلبات التعديل المعلقة (للإشعارات والمراجعة)
+// قائمة طلبات التعديل المعلقة
 async function getPendingEditRequests() {
   const pool = await connectDB();
   const result = await pool.request().query(`
-    SELECT 
-      t.TransactionID, t.TransactionDate, t.GrandTotal,
-      t.EditBy, t.EditRequestDate, t.EditReason,
-      p.PartyName AS ClientName
+    SELECT t.TransactionID, t.TransactionDate, t.GrandTotal,
+           t.EditBy, t.EditRequestDate, t.EditReason,
+           p.PartyName AS ClientName
     FROM Transactions t
     INNER JOIN Parties p ON t.PartyID = p.PartyID
     WHERE t.EditStatus = 1
@@ -402,106 +503,231 @@ async function getPendingEditRequests() {
   return result.recordset;
 }
 
-// موافقة على طلب التعديل
-async function approveEditRequest(transactionId, approvedBy) {
+async function processEditRequest(transactionId, approved, reviewer, notes) {
   const pool = await connectDB();
+  const current = await pool.request().input('id', sql.Int, transactionId).query(`
+    SELECT t.TransactionID, t.ReferenceNumber, t.EditBy, t.EditStatus,
+           p.PartyName
+    FROM Transactions t
+    INNER JOIN Parties p ON t.PartyID = p.PartyID
+    WHERE t.TransactionID = @id
+  `);
+  const invoice = current.recordset[0];
+  if (!invoice) throw new Error('الفاتورة غير موجودة');
+  if (Number(invoice.EditStatus) !== 1) throw new Error('طلب التعديل ليس معلقاً');
+
+  const status = approved ? 2 : 3;
+  const action = approved ? 'EditApprove' : 'EditReject';
+  const done = approved
+    ? `تمت الموافقة بواسطة ${reviewer}`
+    : `تم الرفض بواسطة ${reviewer}${notes ? ` - السبب: ${notes}` : ''}`;
+
   await pool.request()
     .input('id', sql.Int, transactionId)
-    .input('by', sql.NVarChar(50), approvedBy)
+    .input('status', sql.Int, status)
+    .input('reviewer', sql.NVarChar(100), reviewer)
+    .input('notes', sql.NVarChar(500), notes || null)
+    .input('done', sql.NVarChar(500), done)
+    .input('action', sql.NVarChar(50), action)
     .query(`
-      UPDATE Transactions 
-      SET EditStatus = 2, EditDone = @by
-      WHERE TransactionID = @id AND EditStatus = 1
+      UPDATE Transactions SET
+        EditStatus = @status, EditReviewedBy = @reviewer,
+        EditReviewedAt = GETDATE(), EditReviewNotes = @notes,
+        EditDone = @done
+      WHERE TransactionID = @id AND EditStatus = 1;
+
+      INSERT INTO AuditLogs
+        (TableName, ActionType, PrimaryKeyValue, OldData, NewData,
+         ActionDate, LoginName, AppName, AccessUserName)
+      VALUES
+        (N'Transactions', @action, CONVERT(NVARCHAR(100), @id), NULL,
+         (SELECT @reviewer AS ReviewedBy, @notes AS Notes, @status AS Status FOR JSON PATH, WITHOUT_ARRAY_WRAPPER),
+         GETDATE(), @reviewer, N'COCOBOLO Flutter', @reviewer);
     `);
+
+  if (invoice.EditBy && String(invoice.EditBy).toLowerCase() !== String(reviewer).toLowerCase()) {
+    const title = approved
+      ? '✅ تمت الموافقة على طلب تعديل الفاتورة'
+      : '❌ تم رفض طلب تعديل الفاتورة';
+    let message = approved
+      ? `تمت الموافقة بواسطة ${reviewer} على طلب تعديل الفاتورة ${invoice.ReferenceNumber || transactionId} للعميل ${invoice.PartyName}.`
+      : `تم رفض طلب تعديل الفاتورة ${invoice.ReferenceNumber || transactionId} للعميل ${invoice.PartyName} بواسطة ${reviewer}.`;
+    if (notes) message += `\n${approved ? 'ملاحظات المراجعة' : 'سبب / ملاحظات الرفض'}: ${notes}`;
+    try {
+      await notificationsQueries.createNotification({
+        title,
+        message,
+        recipientUser: invoice.EditBy,
+        createdBy: reviewer,
+        formName: 'sales/invoices',
+        relatedTable: 'Transactions',
+        relatedId: transactionId,
+      });
+    } catch (e) { console.error('invoice edit decision notify:', e.message); }
+  }
   return true;
 }
 
-// رفض طلب التعديل
+async function approveEditRequest(transactionId, approvedBy, notes = null) {
+  return processEditRequest(transactionId, true, approvedBy, notes);
+}
+
 async function rejectEditRequest(transactionId, rejectedBy, reason) {
-  const pool = await connectDB();
-  await pool.request()
-    .input('id', sql.Int, transactionId)
-    .input('by', sql.NVarChar(50), rejectedBy)
-    .input('reason', sql.NVarChar(500), reason || null)
-    .query(`
-      UPDATE Transactions 
-      SET EditStatus = 3, EditDone = @by, EditReason = @reason
-      WHERE TransactionID = @id AND EditStatus = 1
-    `);
-  return true;
+  return processEditRequest(transactionId, false, rejectedBy, reason);
 }
 
-// تعديل فعلي: تاريخ التسليم + الخصم + مبلغ صنف + تسجيل PriceHistory
+// تعديل فعلي: تاريخ التسليم + الخصم — نسخة مصححة تحسب الإجماليات صح 100% مثل بلازور
 async function applyInvoiceEdit({
   transactionId,
-  dueDate,            // تاريخ التسليم الجديد
-  discountPercentage, // نسبة الخصم الجديدة
-  discountAmount,     // قيمة الخصم الجديدة
+  dueDate,
+  discountPercentage,
+  discountAmount,
   editedBy,
 }) {
   const pool = await connectDB();
+
+  // 1) جلب الحالية لحساب الإجماليات بدقة
+  const curRes = await pool.request()
+    .input('id', sql.Int, transactionId)
+    .query(`SELECT TotalAmount, TotalChargesAmount, DiscountPercentage, DiscountAmount FROM Transactions WHERE TransactionID = @id`);
+  const cur = curRes.recordset[0];
+  if (!cur) throw new Error('الفاتورة غير موجودة');
+
+  const totalAmount = Number(cur.TotalAmount || 0);
+  const totalCharges = Number(cur.TotalChargesAmount || 0);
+
+  let newDiscPct = cur.DiscountPercentage;
+  let newDiscAmt = cur.DiscountAmount;
+
+  // أولوية لقيمة الخصم لو مبعوتة
+  if (discountAmount !== undefined && discountAmount !== null && discountAmount !== '') {
+    newDiscAmt = Number(discountAmount);
+    if (newDiscAmt > totalAmount) newDiscAmt = totalAmount;
+    newDiscPct = totalAmount > 0 ? Number(((newDiscAmt / totalAmount) * 100).toFixed(2)) : 0;
+  } else if (discountPercentage !== undefined && discountPercentage !== null && discountPercentage !== '') {
+    newDiscPct = Number(discountPercentage);
+    newDiscAmt = Number((totalAmount * (newDiscPct / 100)).toFixed(2));
+    if (newDiscAmt > totalAmount) newDiscAmt = totalAmount;
+  }
+
+  if (newDiscAmt == null) newDiscAmt = 0;
+  if (newDiscPct == null) newDiscPct = 0;
+
+  const netTotal = Number((totalAmount - newDiscAmt).toFixed(2));
+  const grandTotal = Number((netTotal + totalCharges).toFixed(2));
+
   const request = pool.request()
     .input('id', sql.Int, transactionId)
-    .input('editedBy', sql.NVarChar(50), editedBy);
+    .input('editedBy', sql.NVarChar(100), editedBy || 'System')
+    .input('discPct', sql.Decimal(5, 2), newDiscPct)
+    .input('discAmt', sql.Decimal(18, 2), newDiscAmt)
+    .input('netTotal', sql.Decimal(18, 2), netTotal)
+    .input('grandTotal', sql.Decimal(18, 2), grandTotal);
 
-  let query = `
-    UPDATE Transactions SET
-      EditStatus = 4, EditDone = @editedBy, EditAt = GETDATE()
-  `;
+  let setClause = `EditStatus = 4, EditDone = @editedBy, EditAt = GETDATE(), DiscountPercentage = @discPct, DiscountAmount = @discAmt, NetTotalAmount = @netTotal, GrandTotal = @grandTotal`;
 
   if (dueDate) {
     request.input('dueDate', sql.DateTime, new Date(dueDate));
-    query += `, DueDate = @dueDate`;
-  }
-  if (discountPercentage !== undefined && discountPercentage !== null) {
-    request.input('discPct', sql.Decimal(5, 2), discountPercentage);
-    query += `, DiscountPercentage = @discPct`;
-  }
-  if (discountAmount !== undefined && discountAmount !== null) {
-    request.input('discAmt', sql.Decimal(18, 2), discountAmount);
-    query += `, DiscountAmount = @discAmt`;
+    setClause += `, DueDate = @dueDate`;
   }
 
-  // إعادة حساب NetTotalAmount و GrandTotal (لو في خصم)
-  // NetTotal = TotalAmount - DiscountAmount (أو نسبة من TotalAmount)
-  // GrandTotal = NetTotal + TotalChargesAmount
-  query += `,
-    NetTotalAmount = ISNULL(TotalAmount,0) 
-      - CASE 
-          WHEN DiscountAmount > 0 THEN DiscountAmount 
-          WHEN DiscountPercentage > 0 THEN ISNULL(TotalAmount,0) * DiscountPercentage / 100 
-          ELSE 0 
-        END,
-    GrandTotal = ISNULL(TotalAmount,0) 
-      - CASE 
-          WHEN DiscountAmount > 0 THEN DiscountAmount 
-          WHEN DiscountPercentage > 0 THEN ISNULL(TotalAmount,0) * DiscountPercentage / 100 
-          ELSE 0 
-        END 
-      + ISNULL(TotalChargesAmount,0)
-  `;
-
-  query += ` WHERE TransactionID = @id`;
-  await request.query(query);
+  await request.query(`UPDATE Transactions SET ${setClause} WHERE TransactionID = @id`);
   return true;
 }
 
-// تعديل مبلغ صنف في الفاتورة + تسجيل في PriceHistory
+// تحديث هيدر الفاتورة (مطابق بلازور UpdateInvoiceAsync) - يحدث الملاحظات + التسليم + الدفع + الخصم مع إعادة حساب الإجماليات
+async function updateTransaction(transactionId, data) {
+  const pool = await connectDB();
+
+  const curRes = await pool.request()
+    .input('id', sql.Int, transactionId)
+    .query(`SELECT TransactionID, TotalAmount, TotalChargesAmount, DiscountPercentage, DiscountAmount, InvoiceStatus FROM Transactions WHERE TransactionID = @id`);
+  const cur = curRes.recordset[0];
+  if (!cur) return { success: false, message: 'الفاتورة غير موجودة' };
+  if (cur.InvoiceStatus === 'Cancelled') return { success: false, message: 'لا يمكن تعديل فاتورة ملغية' };
+
+  const totalAmount = Number(cur.TotalAmount || 0);
+  const totalCharges = Number(cur.TotalChargesAmount || 0);
+
+  let newDiscPct = cur.DiscountPercentage;
+  let newDiscAmt = cur.DiscountAmount;
+
+  if (data.discountAmount !== undefined && data.discountAmount !== null && data.discountAmount !== '') {
+    newDiscAmt = Number(data.discountAmount);
+    if (newDiscAmt > totalAmount) newDiscAmt = totalAmount;
+    newDiscPct = totalAmount > 0 ? Number(((newDiscAmt / totalAmount) * 100).toFixed(2)) : 0;
+  } else if (data.discountPercentage !== undefined && data.discountPercentage !== null && data.discountPercentage !== '') {
+    newDiscPct = Number(data.discountPercentage);
+    newDiscAmt = Number((totalAmount * (newDiscPct / 100)).toFixed(2));
+    if (newDiscAmt > totalAmount) newDiscAmt = totalAmount;
+  }
+
+  if (newDiscAmt == null) newDiscAmt = 0;
+  if (newDiscPct == null) newDiscPct = 0;
+
+  const netTotal = Number((totalAmount - newDiscAmt).toFixed(2));
+  const grandTotal = Number((netTotal + totalCharges).toFixed(2));
+
+  const req = pool.request()
+    .input('id', sql.Int, transactionId)
+    .input('discPct', sql.Decimal(5, 2), newDiscPct)
+    .input('discAmt', sql.Decimal(18, 2), newDiscAmt)
+    .input('netTotal', sql.Decimal(18, 2), netTotal)
+    .input('grandTotal', sql.Decimal(18, 2), grandTotal)
+    .input('editedBy', sql.NVarChar(100), data.editedBy || data.createdBy || 'System');
+
+  let sets = [];
+  sets.push('DiscountPercentage = @discPct');
+  sets.push('DiscountAmount = @discAmt');
+  sets.push('NetTotalAmount = @netTotal');
+  sets.push('GrandTotal = @grandTotal');
+  sets.push('EditBy = @editedBy');
+  sets.push('EditAt = GETDATE()');
+  sets.push('EditStatus = CASE WHEN EditStatus IN (1,2) THEN 4 ELSE EditStatus END');
+  sets.push(`EditDone = CONCAT('تم التعديل بواسطة ', @editedBy, ' بتاريخ ', FORMAT(GETDATE(), 'yyyy/MM/dd HH:mm'))`);
+
+  if (data.notes !== undefined) {
+    req.input('notes', sql.NVarChar(sql.MAX), data.notes);
+    sets.push('Notes = @notes');
+  }
+  if (data.dueDate) {
+    req.input('dueDate', sql.DateTime, new Date(data.dueDate));
+    sets.push('DueDate = @dueDate');
+  }
+  if (data.paymentMethod !== undefined) {
+    req.input('payMethod', sql.NVarChar(50), data.paymentMethod);
+    sets.push('PaymentMethod = @payMethod');
+  }
+  if (data.isDelivered !== undefined) {
+    req.input('isDelivered', sql.Bit, data.isDelivered ? 1 : 0);
+    sets.push('IsDelivered = @isDelivered');
+  }
+  if (data.opportunityId !== undefined) {
+    req.input('oppId', sql.Int, data.opportunityId || null);
+    sets.push('OpportunityId = @oppId');
+  }
+
+  const query = `UPDATE Transactions SET ${sets.join(', ')} WHERE TransactionID = @id`;
+  await req.query(query);
+  return { success: true };
+}
+
+// تعديل مبلغ صنف في الفاتورة + تسجيل في PriceHistory - مصحح 100% لحساب الإجماليات
 async function updateDetailPrice(transactionId, detailId, newUnitPrice, editedBy, changeReason) {
   const pool = await connectDB();
 
-  // 1. جلب السعر القديم
+  // 1. جلب السعر القديم + بيانات الفاتورة الحالية
   const oldRes = await pool.request()
     .input('detailId', sql.Int, detailId)
     .query(`
-      SELECT td.UnitPrice, td.ProductID, td.Quantity
+      SELECT td.UnitPrice, td.ProductID, td.Quantity, td.TransactionID
       FROM TransactionDetails td
       WHERE td.DetailID = @detailId
     `);
   const old = oldRes.recordset[0];
   if (!old) return { success: false, message: 'الصنف غير موجود' };
 
-  // 2. تحديث السعر + الإجمالي
+  // 2. تحديث السعر + الإجمالي للصنف
   await pool.request()
     .input('detailId', sql.Int, detailId)
     .input('newPrice', sql.Decimal(18, 2), newUnitPrice)
@@ -513,39 +739,73 @@ async function updateDetailPrice(transactionId, detailId, newUnitPrice, editedBy
     `);
 
   // 3. تسجيل في PriceHistory
-  await pool.request()
-    .input('productId', sql.Int, old.ProductID)
-    .input('priceType', sql.NVarChar(20), 'Sale')
-    .input('oldPrice', sql.Decimal(18, 2), old.UnitPrice)
-    .input('newPrice', sql.Decimal(18, 2), newUnitPrice)
-    .input('changedBy', sql.NVarChar(50), editedBy)
-    .input('reason', sql.NVarChar(200), changeReason || `تعديل سعر صنف في فاتورة #${transactionId}`)
-    .query(`
-      INSERT INTO PriceHistory (
-        ProductID, PriceType, OldPrice, NewPrice, 
-        ChangedBy, ChangedAt, ChangeReason
-      )
-      VALUES (
-        @productId, @priceType, @oldPrice, @newPrice,
-        @changedBy, GETDATE(), @reason
-      )
-    `);
+  try {
+    await pool.request()
+      .input('productId', sql.Int, old.ProductID)
+      .input('priceType', sql.NVarChar(20), 'Sale')
+      .input('oldPrice', sql.Decimal(18, 2), old.UnitPrice)
+      .input('newPrice', sql.Decimal(18, 2), newUnitPrice)
+      .input('changedBy', sql.NVarChar(50), editedBy)
+      .input('reason', sql.NVarChar(200), changeReason || `تعديل سعر صنف في فاتورة #${transactionId}`)
+      .query(`
+        INSERT INTO PriceHistory (
+          ProductID, PriceType, OldPrice, NewPrice, 
+          ChangedBy, ChangedAt, ChangeReason
+        )
+        VALUES (
+          @productId, @priceType, @oldPrice, @newPrice,
+          @changedBy, GETDATE(), @reason
+        )
+      `);
+  } catch (e) {
+    console.warn('PriceHistory insert failed (table may not exist):', e.message);
+  }
 
-  // 4. إعادة حساب إجماليات الفاتورة بعد تعديل الصنف
+  // 4. إعادة حساب إجماليات الفاتورة بدقة - مثل بلازور CalculateTotals
+  const sumRes = await pool.request()
+    .input('id', sql.Int, transactionId)
+    .query(`SELECT ISNULL(SUM(TotalAmount),0) AS SumTotal FROM TransactionDetails WHERE TransactionID = @id`);
+  const sumTotal = Number(sumRes.recordset[0].SumTotal || 0);
+
+  const transRes = await pool.request()
+    .input('id', sql.Int, transactionId)
+    .query(`SELECT DiscountPercentage, DiscountAmount, TotalChargesAmount FROM Transactions WHERE TransactionID = @id`);
+  const tr = transRes.recordset[0] || {};
+  let discPct = Number(tr.DiscountPercentage || 0);
+  let discAmt = Number(tr.DiscountAmount || 0);
+  const charges = Number(tr.TotalChargesAmount || 0);
+
+  // حساب الخصم حسب الأولوية: قيمة > نسبة
+  if (discAmt > 0) {
+    if (discAmt > sumTotal) discAmt = sumTotal;
+    discPct = sumTotal > 0 ? Number(((discAmt / sumTotal) * 100).toFixed(2)) : 0;
+  } else if (discPct > 0) {
+    discAmt = Number((sumTotal * (discPct / 100)).toFixed(2));
+    if (discAmt > sumTotal) discAmt = sumTotal;
+  } else {
+    discAmt = 0;
+    discPct = 0;
+  }
+
+  const netTotal = Number((sumTotal - discAmt).toFixed(2));
+  const grandTotal = Number((netTotal + charges).toFixed(2));
+
   await pool.request()
     .input('id', sql.Int, transactionId)
+    .input('totalAmt', sql.Decimal(18, 2), sumTotal)
+    .input('discPct', sql.Decimal(5, 2), discPct)
+    .input('discAmt', sql.Decimal(18, 2), discAmt)
+    .input('netTotal', sql.Decimal(18, 2), netTotal)
+    .input('grandTotal', sql.Decimal(18, 2), grandTotal)
     .query(`
       UPDATE Transactions SET
-        TotalAmount = (SELECT ISNULL(SUM(TotalAmount),0) FROM TransactionDetails WHERE TransactionID = @id),
-        NetTotalAmount = (SELECT ISNULL(SUM(TotalAmount),0) FROM TransactionDetails WHERE TransactionID = @id) 
-          - CASE WHEN DiscountAmount > 0 THEN DiscountAmount 
-                 WHEN DiscountPercentage > 0 THEN (SELECT ISNULL(SUM(TotalAmount),0) FROM TransactionDetails WHERE TransactionID = @id) * DiscountPercentage / 100 
-                 ELSE 0 END,
-        GrandTotal = (SELECT ISNULL(SUM(TotalAmount),0) FROM TransactionDetails WHERE TransactionID = @id) 
-          - CASE WHEN DiscountAmount > 0 THEN DiscountAmount 
-                 WHEN DiscountPercentage > 0 THEN (SELECT ISNULL(SUM(TotalAmount),0) FROM TransactionDetails WHERE TransactionID = @id) * DiscountPercentage / 100 
-                 ELSE 0 END 
-          + ISNULL(TotalChargesAmount,0)
+        TotalAmount = @totalAmt,
+        DiscountPercentage = @discPct,
+        DiscountAmount = @discAmt,
+        NetTotalAmount = @netTotal,
+        GrandTotal = @grandTotal,
+        EditStatus = CASE WHEN EditStatus IN (1,2) THEN 4 ELSE EditStatus END,
+        EditAt = GETDATE()
       WHERE TransactionID = @id
     `);
 
@@ -596,5 +856,6 @@ module.exports = {
   rejectEditRequest,
   applyInvoiceEdit,
   updateDetailPrice,
+  updateTransaction,
   getFullInvoiceData
 };

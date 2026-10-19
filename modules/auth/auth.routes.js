@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const authController = require('./auth.controller');
+const { authenticate } = require('../../core/auth.middleware');
 
 // ===================================
 // 🔐 Auth Routes
@@ -10,9 +11,11 @@ const authController = require('./auth.controller');
 // POST /api/auth/login
 router.post('/login', authController.login);
 
-// حفظ FCM Token
-// POST /api/auth/save-token
-router.post('/save-token', authController.saveFcmToken);
+// استعادة بيانات الجلسة والصلاحيات الحالية
+router.get('/me', authenticate, authController.me);
+
+// حفظ FCM Token للمستخدم الحالي
+router.post('/save-token', authenticate, authController.saveFcmToken);
 
 // جلب بيانات الموظف المرتبط بالمستخدم
 // GET /api/auth/users/:userId/employee

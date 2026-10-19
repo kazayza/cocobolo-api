@@ -5,24 +5,55 @@ async function getAllWarehouses() {
   const pool = await connectDB();
   const result = await pool.request()
     .query(`
-      SELECT WarehouseID, WarehouseName, Location, IsActive, Notes
+      SELECT WarehouseID, WarehouseName, Location, IsActive, Notes, BranchId
       FROM Warehouses
       ORDER BY WarehouseName
     `);
   return result.recordset;
 }
 
-// جلب المخازن النشطة
-async function getActiveWarehouses() {
+// جلب المخازن النشطة مع الفرع
+async function getActiveWarehouses(branchId = null) {
   const pool = await connectDB();
-  const result = await pool.request()
-    .query(`
-      SELECT WarehouseID, WarehouseName, Location
-      FROM Warehouses
-      WHERE IsActive = 1
-      ORDER BY WarehouseName
-    `);
+  const request = pool.request();
+  let query = `
+    SELECT w.WarehouseID, w.WarehouseName, w.Location, w.BranchId,
+           b.BranchNameAr, b.BranchName
+    FROM Warehouses w
+    LEFT JOIN Branches b ON w.BranchId = b.BranchID
+    WHERE w.IsActive = 1
+  `;
+  if (branchId) {
+    query += ` AND w.BranchId = @branchId`;
+    request.input('branchId', sql.Int, branchId);
+  }
+  query += ` ORDER BY w.WarehouseName`;
+  const result = await request.query(query);
   return result.recordset;
+}
+
+// جلب الفروع - مطابق بلازور BranchService
+async function getBranches() {
+  const pool = await connectDB();
+  try {
+    const result = await pool.request().query(`
+      SELECT BranchID as BranchId, BranchNameAr, BranchName, IsActive
+      FROM Branches
+      WHERE IsActive = 1
+      ORDER BY BranchNameAr
+    `);
+    return result.recordset;
+  } catch (e) {
+    // fallback لو اسم الجدول مختلف
+    try {
+      const result2 = await pool.request().query(`
+        SELECT BranchId, BranchNameAr, BranchName FROM Branches ORDER BY BranchNameAr
+      `);
+      return result2.recordset;
+    } catch (_) {
+      return [];
+    }
+  }
 }
 
 // جلب مستويات المخزون
@@ -182,11 +213,12 @@ async function createWarehouse(data) {
     .input('warehouseName', sql.NVarChar(100), data.warehouseName)
     .input('location', sql.NVarChar(200), data.location || null)
     .input('notes', sql.NVarChar(150), data.notes || null)
+    .input('branchId', sql.Int, data.branchId || null)
     .input('createdBy', sql.NVarChar(100), data.createdBy)
     .query(`
-      INSERT INTO Warehouses (WarehouseName, Location, IsActive, Notes, CreatedBy, CreatedAt)
+      INSERT INTO Warehouses (WarehouseName, Location, IsActive, Notes, BranchId, CreatedBy, CreatedAt)
       OUTPUT INSERTED.WarehouseID
-      VALUES (@warehouseName, @location, 1, @notes, @createdBy, GETDATE())
+      VALUES (@warehouseName, @location, 1, @notes, @branchId, @createdBy, GETDATE())
     `);
   return result.recordset[0].WarehouseID;
 }
@@ -198,25 +230,138 @@ async function updateWarehouse(id, data) {
     .input('id', sql.Int, id)
     .input('warehouseName', sql.NVarChar(100), data.warehouseName)
     .input('location', sql.NVarChar(200), data.location || null)
+    .input('branchId', sql.Int, data.branchId || null)
     .input('isActive', sql.Bit, data.isActive !== undefined ? data.isActive : true)
     .input('notes', sql.NVarChar(150), data.notes || null)
     .query(`
       UPDATE Warehouses SET
         WarehouseName = @warehouseName, Location = @location,
-        IsActive = @isActive, Notes = @notes
+        BranchId = @branchId, IsActive = @isActive, Notes = @notes
       WHERE WarehouseID = @id
     `);
   return true;
+}
+
+// جلب رصيد منتج في مخزن معين
+async function getCurrentStock(productId, warehouseId) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('productId', sql.Int, productId)
+    .input('warehouseId', sql.Int, warehouseId)
+    .query(`SELECT ISNULL(Quantity,0) as Quantity FROM StockLevels WHERE ProductID = @productId AND WarehouseID = @warehouseId`);
+  return result.recordset[0]?.Quantity || 0;
+}
+
+// تحويل مخزني بين مخزنين - مطابق بلازور StockService.TransferStockAsync
+async function transferStock(data) {
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
+
+  try {
+    const { fromWarehouseId, toWarehouseId, productId, quantity, notes, createdBy } = data;
+
+    if (!fromWarehouseId || !toWarehouseId || !productId || !quantity || quantity <= 0) {
+      throw new Error('بيانات التحويل غير مكتملة');
+    }
+
+    if (fromWarehouseId == toWarehouseId) {
+      throw new Error('مخزن المصدر والوجهة لا يمكن أن يكونا نفس المخزن');
+    }
+
+    // تحقق من رصيد المصدر
+    const sourceStockRes = await new sql.Request(transaction)
+      .input('productId', sql.Int, productId)
+      .input('warehouseId', sql.Int, fromWarehouseId)
+      .query(`SELECT Quantity FROM StockLevels WHERE ProductID = @productId AND WarehouseID = @warehouseId`);
+
+    const sourceQty = sourceStockRes.recordset[0]?.Quantity || 0;
+    if (sourceQty < quantity) {
+      throw new Error(`رصيد المصدر غير كافي. المتاح: ${sourceQty} والمطلوب: ${quantity}`);
+    }
+
+    const transferRef = `TRF-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+
+    // حركة خروج من المصدر
+    await new sql.Request(transaction)
+      .input('productId', sql.Int, productId)
+      .input('warehouseId', sql.Int, fromWarehouseId)
+      .input('transactionType', sql.NVarChar(50), 'Out')
+      .input('quantity', sql.Int, quantity)
+      .input('referenceType', sql.NVarChar(50), 'WarehouseTransferOut')
+      .input('referenceId', sql.NVarChar(100), transferRef)
+      .input('notes', sql.NVarChar(500), notes || `تحويل إلى مخزن ${toWarehouseId}`)
+      .input('createdBy', sql.NVarChar(100), createdBy)
+      .query(`
+        INSERT INTO StockTransactions (ProductID, WarehouseID, TransactionType, Quantity, TransactionDate, ReferenceType, ReferenceID, Notes, CreatedBy, CreatedAt)
+        VALUES (@productId, @warehouseId, @transactionType, @quantity, GETDATE(), @referenceType, @referenceId, @notes, @createdBy, GETDATE())
+      `);
+
+    // حركة دخول إلى الوجهة
+    await new sql.Request(transaction)
+      .input('productId', sql.Int, productId)
+      .input('warehouseId', sql.Int, toWarehouseId)
+      .input('transactionType', sql.NVarChar(50), 'In')
+      .input('quantity', sql.Int, quantity)
+      .input('referenceType', sql.NVarChar(50), 'WarehouseTransferIn')
+      .input('referenceId', sql.NVarChar(100), transferRef)
+      .input('notes', sql.NVarChar(500), notes || `تحويل من مخزن ${fromWarehouseId}`)
+      .input('createdBy', sql.NVarChar(100), createdBy)
+      .query(`
+        INSERT INTO StockTransactions (ProductID, WarehouseID, TransactionType, Quantity, TransactionDate, ReferenceType, ReferenceID, Notes, CreatedBy, CreatedAt)
+        VALUES (@productId, @warehouseId, @transactionType, @quantity, GETDATE(), @referenceType, @referenceId, @notes, @createdBy, GETDATE())
+      `);
+
+    // تحديث أرصدة
+    await new sql.Request(transaction)
+      .input('productId', sql.Int, productId)
+      .input('fromWarehouseId', sql.Int, fromWarehouseId)
+      .input('toWarehouseId', sql.Int, toWarehouseId)
+      .input('quantity', sql.Int, quantity)
+      .query(`
+        -- خصم من المصدر
+        UPDATE StockLevels SET Quantity = Quantity - @quantity, LastUpdatedAt = GETDATE()
+        WHERE ProductID = @productId AND WarehouseID = @fromWarehouseId;
+
+        -- إضافة للوجهة
+        IF EXISTS (SELECT 1 FROM StockLevels WHERE ProductID = @productId AND WarehouseID = @toWarehouseId)
+          UPDATE StockLevels SET Quantity = Quantity + @quantity, LastUpdatedAt = GETDATE()
+          WHERE ProductID = @productId AND WarehouseID = @toWarehouseId
+        ELSE
+          INSERT INTO StockLevels (ProductID, WarehouseID, Quantity, LastUpdatedAt, CreatedAt)
+          VALUES (@productId, @toWarehouseId, @quantity, GETDATE(), GETDATE())
+      `);
+
+    await transaction.commit();
+
+    // جلب الأرصدة الجديدة
+    const newSource = await getCurrentStock(productId, fromWarehouseId);
+    const newDest = await getCurrentStock(productId, toWarehouseId);
+
+    return {
+      success: true,
+      transferReference: transferRef,
+      sourceNewQuantity: newSource,
+      destinationNewQuantity: newDest,
+      message: `تم التحويل بنجاح ${quantity} قطعة من مخزن ${fromWarehouseId} إلى ${toWarehouseId} - المرجع ${transferRef}`,
+    };
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) {}
+    throw err;
+  }
 }
 
 // تصدير الدوال
 module.exports = {
   getAllWarehouses,
   getActiveWarehouses,
+  getBranches,
   getStockLevels,
   getProductStock,
+  getCurrentStock,
   getStockTransactions,
   createStockTransaction,
+  transferStock,
   createWarehouse,
   updateWarehouse
 };

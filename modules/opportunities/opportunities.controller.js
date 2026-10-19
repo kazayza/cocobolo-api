@@ -225,8 +225,9 @@ async function update(req, res) {
     const { id } = req.params;
     const body = req.body;
     const stageId = body.stageId ?? body.StageID ?? body.StageId ?? body.stageID;
-    const isClosure = stageId == 3 || stageId == 4 || stageId == 5;
-    if (isClosure) {
+    // ✅ مطابق بلازور CrmStages.IsExitStage = 4,5 فقط - تم البيع (3) لا يحتاج موافقة
+    const isExitClosure = stageId == 4 || stageId == 5;
+    if (isExitClosure) {
       const actorRole = (body.actorRole || req.headers['x-user-role'] || '').toString().toLowerCase().replace(/\s+/g, '').replace(/_/g, '');
       const canDirect = actorRole === 'admin' || actorRole === 'salesmanager' || actorRole === 'generalmanager' || actorRole === 'gm' || actorRole === 'general';
       // لو مش مصرح و role موجود (يعني من فلاتر) → حول لطلب موافقة مع إشعار GM

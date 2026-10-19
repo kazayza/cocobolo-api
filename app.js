@@ -9,12 +9,15 @@ const app = express();
 const { connectDB, sql } = require('./core/database');
 const { initializeFirebase } = require('./core/firebase');
 const { applyMiddleware } = require('./core/middleware');
+const { authenticate, optionalAuthenticate } = require('./core/auth.middleware');
 
 // استيراد الـ Error Handlers
 const { globalErrorHandler, notFoundHandler } = require('./shared/error-handler');
 
 // تطبيق الـ Middleware
 applyMiddleware(app);
+// يقرأ Bearer Token إن وجد بدون كسر المسارات القديمة؛ المسارات الحساسة تستخدم authenticate صراحةً.
+app.use(optionalAuthenticate);
 
 // تهيئة Firebase
 initializeFirebase();
@@ -25,11 +28,11 @@ initializeFirebase();
 const authController = require('./modules/auth/auth.controller');
 const clientsController = require('./modules/clients/clients.controller');
 const dashboardController = require('./modules/dashboard/dashboard.controller');
-const notificationsController = require('./modules/notifications/notifications.controller');
 
 // Auth
 app.post('/api/login', authController.login);
-app.post('/api/users/save-token', authController.saveFcmToken);
+// Legacy URL محمي؛ التطبيق الجديد يستخدم /api/auth/save-token.
+app.post('/api/users/save-token', authenticate, authController.saveFcmToken);
 app.get('/api/users/:userId/employee', authController.getEmployeeByUserId);
 
 // Dashboard
@@ -51,13 +54,8 @@ app.post('/api/clients', clientsController.create);
 app.put('/api/clients/:id', clientsController.update);
 app.delete('/api/clients/:id', clientsController.remove);
 
-// Notifications
-app.get('/api/notifications', notificationsController.getAll);
-app.get('/api/notifications/unread', notificationsController.getUnread);
-app.put('/api/notifications/read-all', notificationsController.markAllAsRead);
-app.put('/api/notifications/:id/read', notificationsController.markAsRead);
-app.post('/api/notifications', notificationsController.create);
-app.post('/api/notifications/send-push', notificationsController.sendPush);
+// Notifications are registered once through modules/notifications below.
+// إزالة التسجيل المكرر مهمة حتى لا يتجاوز أي Route طبقة المصادقة.
 
 // ===================================
 // 🖼️ Product Images (for thumbnails)
@@ -362,6 +360,9 @@ app.use('/api/leads', require('./modules/leads/leads.routes'));
 
 // Unified CRM + Leads follow-ups (mobile)
 app.use('/api/followups', require('./modules/followups/followups.routes'));
+
+// Lost Recovery (خدمة العملاء - استرداد الفرص الخاسرة) - مطابق بلازور RecoveryService
+app.use('/api/recovery', require('./modules/recovery/recovery.routes'));
 
 // Admin: Users & Permissions Management
 app.use('/api/admin', require('./modules/admin-users/admin-users.routes'));
