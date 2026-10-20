@@ -75,6 +75,27 @@ function canonicalPushData(data, notificationId = null) {
   };
 }
 
+function isInvalidFcmTokenResult(result) {
+  const code = String(result?.code || '').toLowerCase();
+  const message = String(result?.error || '').toLowerCase();
+  return code.includes('registration-token-not-registered')
+    || code.includes('invalid-registration-token')
+    || code === 'messaging/invalid-argument'
+    || message.includes('requested entity was not found')
+    || message.includes('registration token is not a valid fcm registration token');
+}
+
+async function clearInvalidFcmToken(pool, username, token) {
+  await pool.request()
+    .input('username', sql.NVarChar(100), username)
+    .input('token', sql.NVarChar(500), token)
+    .query(`
+      UPDATE Users
+      SET FCMToken = NULL
+      WHERE Username = @username AND FCMToken = @token
+    `);
+}
+
 async function pushToRecipient(pool, data, notificationId = null) {
   if (!isFirebaseReady()) return { success: false, reason: 'firebase-disabled' };
 
@@ -89,12 +110,23 @@ async function pushToRecipient(pool, data, notificationId = null) {
   const fcmToken = tokenResult.recordset[0]?.FCMToken;
   if (!fcmToken) return { success: false, reason: 'missing-token' };
 
-  return sendPushNotification(
+  const pushResult = await sendPushNotification(
     fcmToken,
     data.title,
     data.message,
     canonicalPushData(data, notificationId),
   );
+
+  if (!pushResult?.success && isInvalidFcmTokenResult(pushResult)) {
+    await clearInvalidFcmToken(pool, data.recipientUser, fcmToken);
+    return {
+      ...pushResult,
+      reason: 'invalid-token',
+      tokenCleared: true,
+    };
+  }
+
+  return pushResult;
 }
 
 // للاستخدام عند وصول إشعار محفوظ أصلًا من Blazor: Push فقط بلا INSERT مكرر
@@ -138,7 +170,15 @@ async function createNotification(data) {
     if (pushResult?.success) {
       console.log(`🔥 [FCM Push] تم إرسال إشعار إلى المستخدم: ${data.recipientUser}`);
     } else if (pushResult?.reason === 'missing-token') {
-      console.log(`⚠️ [FCM Push] المستخدم ${data.recipientUser} ليس لديه FCM Token مسجل.`);
+      console.warn(`⚠️ [FCM Push] المستخدم ${data.recipientUser} ليس لديه FCM Token مسجل.`);
+    } else if (pushResult?.reason === 'invalid-token') {
+      console.warn(`⚠️ [FCM Push] توكن المستخدم ${data.recipientUser} غير صالح وتم مسحه؛ افتح التطبيق وسجّل الدخول لتسجيل توكن جديد.`);
+    } else {
+      console.error(
+        `❌ [FCM Push] فشل الإرسال إلى ${data.recipientUser}`,
+        `code=${pushResult?.code || 'unknown'}`,
+        `error=${pushResult?.error || pushResult?.reason || 'unknown'}`,
+      );
     }
   } catch (pushErr) {
     console.error('❌ خطأ في إرسال Push Notification:', pushErr.message);

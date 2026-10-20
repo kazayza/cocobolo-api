@@ -28,6 +28,9 @@ router.post('/', notificationsController.create);
 // إرسال إشعار ذكي
 router.post('/smart', authenticate, requirePolicy(notificationPolicy.canBroadcast), notificationsController.createSmart);
 
+// اختبار Push للمستخدم الحالي؛ يفيد في التحقق والتطبيق بالخلفية أو مغلق.
+router.post('/test-self', authenticate, notificationsController.testSelfPush);
+
 // إرسال Push يدوي - Admin فقط؛ باقي الموديولات تستدعي notifications.queries داخلياً
 router.post('/send-push', authenticate, requirePolicy(notificationPolicy.canBroadcast), notificationsController.sendPush);
 

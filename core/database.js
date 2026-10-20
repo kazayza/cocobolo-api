@@ -1,5 +1,5 @@
 const sql = require('mssql');
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 
 // إعدادات الاتصال
 const config = {

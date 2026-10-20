@@ -101,7 +101,13 @@ async function saveFcmToken(req, res) {
     }
 
     await authQueries.saveFcmToken(userId, fcmToken);
-    return successResponse(res, null, 'تم حفظ التوكن بنجاح');
+    const username = req.auth?.username || `UserID:${userId}`;
+    console.log(`[FCM Token] تم تسجيل توكن الجهاز للمستخدم ${username} | length=${String(fcmToken).length}`);
+    return successResponse(
+      res,
+      { registered: true, tokenLength: String(fcmToken).length },
+      'تم حفظ التوكن بنجاح',
+    );
 
   } catch (err) {
     console.error('خطأ في حفظ FCM Token:', err);

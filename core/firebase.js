@@ -1,5 +1,5 @@
 const admin = require('firebase-admin');
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 
 let firebaseInitialized = false;
 
@@ -81,8 +81,9 @@ async function sendPushNotification(token, title, message, data = {}) {
     const response = await admin.messaging().send(payload);
     return { success: true, response };
   } catch (err) {
-    console.error('❌ خطأ في إرسال Push:', err.message);
-    return { success: false, error: err.message };
+    const code = err?.code || err?.errorInfo?.code || 'unknown';
+    console.error(`❌ خطأ في إرسال Push [${code}]:`, err.message);
+    return { success: false, code, error: err.message };
   }
 }
 

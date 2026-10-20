@@ -7,13 +7,13 @@ async function getAllWarehouses() {
     .query(`
       SELECT
         w.WarehouseID, w.WarehouseName, w.Location, w.IsActive, w.Notes,
-        w.BranchId, b.BranchNameAr, b.BranchName,
+        w.BranchID AS BranchId, b.BranchNameAr, b.BranchNameEn AS BranchName,
         ISNULL((SELECT COUNT(*) FROM StockLevels sl
                 WHERE sl.WarehouseID = w.WarehouseID AND sl.Quantity != 0), 0) AS ProductsCount,
         ISNULL((SELECT SUM(sl.Quantity) FROM StockLevels sl
                 WHERE sl.WarehouseID = w.WarehouseID), 0) AS TotalQuantity
       FROM Warehouses w
-      LEFT JOIN Branches b ON w.BranchId = b.BranchID
+      LEFT JOIN Branches b ON w.BranchID = b.BranchID
       ORDER BY ISNULL(w.IsActive, 0) DESC, b.BranchNameAr, w.WarehouseName
     `);
   return result.recordset;
@@ -24,14 +24,14 @@ async function getActiveWarehouses(branchId = null) {
   const pool = await connectDB();
   const request = pool.request();
   let query = `
-    SELECT w.WarehouseID, w.WarehouseName, w.Location, w.BranchId,
-           b.BranchNameAr, b.BranchName
+    SELECT w.WarehouseID, w.WarehouseName, w.Location, w.BranchID AS BranchId,
+           b.BranchNameAr, b.BranchNameEn AS BranchName
     FROM Warehouses w
-    LEFT JOIN Branches b ON w.BranchId = b.BranchID
+    LEFT JOIN Branches b ON w.BranchID = b.BranchID
     WHERE w.IsActive = 1
   `;
   if (branchId) {
-    query += ` AND w.BranchId = @branchId`;
+    query += ` AND w.BranchID = @branchId`;
     request.input('branchId', sql.Int, branchId);
   }
   query += ` ORDER BY w.WarehouseName`;
@@ -42,25 +42,18 @@ async function getActiveWarehouses(branchId = null) {
 // جلب الفروع - مطابق بلازور BranchService
 async function getBranches() {
   const pool = await connectDB();
-  try {
-    const result = await pool.request().query(`
-      SELECT BranchID as BranchId, BranchNameAr, BranchName, IsActive
-      FROM Branches
-      WHERE IsActive = 1
-      ORDER BY BranchNameAr
-    `);
-    return result.recordset;
-  } catch (e) {
-    // fallback لو اسم الجدول مختلف
-    try {
-      const result2 = await pool.request().query(`
-        SELECT BranchId, BranchNameAr, BranchName FROM Branches ORDER BY BranchNameAr
-      `);
-      return result2.recordset;
-    } catch (_) {
-      return [];
-    }
-  }
+  const result = await pool.request().query(`
+    SELECT
+      BranchID AS BranchId,
+      BranchCode,
+      BranchNameAr,
+      BranchNameEn AS BranchName,
+      IsActive
+    FROM Branches
+    WHERE IsActive = 1
+    ORDER BY BranchNameAr
+  `);
+  return result.recordset;
 }
 
 // جلب مستويات المخزون مع الفرع والبحث
@@ -72,12 +65,12 @@ async function getStockLevels(warehouseId = null, branchId = null, search = null
       sl.StockLevelID, sl.ProductID, sl.WarehouseID, sl.Quantity,
       sl.LastUpdatedAt,
       p.ProductName, p.ProductDescription,
-      w.WarehouseName, w.BranchId,
-      b.BranchNameAr, b.BranchName
+      w.WarehouseName, w.BranchID AS BranchId,
+      b.BranchNameAr, b.BranchNameEn AS BranchName
     FROM StockLevels sl
     INNER JOIN Products p ON sl.ProductID = p.ProductID
     INNER JOIN Warehouses w ON sl.WarehouseID = w.WarehouseID
-    LEFT JOIN Branches b ON w.BranchId = b.BranchID
+    LEFT JOIN Branches b ON w.BranchID = b.BranchID
     WHERE 1=1
   `;
 
@@ -86,7 +79,7 @@ async function getStockLevels(warehouseId = null, branchId = null, search = null
     request.input('warehouseId', sql.Int, warehouseId);
   }
   if (branchId) {
-    query += ` AND w.BranchId = @branchId`;
+    query += ` AND w.BranchID = @branchId`;
     request.input('branchId', sql.Int, branchId);
   }
   if (search && String(search).trim()) {
@@ -106,11 +99,11 @@ async function getProductStock(productId) {
     .input('productId', sql.Int, productId)
     .query(`
       SELECT sl.StockLevelID, sl.WarehouseID, sl.Quantity,
-             w.WarehouseName, w.BranchId,
-             b.BranchNameAr, b.BranchName
+             w.WarehouseName, w.BranchID AS BranchId,
+             b.BranchNameAr, b.BranchNameEn AS BranchName
       FROM StockLevels sl
       INNER JOIN Warehouses w ON sl.WarehouseID = w.WarehouseID
-      LEFT JOIN Branches b ON w.BranchId = b.BranchID
+      LEFT JOIN Branches b ON w.BranchID = b.BranchID
       WHERE sl.ProductID = @productId
       ORDER BY b.BranchNameAr, w.WarehouseName
     `);
@@ -136,12 +129,12 @@ async function getStockTransactions({
       st.ReferenceID, st.ReferenceType, st.UnitPrice, st.TotalAmount,
       st.Notes, st.CreatedBy, st.CreatedAt,
       p.ProductName,
-      w.WarehouseName, w.BranchId,
-      b.BranchNameAr, b.BranchName
+      w.WarehouseName, w.BranchID AS BranchId,
+      b.BranchNameAr, b.BranchNameEn AS BranchName
     FROM StockTransactions st
     INNER JOIN Products p ON st.ProductID = p.ProductID
     INNER JOIN Warehouses w ON st.WarehouseID = w.WarehouseID
-    LEFT JOIN Branches b ON w.BranchId = b.BranchID
+    LEFT JOIN Branches b ON w.BranchID = b.BranchID
     WHERE 1=1
   `;
 
@@ -154,7 +147,7 @@ async function getStockTransactions({
     request.input('warehouseId', sql.Int, warehouseId);
   }
   if (branchId) {
-    query += ` AND w.BranchId = @branchId`;
+    query += ` AND w.BranchID = @branchId`;
     request.input('branchId', sql.Int, branchId);
   }
   if (referenceType) {
@@ -250,7 +243,7 @@ async function createWarehouse(data) {
     .input('branchId', sql.Int, data.branchId || null)
     .input('createdBy', sql.NVarChar(100), data.createdBy)
     .query(`
-      INSERT INTO Warehouses (WarehouseName, Location, IsActive, Notes, BranchId, CreatedBy, CreatedAt)
+      INSERT INTO Warehouses (WarehouseName, Location, IsActive, Notes, BranchID, CreatedBy, CreatedAt)
       OUTPUT INSERTED.WarehouseID
       VALUES (@warehouseName, @location, 1, @notes, @branchId, @createdBy, GETDATE())
     `);
@@ -270,7 +263,7 @@ async function updateWarehouse(id, data) {
     .query(`
       UPDATE Warehouses SET
         WarehouseName = @warehouseName, Location = @location,
-        BranchId = @branchId, IsActive = @isActive, Notes = @notes
+        BranchID = @branchId, IsActive = @isActive, Notes = @notes
       WHERE WarehouseID = @id
     `);
   return true;
@@ -314,36 +307,58 @@ async function transferStock(data) {
       throw new Error(`رصيد المصدر غير كافي. المتاح: ${sourceQty} والمطلوب: ${quantity}`);
     }
 
-    const transferRef = `TRF-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-
-    // حركة خروج من المصدر
-    await new sql.Request(transaction)
+    // ReferenceID في قاعدة البيانات من نوع int، لذلك نستخدم رقم حركة الخروج
+    // كمرجع مشترك للحركتين بدل إرسال نص إلى عمود رقمي.
+    const outResult = await new sql.Request(transaction)
       .input('productId', sql.Int, productId)
       .input('warehouseId', sql.Int, fromWarehouseId)
       .input('transactionType', sql.NVarChar(50), 'Out')
       .input('quantity', sql.Int, quantity)
       .input('referenceType', sql.NVarChar(50), 'WarehouseTransferOut')
-      .input('referenceId', sql.NVarChar(100), transferRef)
       .input('notes', sql.NVarChar(500), notes || `تحويل إلى مخزن ${toWarehouseId}`)
       .input('createdBy', sql.NVarChar(100), createdBy)
       .query(`
-        INSERT INTO StockTransactions (ProductID, WarehouseID, TransactionType, Quantity, TransactionDate, ReferenceType, ReferenceID, Notes, CreatedBy, CreatedAt)
-        VALUES (@productId, @warehouseId, @transactionType, @quantity, GETDATE(), @referenceType, @referenceId, @notes, @createdBy, GETDATE())
+        INSERT INTO StockTransactions (
+          ProductID, WarehouseID, TransactionType, Quantity,
+          TransactionDate, ReferenceType, Notes, CreatedBy, CreatedAt
+        )
+        OUTPUT INSERTED.TransactionID
+        VALUES (
+          @productId, @warehouseId, @transactionType, @quantity,
+          GETDATE(), @referenceType, @notes, @createdBy, GETDATE()
+        )
       `);
 
-    // حركة دخول إلى الوجهة
+    const transferReferenceId = outResult.recordset[0].TransactionID;
+    const transferRef = `TRF-${transferReferenceId}`;
+
+    await new sql.Request(transaction)
+      .input('transactionId', sql.Int, transferReferenceId)
+      .query(`
+        UPDATE StockTransactions
+        SET ReferenceID = @transactionId
+        WHERE TransactionID = @transactionId
+      `);
+
+    // حركة دخول إلى الوجهة بنفس المرجع الرقمي
     await new sql.Request(transaction)
       .input('productId', sql.Int, productId)
       .input('warehouseId', sql.Int, toWarehouseId)
       .input('transactionType', sql.NVarChar(50), 'In')
       .input('quantity', sql.Int, quantity)
       .input('referenceType', sql.NVarChar(50), 'WarehouseTransferIn')
-      .input('referenceId', sql.NVarChar(100), transferRef)
+      .input('referenceId', sql.Int, transferReferenceId)
       .input('notes', sql.NVarChar(500), notes || `تحويل من مخزن ${fromWarehouseId}`)
       .input('createdBy', sql.NVarChar(100), createdBy)
       .query(`
-        INSERT INTO StockTransactions (ProductID, WarehouseID, TransactionType, Quantity, TransactionDate, ReferenceType, ReferenceID, Notes, CreatedBy, CreatedAt)
-        VALUES (@productId, @warehouseId, @transactionType, @quantity, GETDATE(), @referenceType, @referenceId, @notes, @createdBy, GETDATE())
+        INSERT INTO StockTransactions (
+          ProductID, WarehouseID, TransactionType, Quantity,
+          TransactionDate, ReferenceType, ReferenceID, Notes, CreatedBy, CreatedAt
+        )
+        VALUES (
+          @productId, @warehouseId, @transactionType, @quantity,
+          GETDATE(), @referenceType, @referenceId, @notes, @createdBy, GETDATE()
+        )
       `);
 
     // تحديث أرصدة

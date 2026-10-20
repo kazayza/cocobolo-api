@@ -93,9 +93,10 @@ async function create(req, res) {
     // منع التكرار: createNotification يحفظ ويرسل Push مرة واحدة.
     // لو Blazor حفظ الإشعار بالفعل (skipSave) نرسل Push فقط.
     let notificationId = null;
+    let pushResult = null;
     if (skipSave === true || skipSave === 'true') {
       console.log(`📣 إشعار محفوظ من Blazor (Push فقط): "${title}" → ${recipientUser}`);
-      await notificationsQueries.sendPushOnly(req.body);
+      pushResult = await notificationsQueries.sendPushOnly(req.body);
     } else {
       notificationId = await notificationsQueries.createNotification(req.body);
     }
@@ -103,7 +104,14 @@ async function create(req, res) {
     return res.json({
       success: true,
       notificationId: notificationId,
-      message: 'تم إرسال الإشعار بنجاح'
+      push: pushResult
+        ? {
+            success: pushResult.success === true,
+            reason: pushResult.reason || null,
+            code: pushResult.code || null,
+          }
+        : null,
+      message: 'تم حفظ الإشعار ومحاولة إرسال Push بنجاح'
     });
   } catch (err) {
     console.error('خطأ في إرسال الإشعار:', err);
@@ -265,6 +273,43 @@ async function broadcast(req, res) {
   }
 }
 
+// اختبار Push للمستخدم الحالي من غير إنشاء صف جديد في جدول الإشعارات.
+async function testSelfPush(req, res) {
+  try {
+    const username = req.auth?.username;
+    if (!username) return errorResponse(res, 'الجلسة غير صالحة', 401);
+    if (!isFirebaseReady()) {
+      return res.json({ success: false, reason: 'firebase-disabled', message: 'Firebase غير مفعل على السيرفر' });
+    }
+
+    const token = await notificationsQueries.getFcmToken(username);
+    if (!token) {
+      return res.json({
+        success: false,
+        reason: 'missing-token',
+        message: 'لا يوجد FCM Token مسجل. افتح التطبيق أو سجّل الدخول مرة أخرى.',
+      });
+    }
+
+    const result = await sendPushNotification(
+      token,
+      'اختبار إشعارات COCOBOLO',
+      'إذا ظهر هذا الإشعار والتطبيق مغلق فالإشعارات اللحظية تعمل بنجاح.',
+      { formName: 'notifications', routeVersion: '2', test: 'true' },
+    );
+
+    return res.json({
+      success: result.success === true,
+      reason: result.success ? null : 'push-failed',
+      code: result.code || null,
+      message: result.success ? 'تم إرسال إشعار الاختبار' : (result.error || 'فشل إرسال إشعار الاختبار'),
+    });
+  } catch (err) {
+    console.error('testSelfPush:', err);
+    return errorResponse(res, 'فشل اختبار الإشعارات', 500, err.message);
+  }
+}
+
 // تصدير الدوال
 module.exports = {
   getUnread,
@@ -274,5 +319,6 @@ module.exports = {
   create,
   createSmart,
   sendPush,
+  testSelfPush,
   broadcast
 };
