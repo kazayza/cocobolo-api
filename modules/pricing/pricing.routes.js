@@ -1,10 +1,52 @@
 const express = require('express');
 const router = express.Router();
 const pricingController = require('./pricing.controller');
+const { authenticate, requirePolicy } = require('../../core/auth.middleware');
+const { priceList: priceListPolicy } = require('../../shared/authorization.policy');
 
 // =============================================
 // 💰 Pricing Routes
 // =============================================
+
+// -----------------------------------------------
+// قائمة الأسعار - الكتالوج العام للموبايل
+// -----------------------------------------------
+router.get(
+  '/price-list',
+  authenticate,
+  requirePolicy(priceListPolicy.canView, 'غير مصرح لك بعرض قائمة الأسعار'),
+  pricingController.getPriceList,
+);
+router.get(
+  '/price-list/:id/history',
+  authenticate,
+  requirePolicy(priceListPolicy.canViewHistory, 'غير مصرح لك بعرض سجل الأسعار'),
+  pricingController.getPriceListHistory,
+);
+router.get(
+  '/price-list/:id/images',
+  authenticate,
+  requirePolicy(priceListPolicy.canView, 'غير مصرح لك بعرض صور المنتج'),
+  pricingController.getPriceListImages,
+);
+router.put(
+  '/price-list/:id/price',
+  authenticate,
+  requirePolicy(priceListPolicy.canEditSalePrice, 'التعديل المباشر متاح للمدير ومدير الحسابات فقط'),
+  pricingController.updatePriceListPrice,
+);
+router.put(
+  '/price-list/:id/cost',
+  authenticate,
+  requirePolicy(priceListPolicy.canEditCost, 'تعديل التكلفة غير متاح لهذا المستخدم'),
+  pricingController.updatePriceListCost,
+);
+router.post(
+  '/price-list/:id/request',
+  authenticate,
+  requirePolicy(priceListPolicy.canRequestPriceChange, 'غير مصرح لك بطلب تعديل السعر'),
+  pricingController.requestPriceListChange,
+);
 
 // -----------------------------------------------
 // 🔢 نسب الربح (Admin / AccountManager فقط)
@@ -48,23 +90,43 @@ router.post('/products/:id/price-request', pricingController.createPriceRequest)
 
 // جلب الطلبات المعلقة (SalesManager)
 // GET /api/pricing/price-requests/pending
-router.get('/price-requests/pending', pricingController.getPendingRequests);
+router.get(
+  '/price-requests/pending',
+  authenticate,
+  requirePolicy(priceListPolicy.canReviewRequests, 'غير مصرح لك بمراجعة طلبات الأسعار'),
+  pricingController.getPendingRequests,
+);
 
 // جلب طلباتي (Sales)
 // GET /api/pricing/price-requests/my?username=xxx
-router.get('/price-requests/my', pricingController.getMyRequests);
+router.get('/price-requests/my', authenticate, pricingController.getMyRequests);
 
 // جلب كل الطلبات (Admin)
 // GET /api/pricing/price-requests/all
-router.get('/price-requests/all', pricingController.getAllRequests);
+router.get(
+  '/price-requests/all',
+  authenticate,
+  requirePolicy(priceListPolicy.canReviewRequests, 'غير مصرح لك بعرض كل طلبات الأسعار'),
+  pricingController.getAllRequests,
+);
 
 // موافقة على طلب (SalesManager)
 // PUT /api/pricing/price-requests/:id/approve
-router.put('/price-requests/:id/approve', pricingController.approveRequest);
+router.put(
+  '/price-requests/:id/approve',
+  authenticate,
+  requirePolicy(priceListPolicy.canReviewRequests, 'غير مصرح لك بالموافقة على طلبات الأسعار'),
+  pricingController.approveRequest,
+);
 
 // رفض طلب (SalesManager)
 // PUT /api/pricing/price-requests/:id/reject
-router.put('/price-requests/:id/reject', pricingController.rejectRequest);
+router.put(
+  '/price-requests/:id/reject',
+  authenticate,
+  requirePolicy(priceListPolicy.canReviewRequests, 'غير مصرح لك برفض طلبات الأسعار'),
+  pricingController.rejectRequest,
+);
 
 // -----------------------------------------------
 // 📊 تاريخ الأسعار

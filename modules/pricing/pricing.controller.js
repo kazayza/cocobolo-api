@@ -1,6 +1,7 @@
 const pricingQueries = require('./pricing.queries');
 const notificationsQueries = require('../notifications/notifications.queries');
 const { successResponse, errorResponse } = require('../../shared/response.helper');
+const policy = require('../../shared/authorization.policy');
 
 // =============================================
 // 🔢 نسب الربح (PricingMargins)
@@ -285,8 +286,8 @@ async function getPendingRequests(req, res) {
 // جلب طلباتي (Sales)
 async function getMyRequests(req, res) {
   try {
-    const { username } = req.query;
-    if (!username) return errorResponse(res, 'اسم المستخدم مطلوب', 400);
+    const username = req.auth?.username;
+    if (!username) return errorResponse(res, 'الجلسة غير صالحة', 401);
 
     const requests = await pricingQueries.getMyRequests(username);
     return res.json(requests);
@@ -311,11 +312,12 @@ async function getAllRequests(req, res) {
 async function approveRequest(req, res) {
   try {
     const { id } = req.params;
-    const { reviewedBy, reviewNotes, clientTime } = req.body;
+    const { reviewNotes, clientTime } = req.body;
+    const reviewedBy = req.auth?.username;
 
-    if (!reviewedBy) return errorResponse(res, 'اسم المستخدم مطلوب', 400);
+    if (!reviewedBy) return errorResponse(res, 'الجلسة غير صالحة', 401);
 
-    const result = await pricingQueries.approveRequest(id, reviewedBy, reviewNotes, clientTime);
+    const result = await pricingQueries.approveRequest(id, reviewedBy, reviewNotes, clientTime || new Date().toISOString());
 
     // 🔔 إشعار للسيلز
     try {
@@ -357,7 +359,7 @@ async function approveRequest(req, res) {
     });
   } catch (err) {
     console.error('خطأ في الموافقة:', err);
-    return errorResponse(res, 'فشل الموافقة على الطلب', 500, err.message);
+    return errorResponse(res, err.message || 'فشل الموافقة على الطلب', err.statusCode || 500, err.message);
   }
 }
 
@@ -365,12 +367,13 @@ async function approveRequest(req, res) {
 async function rejectRequest(req, res) {
   try {
     const { id } = req.params;
-    const { reviewedBy, reviewNotes, clientTime } = req.body;
+    const { reviewNotes, clientTime } = req.body;
+    const reviewedBy = req.auth?.username;
 
-    if (!reviewedBy) return errorResponse(res, 'اسم المستخدم مطلوب', 400);
+    if (!reviewedBy) return errorResponse(res, 'الجلسة غير صالحة', 401);
     if (!reviewNotes) return errorResponse(res, 'سبب الرفض مطلوب', 400);
 
-    const result = await pricingQueries.rejectRequest(id, reviewedBy, reviewNotes, clientTime);
+    const result = await pricingQueries.rejectRequest(id, reviewedBy, reviewNotes, clientTime || new Date().toISOString());
 
     // 🔔 إشعار للسيلز بالرفض
     try {
@@ -393,7 +396,7 @@ async function rejectRequest(req, res) {
     });
   } catch (err) {
     console.error('خطأ في الرفض:', err);
-    return errorResponse(res, 'فشل رفض الطلب', 500, err.message);
+    return errorResponse(res, err.message || 'فشل رفض الطلب', err.statusCode || 500, err.message);
   }
 }
 
@@ -409,6 +412,165 @@ async function getPriceHistory(req, res) {
   } catch (err) {
     console.error('خطأ في جلب تاريخ الأسعار:', err);
     return errorResponse(res, 'فشل تحميل تاريخ الأسعار', 500, err.message);
+  }
+}
+
+
+// =============================================
+// قائمة الأسعار - API الموبايل
+// =============================================
+
+async function getPriceList(req, res) {
+  try {
+    const branchId = req.query.branchId ? parseInt(req.query.branchId, 10) : null;
+    const [rows, branches] = await Promise.all([
+      pricingQueries.getPriceListRows(branchId),
+      pricingQueries.getPriceListBranches(),
+    ]);
+
+    const canSeeSalePrices = policy.priceList.canSeeSalePrices(req.auth);
+    const canSeeCosts = policy.priceList.canSeeCosts(req.auth);
+    const scopedRows = rows.map((row) => {
+      const scoped = { ...row };
+      if (!canSeeSalePrices) {
+        delete scoped.StdPrice;
+        delete scoped.PremiumPrice;
+        delete scoped.ElitePrice;
+        delete scoped.SaleDiscountPercent;
+        delete scoped.PreviousPremiumPrice;
+      }
+      if (!canSeeCosts) {
+        delete scoped.StdCost;
+        delete scoped.PremiumCost;
+        delete scoped.EliteCost;
+      }
+      return scoped;
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        rows: scopedRows,
+        branches,
+        selectedBranchId: branchId,
+        capabilities: {
+          canSeeSalePrices,
+          canSeeCosts,
+          canEditSalePrice: policy.priceList.canEditSalePrice(req.auth),
+          canEditCost: policy.priceList.canEditCost(req.auth),
+          canRequestPriceChange: policy.priceList.canRequestPriceChange(req.auth),
+          canReviewRequests: policy.priceList.canReviewRequests(req.auth),
+          canViewHistory: policy.priceList.canViewHistory(req.auth),
+          canExport: policy.priceList.canExport(req.auth),
+        },
+      },
+    });
+  } catch (err) {
+    console.error('getPriceList:', err);
+    return errorResponse(res, 'تعذر تحميل قائمة الأسعار', 500, err.message);
+  }
+}
+
+async function getPriceListHistory(req, res) {
+  try {
+    const history = await pricingQueries.getPriceListHistory(
+      parseInt(req.params.id, 10),
+      req.query.take,
+    );
+    return res.json({ success: true, data: history });
+  } catch (err) {
+    console.error('getPriceListHistory:', err);
+    return errorResponse(res, 'تعذر تحميل سجل الأسعار', err.statusCode || 500, err.message);
+  }
+}
+
+async function getPriceListImages(req, res) {
+  try {
+    const imageIds = await pricingQueries.getPriceListImageIds(parseInt(req.params.id, 10));
+    return res.json({ success: true, data: imageIds });
+  } catch (err) {
+    console.error('getPriceListImages:', err);
+    return errorResponse(res, 'تعذر تحميل صور المنتج', 500, err.message);
+  }
+}
+
+async function updatePriceListPrice(req, res) {
+  try {
+    const result = await pricingQueries.updatePriceListValue({
+      productId: parseInt(req.params.id, 10),
+      tier: req.body.tier,
+      newValue: req.body.newPrice,
+      reason: req.body.reason,
+      username: req.auth.username,
+      valueType: 'sale',
+    });
+    return res.json({
+      success: true,
+      data: result,
+      message: 'تم تحديث سعر البيع وتوثيق التعديل بنجاح',
+    });
+  } catch (err) {
+    console.error('updatePriceListPrice:', err);
+    return errorResponse(res, err.message || 'تعذر تحديث السعر', err.statusCode || 500, err.message);
+  }
+}
+
+async function updatePriceListCost(req, res) {
+  try {
+    const result = await pricingQueries.updatePriceListValue({
+      productId: parseInt(req.params.id, 10),
+      tier: req.body.tier,
+      newValue: req.body.newCost,
+      reason: req.body.reason,
+      username: req.auth.username,
+      valueType: 'cost',
+    });
+    return res.json({
+      success: true,
+      data: result,
+      message: 'تم تحديث التكلفة وتوثيق التعديل بنجاح',
+    });
+  } catch (err) {
+    console.error('updatePriceListCost:', err);
+    return errorResponse(res, err.message || 'تعذر تحديث التكلفة', err.statusCode || 500, err.message);
+  }
+}
+
+async function requestPriceListChange(req, res) {
+  try {
+    const result = await pricingQueries.createPriceListRequest({
+      productId: parseInt(req.params.id, 10),
+      tier: req.body.tier,
+      requestedPrice: req.body.requestedPrice,
+      reason: req.body.reason,
+      username: req.auth.username,
+    });
+
+    const message = `طلب تعديل سعر ${result.tier} للمنتج «${result.productName}» `
+      + `من ${result.currentPrice} إلى ${result.requestedPrice} ج — بواسطة ${req.auth.username}`;
+    for (const role of ['Admin', 'AccountManager']) {
+      try {
+        await notificationsQueries.createNotificationSmart({
+          title: 'طلب تعديل سعر',
+          message,
+          createdBy: req.auth.username,
+          formName: 'sales/price-requests',
+          relatedTable: 'Products',
+          relatedId: result.productId,
+        }, role);
+      } catch (notificationError) {
+        console.error(`price-list notify ${role}:`, notificationError.message);
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: result,
+      message: 'تم إرسال طلب تعديل السعر للمراجعة',
+    });
+  } catch (err) {
+    console.error('requestPriceListChange:', err);
+    return errorResponse(res, err.message || 'تعذر إرسال طلب السعر', err.statusCode || 500, err.message);
   }
 }
 
@@ -432,5 +594,12 @@ module.exports = {
   approveRequest,
   rejectRequest,
   // تاريخ الأسعار
-  getPriceHistory
+  getPriceHistory,
+  // قائمة الأسعار
+  getPriceList,
+  getPriceListHistory,
+  getPriceListImages,
+  updatePriceListPrice,
+  updatePriceListCost,
+  requestPriceListChange
 };

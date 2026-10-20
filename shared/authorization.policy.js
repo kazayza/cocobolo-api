@@ -102,6 +102,20 @@ const products = {
   canDelete: (a) => roles.admin(a) || hasClaim(a, 'frm_Products:Delete'),
 };
 
+const priceList = {
+  canView: (a) => roles.admin(a) || hasClaim(a, 'frm_PriceList:View'),
+  canSeeSalePrices: (a) => !roles.factory(a),
+  canSeeCosts: (a) => roles.admin(a) || roles.accountManager(a) || roles.account(a),
+  canEditSalePrice: (a) => roles.admin(a) || roles.accountManager(a),
+  canEditCost: (a) => roles.admin(a) || roles.accountManager(a) || roles.account(a),
+  canRequestPriceChange: (a) => priceList.canView(a)
+    && priceList.canSeeSalePrices(a)
+    && !priceList.canSeeCosts(a),
+  canViewHistory: (a) => roles.admin(a) || roles.accountManager(a),
+  canReviewRequests: (a) => roles.admin(a) || roles.accountManager(a) || roles.salesManager(a),
+  canExport: (a) => roles.admin(a) || roles.accountManager(a),
+};
+
 module.exports = {
   norm,
   isRole,
@@ -113,4 +127,5 @@ module.exports = {
   complaints,
   notifications,
   products,
+  priceList,
 };
