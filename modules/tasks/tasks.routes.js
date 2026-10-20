@@ -3,8 +3,10 @@ const router = express.Router();
 const tasksController = require('./tasks.controller');
 
 // ===================================
-// ✅ Tasks Routes
+// Tasks Routes
 // ===================================
+
+// المسارات الثابتة يجب أن تسبق /:id حتى لا تُفسَّر كلمات مثل "general" كرقم مهمة.
 
 // ملخص المهام
 // GET /api/tasks/summary?assignedTo=xxx
@@ -18,17 +20,21 @@ router.get('/today', tasksController.getToday);
 // GET /api/tasks/overdue?assignedTo=xxx
 router.get('/overdue', tasksController.getOverdue);
 
+// التكليفات العامة - مطابقة بلازور GeneralTasks
+router.get('/general', tasksController.getGeneral);
+router.post('/general', tasksController.createGeneral);
+
 // جلب كل المهام
 // GET /api/tasks?assignedTo=xxx&status=xxx&priority=xxx&startDate=xxx&endDate=xxx
 router.get('/', tasksController.getAll);
 
-// جلب مهمة بالـ ID
-// GET /api/tasks/:id
-router.get('/:id', tasksController.getById);
-
 // إنشاء مهمة جديدة
 // POST /api/tasks
 router.post('/', tasksController.create);
+
+// جلب مهمة بالـ ID
+// GET /api/tasks/:id
+router.get('/:id', tasksController.getById);
 
 // تعديل مهمة
 // PUT /api/tasks/:id
@@ -42,11 +48,6 @@ router.put('/:id/status', tasksController.updateStatus);
 // DELETE /api/tasks/:id
 router.delete('/:id', tasksController.remove);
 
-// تصدير الراوتر
-
-// ── التكليفات العامة - مطابقة بلازور GeneralTasks ──
-router.get('/general', tasksController.getGeneral);
-router.post('/general', tasksController.createGeneral);
 router.post('/:id/start', tasksController.startTask);
 router.post('/:id/complete', tasksController.completeTask);
 

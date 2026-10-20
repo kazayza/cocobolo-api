@@ -105,12 +105,14 @@ async function getJobOrderStats(filters = {}, options = {}) {
       SUM(CASE WHEN ISNULL(t.IsDelivered, 0) = 0 THEN 1 ELSE 0 END) AS UndeliveredCount,
       SUM(CASE WHEN t.IsDelivered = 1 THEN 1 ELSE 0 END) AS DeliveredCount,
       SUM(CASE WHEN ISNULL(t.IsDelivered, 0) = 0 AND t.DueDate < CAST(GETDATE() AS DATE) THEN 1 ELSE 0 END) AS OverdueCount,
-      SUM(CASE WHEN EXISTS (
-        SELECT 1 FROM TransactionDetails d
-        WHERE d.TransactionID = t.TransactionID AND d.SelectedAlternativeID IS NOT NULL
-      ) THEN 1 ELSE 0 END) AS WithAlternativesCount
+      SUM(CASE WHEN alternativeOrders.TransactionID IS NOT NULL THEN 1 ELSE 0 END) AS WithAlternativesCount
     FROM Transactions t
     INNER JOIN Parties p ON t.PartyID = p.PartyID
+    LEFT JOIN (
+      SELECT DISTINCT TransactionID
+      FROM TransactionDetails
+      WHERE SelectedAlternativeID IS NOT NULL
+    ) alternativeOrders ON alternativeOrders.TransactionID = t.TransactionID
     WHERE ${where}
   `);
   return result.recordset[0] || {};

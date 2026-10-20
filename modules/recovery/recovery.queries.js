@@ -60,9 +60,9 @@ async function getStats() {
       SELECT COUNT(DISTINCT OpportunityID) as cnt
       FROM CustomerInteractions
       WHERE InteractionDate >= @monthStart
-        AND StageBeforeId IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
-        AND StageAfterId IS NOT NULL
-        AND StageAfterId NOT IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
+        AND StageBeforeID IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
+        AND StageAfterID IS NOT NULL
+        AND StageAfterID NOT IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
     `);
   const revivedThisMonth = revivedRes.recordset[0]?.cnt || 0;
 
@@ -74,8 +74,8 @@ async function getStats() {
       SELECT DISTINCT OpportunityID
       FROM CustomerInteractions
       WHERE OpportunityID IN (${idsStr})
-        AND StageBeforeId IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
-        AND StageAfterId IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
+        AND StageBeforeID IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
+        AND StageAfterID IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
         AND Summary NOT LIKE N'نقل تلقائي%'
     `);
     const contactedSet = new Set(contactedRes.recordset.map(r => r.OpportunityID));
@@ -176,7 +176,7 @@ async function getQueue(filters = {}, pageIndex = 1, pageSize = 12, username = n
 
   if (UncontactedOnly) {
     whereClauses.push(`EXISTS (SELECT 1 FROM CRM_Tasks t WHERE t.OpportunityID = o.OpportunityID AND t.TaskScope = N'Recovery' AND t.Status = N'Pending' AND t.IsActive = 1)`);
-    whereClauses.push(`NOT EXISTS (SELECT 1 FROM CustomerInteractions ci WHERE ci.OpportunityID = o.OpportunityID AND ci.StageBeforeId IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID}) AND ci.StageAfterId IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID}) AND ci.Summary NOT LIKE N'نقل تلقائي%')`);
+    whereClauses.push(`NOT EXISTS (SELECT 1 FROM CustomerInteractions ci WHERE ci.OpportunityID = o.OpportunityID AND ci.StageBeforeID IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID}) AND ci.StageAfterID IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID}) AND ci.Summary NOT LIKE N'نقل تلقائي%')`);
   }
 
   const whereSQL = whereClauses.join(' AND ');
@@ -228,9 +228,9 @@ async function getQueue(filters = {}, pageIndex = 1, pageSize = 12, username = n
       DATEDIFF(DAY, o.ClosedAt, GETDATE()) AS DaysSinceClosed,
       CASE WHEN o.NextFollowUpDate IS NOT NULL AND CAST(o.NextFollowUpDate AS DATE) < CAST(GETDATE() AS DATE) THEN 1 ELSE 0 END AS IsFollowUpOverdue,
       -- Last CS contact after loss
-      (SELECT TOP 1 ci.Summary FROM CustomerInteractions ci WHERE ci.OpportunityID = o.OpportunityID AND ci.StageBeforeId IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID}) AND ci.StageAfterId IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID}) AND ci.Summary NOT LIKE N'نقل تلقائي%' ORDER BY ci.InteractionDate DESC) AS LastCsSummary,
-      (SELECT TOP 1 ci.InteractionDate FROM CustomerInteractions ci WHERE ci.OpportunityID = o.OpportunityID AND ci.StageBeforeId IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID}) AND ci.StageAfterId IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID}) AND ci.Summary NOT LIKE N'نقل تلقائي%' ORDER BY ci.InteractionDate DESC) AS LastCsDate,
-      (SELECT TOP 1 ci.CreatedBy FROM CustomerInteractions ci WHERE ci.OpportunityID = o.OpportunityID AND ci.StageBeforeId IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID}) AND ci.StageAfterId IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID}) AND ci.Summary NOT LIKE N'نقل تلقائي%' ORDER BY ci.InteractionDate DESC) AS LastCsBy
+      (SELECT TOP 1 ci.Summary FROM CustomerInteractions ci WHERE ci.OpportunityID = o.OpportunityID AND ci.StageBeforeID IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID}) AND ci.StageAfterID IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID}) AND ci.Summary NOT LIKE N'نقل تلقائي%' ORDER BY ci.InteractionDate DESC) AS LastCsSummary,
+      (SELECT TOP 1 ci.InteractionDate FROM CustomerInteractions ci WHERE ci.OpportunityID = o.OpportunityID AND ci.StageBeforeID IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID}) AND ci.StageAfterID IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID}) AND ci.Summary NOT LIKE N'نقل تلقائي%' ORDER BY ci.InteractionDate DESC) AS LastCsDate,
+      (SELECT TOP 1 ci.CreatedBy FROM CustomerInteractions ci WHERE ci.OpportunityID = o.OpportunityID AND ci.StageBeforeID IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID}) AND ci.StageAfterID IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID}) AND ci.Summary NOT LIKE N'نقل تلقائي%' ORDER BY ci.InteractionDate DESC) AS LastCsBy
     FROM SalesOpportunities o
     LEFT JOIN Parties p ON o.PartyID = p.PartyID
     LEFT JOIN SalesStages ss ON o.StageID = ss.StageID
@@ -593,7 +593,7 @@ async function logContact(data, userName) {
       .query(`
         INSERT INTO CustomerInteractions (
           OpportunityID, PartyID, EmployeeID, InteractionDate, Summary,
-          StageBeforeId, StageAfterId, NextFollowUpDate, CreatedBy, CreatedAt
+          StageBeforeID, StageAfterID, NextFollowUpDate, CreatedBy, CreatedAt
         ) VALUES (
           @oppId, @partyId, @empId, GETDATE(), @summary,
           @stageBefore, @stageAfter, @nextFollowUp, @createdBy, GETDATE()
@@ -859,7 +859,7 @@ async function revive(data, userName) {
         .query(`
           INSERT INTO CustomerInteractions (
             OpportunityID, PartyID, EmployeeID, InteractionDate, Summary,
-            StageBeforeId, StageAfterId, NextFollowUpDate, Notes, CreatedBy, CreatedAt
+            StageBeforeID, StageAfterID, NextFollowUpDate, Notes, CreatedBy, CreatedAt
           ) VALUES (
             @oppId, @partyId, @empId, GETDATE(), @summary,
             @stageBefore, @stageAfter, @nextFollowUp, @notes, @createdBy, GETDATE()
@@ -902,7 +902,7 @@ async function revive(data, userName) {
         .query(`
           INSERT INTO CustomerInteractions (
             OpportunityID, PartyID, EmployeeID, InteractionDate, Summary,
-            StageAfterId, NextFollowUpDate, CreatedBy, CreatedAt
+            StageAfterID, NextFollowUpDate, CreatedBy, CreatedAt
           ) VALUES (
             @oppId, @partyId, @empId, GETDATE(), @summary,
             @stageAfter, @nextFollowUp, @createdBy, GETDATE()
@@ -936,7 +936,7 @@ async function revive(data, userName) {
         .query(`
           INSERT INTO CustomerInteractions (
             OpportunityID, PartyID, EmployeeID, InteractionDate, Summary,
-            StageBeforeId, StageAfterId, NextFollowUpDate, Notes, CreatedBy, CreatedAt
+            StageBeforeID, StageAfterID, NextFollowUpDate, Notes, CreatedBy, CreatedAt
           ) VALUES (
             @oppId, @partyId, @empId, GETDATE(), @summary,
             @stageBefore, @stageAfter, @nextFollowUp, @notes, @createdBy, GETDATE()
@@ -1001,8 +1001,8 @@ async function getRecoveryReport(filters = {}, pageIndex = 1, pageSize = 50) {
   let whereOpps = `o.IsActive = 1 OR EXISTS (
     SELECT 1 FROM CustomerInteractions ci
     WHERE ci.OpportunityID = o.OpportunityID
-      AND ci.StageBeforeId IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
-      AND ci.StageAfterId NOT IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
+      AND ci.StageBeforeID IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
+      AND ci.StageAfterID NOT IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
   )`;
 
   // For simplicity, get all opps that are lost or were revived
@@ -1012,8 +1012,8 @@ async function getRecoveryReport(filters = {}, pageIndex = 1, pageSize = 50) {
     WHERE (StageID IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID}) AND IsActive = 1)
        OR OpportunityID IN (
          SELECT DISTINCT OpportunityID FROM CustomerInteractions
-         WHERE StageBeforeId IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
-           AND StageAfterId NOT IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
+         WHERE StageBeforeID IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
+           AND StageAfterID NOT IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
        )
   `);
 
@@ -1054,8 +1054,8 @@ async function getRecoveryReport(filters = {}, pageIndex = 1, pageSize = 50) {
     SELECT OpportunityID, InteractionDate, Summary, CreatedBy
     FROM CustomerInteractions
     WHERE OpportunityID IN (${oppIdsStr})
-      AND StageBeforeId IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
-      AND StageAfterId IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
+      AND StageBeforeID IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
+      AND StageAfterID IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
       AND Summary NOT LIKE N'نقل تلقائي%'
   `);
   const csByOpp = {};
@@ -1069,8 +1069,8 @@ async function getRecoveryReport(filters = {}, pageIndex = 1, pageSize = 50) {
     SELECT OpportunityID, InteractionDate, CreatedBy
     FROM CustomerInteractions
     WHERE OpportunityID IN (${oppIdsStr})
-      AND StageBeforeId IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
-      AND StageAfterId NOT IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
+      AND StageBeforeID IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
+      AND StageAfterID NOT IN (${LOST_STAGE_ID}, ${NOT_INTERESTED_STAGE_ID})
   `);
   const revivedByOpp = {};
   revivedRes.recordset.forEach(r => {

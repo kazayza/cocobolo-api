@@ -1,6 +1,21 @@
 const tasksQueries = require('./tasks.queries');
 const { successResponse, errorResponse, notFoundResponse } = require('../../shared/response.helper');
 
+const SQL_INT_MAX = 2147483647;
+
+function parseTaskId(value) {
+  const raw = String(value ?? '').trim();
+  if (!/^\d+$/.test(raw)) return null;
+
+  const id = Number(raw);
+  if (!Number.isSafeInteger(id) || id <= 0 || id > SQL_INT_MAX) return null;
+  return id;
+}
+
+function invalidTaskIdResponse(res) {
+  return errorResponse(res, 'معرّف المهمة غير صالح', 400);
+}
+
 // جلب كل المهام
 async function getAll(req, res) {
   try {
@@ -55,7 +70,9 @@ async function getSummary(req, res) {
 // جلب مهمة بالـ ID
 async function getById(req, res) {
   try {
-    const { id } = req.params;
+    const id = parseTaskId(req.params.id);
+    if (id === null) return invalidTaskIdResponse(res);
+
     const task = await tasksQueries.getTaskById(id);
 
     if (!task) {
@@ -94,7 +111,8 @@ async function create(req, res) {
 // تعديل مهمة
 async function update(req, res) {
   try {
-    const { id } = req.params;
+    const id = parseTaskId(req.params.id);
+    if (id === null) return invalidTaskIdResponse(res);
 
     await tasksQueries.updateTask(id, req.body);
 
@@ -111,7 +129,9 @@ async function update(req, res) {
 // تحديث حالة المهمة
 async function updateStatus(req, res) {
   try {
-    const { id } = req.params;
+    const id = parseTaskId(req.params.id);
+    if (id === null) return invalidTaskIdResponse(res);
+
     const { status, completedBy, completionNotes } = req.body;
 
     if (!status) {
@@ -133,7 +153,8 @@ async function updateStatus(req, res) {
 // حذف مهمة
 async function remove(req, res) {
   try {
-    const { id } = req.params;
+    const id = parseTaskId(req.params.id);
+    if (id === null) return invalidTaskIdResponse(res);
 
     await tasksQueries.deleteTask(id);
 
@@ -187,10 +208,12 @@ async function createGeneral(req, res) {
 
 async function startTask(req, res) {
   try {
-    const { id } = req.params;
+    const id = parseTaskId(req.params.id);
+    if (id === null) return invalidTaskIdResponse(res);
+
     const { notes, userName } = req.body;
     if (!notes) return errorResponse(res, 'اكتب ماذا ستبدأ', 400);
-    await tasksQueries.startGeneralTask(parseInt(id, 10), notes, userName || 'System');
+    await tasksQueries.startGeneralTask(id, notes, userName || 'System');
     return res.json({ success: true, message: 'تم بدء التنفيذ' });
   } catch (err) {
     console.error('startTask:', err);
@@ -200,10 +223,12 @@ async function startTask(req, res) {
 
 async function completeTask(req, res) {
   try {
-    const { id } = req.params;
+    const id = parseTaskId(req.params.id);
+    if (id === null) return invalidTaskIdResponse(res);
+
     const { notes, userName } = req.body;
     if (!notes) return errorResponse(res, 'اكتب ما تم تنفيذه', 400);
-    await tasksQueries.completeGeneralTask(parseInt(id, 10), notes, userName || 'System');
+    await tasksQueries.completeGeneralTask(id, notes, userName || 'System');
     return res.json({ success: true, message: 'تم إتمام التنفيذ' });
   } catch (err) {
     console.error('completeTask:', err);
