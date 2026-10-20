@@ -465,7 +465,7 @@ async function requestEdit(transactionId, requestedBy, reason) {
         EditReviewNotes = NULL, EditDone = NULL
       WHERE TransactionID = @id;
 
-      INSERT INTO AuditLogs
+      INSERT INTO [dbo].[Audit_Log]
         (TableName, ActionType, PrimaryKeyValue, OldData, NewData,
          ActionDate, LoginName, AppName, AccessUserName)
       VALUES
@@ -536,7 +536,7 @@ async function processEditRequest(transactionId, approved, reviewer, notes) {
         EditDone = @done
       WHERE TransactionID = @id AND EditStatus = 1;
 
-      INSERT INTO AuditLogs
+      INSERT INTO [dbo].[Audit_Log]
         (TableName, ActionType, PrimaryKeyValue, OldData, NewData,
          ActionDate, LoginName, AppName, AccessUserName)
       VALUES

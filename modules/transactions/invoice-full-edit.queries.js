@@ -345,7 +345,7 @@ async function audit(transaction, {
     .input('newData', sql.NVarChar(sql.MAX), newData == null ? null : JSON.stringify(newData))
     .input('username', sql.NVarChar(100), username)
     .query(`
-      INSERT INTO AuditLogs
+      INSERT INTO [dbo].[Audit_Log]
         (TableName, ActionType, PrimaryKeyValue, OldData, NewData,
          ActionDate, LoginName, AppName, AccessUserName)
       VALUES
@@ -876,7 +876,7 @@ async function getEditHistory(transactionId, auth) {
       SELECT TOP 60 AuditID, ActionType, ActionDate,
              COALESCE(NULLIF(LoginName, ''), AccessUserName) AS LoginName,
              OldData, NewData
-      FROM AuditLogs
+      FROM [dbo].[Audit_Log]
       WHERE TableName = N'Transactions' AND PrimaryKeyValue = @id
       ORDER BY AuditID DESC
     `);
@@ -923,7 +923,7 @@ async function restoreSnapshot(transactionId, auditId, reason, auth) {
     .input('id', sql.NVarChar(100), String(transactionId))
     .query(`
       SELECT TOP 1 AuditID, ActionDate, OldData
-      FROM AuditLogs
+      FROM [dbo].[Audit_Log]
       WHERE AuditID = @auditId AND TableName = N'Transactions'
         AND PrimaryKeyValue = @id AND ActionType = N'FullEdit'
     `);
