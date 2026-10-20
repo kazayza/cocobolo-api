@@ -131,9 +131,6 @@ async function getAll(req, res) {
       limit = 30
     } = req.query;
 
-    // للتأكد إن الفلاتر واصلة
-    console.log('فلاتر الفرص:', { search, stageId, sourceId, adTypeId, employeeId, followUpStatus, sortBy, dateFrom, dateTo });
-
 const opportunities = await opportunitiesQueries.getAllOpportunities({
   search,
   stageId,

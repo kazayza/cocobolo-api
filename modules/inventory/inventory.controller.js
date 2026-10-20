@@ -38,8 +38,12 @@ async function getBranches(req, res) {
 // جلب مستويات المخزون
 async function getStockLevels(req, res) {
   try {
-    const { warehouseId } = req.query;
-    const levels = await inventoryQueries.getStockLevels(warehouseId);
+    const { warehouseId, branchId, search } = req.query;
+    const levels = await inventoryQueries.getStockLevels(
+      warehouseId ? parseInt(warehouseId, 10) : null,
+      branchId ? parseInt(branchId, 10) : null,
+      search || null,
+    );
     return res.json(levels);
   } catch (err) {
     console.error('خطأ في جلب المخزون:', err);
@@ -62,10 +66,24 @@ async function getProductStock(req, res) {
 // جلب حركات المخزون
 async function getTransactions(req, res) {
   try {
-    const { productId, warehouseId, startDate, endDate } = req.query;
-    const transactions = await inventoryQueries.getStockTransactions(
-      productId, warehouseId, startDate, endDate
-    );
+    const {
+      productId,
+      warehouseId,
+      branchId,
+      referenceType,
+      search,
+      startDate,
+      endDate,
+    } = req.query;
+    const transactions = await inventoryQueries.getStockTransactions({
+      productId: productId ? parseInt(productId, 10) : null,
+      warehouseId: warehouseId ? parseInt(warehouseId, 10) : null,
+      branchId: branchId ? parseInt(branchId, 10) : null,
+      referenceType: referenceType || null,
+      search: search || null,
+      startDate: startDate || null,
+      endDate: endDate || null,
+    });
     return res.json(transactions);
   } catch (err) {
     console.error('خطأ في جلب الحركات:', err);

@@ -5,9 +5,16 @@ async function getAllWarehouses() {
   const pool = await connectDB();
   const result = await pool.request()
     .query(`
-      SELECT WarehouseID, WarehouseName, Location, IsActive, Notes, BranchId
-      FROM Warehouses
-      ORDER BY WarehouseName
+      SELECT
+        w.WarehouseID, w.WarehouseName, w.Location, w.IsActive, w.Notes,
+        w.BranchId, b.BranchNameAr, b.BranchName,
+        ISNULL((SELECT COUNT(*) FROM StockLevels sl
+                WHERE sl.WarehouseID = w.WarehouseID AND sl.Quantity != 0), 0) AS ProductsCount,
+        ISNULL((SELECT SUM(sl.Quantity) FROM StockLevels sl
+                WHERE sl.WarehouseID = w.WarehouseID), 0) AS TotalQuantity
+      FROM Warehouses w
+      LEFT JOIN Branches b ON w.BranchId = b.BranchID
+      ORDER BY ISNULL(w.IsActive, 0) DESC, b.BranchNameAr, w.WarehouseName
     `);
   return result.recordset;
 }
@@ -56,30 +63,38 @@ async function getBranches() {
   }
 }
 
-// جلب مستويات المخزون
-async function getStockLevels(warehouseId = null) {
+// جلب مستويات المخزون مع الفرع والبحث
+async function getStockLevels(warehouseId = null, branchId = null, search = null) {
   const pool = await connectDB();
+  const request = pool.request();
   let query = `
-    SELECT 
+    SELECT
       sl.StockLevelID, sl.ProductID, sl.WarehouseID, sl.Quantity,
       sl.LastUpdatedAt,
       p.ProductName, p.ProductDescription,
-      w.WarehouseName
+      w.WarehouseName, w.BranchId,
+      b.BranchNameAr, b.BranchName
     FROM StockLevels sl
     INNER JOIN Products p ON sl.ProductID = p.ProductID
     INNER JOIN Warehouses w ON sl.WarehouseID = w.WarehouseID
+    LEFT JOIN Branches b ON w.BranchId = b.BranchID
     WHERE 1=1
   `;
-
-  const request = pool.request();
 
   if (warehouseId) {
     query += ` AND sl.WarehouseID = @warehouseId`;
     request.input('warehouseId', sql.Int, warehouseId);
   }
+  if (branchId) {
+    query += ` AND w.BranchId = @branchId`;
+    request.input('branchId', sql.Int, branchId);
+  }
+  if (search && String(search).trim()) {
+    query += ` AND (p.ProductName LIKE @search OR p.ProductDescription LIKE @search OR CAST(p.ProductID AS VARCHAR(20)) LIKE @search)`;
+    request.input('search', sql.NVarChar(200), `%${String(search).trim()}%`);
+  }
 
-  query += ` ORDER BY p.ProductName`;
-
+  query += ` ORDER BY b.BranchNameAr, w.WarehouseName, p.ProductName`;
   const result = await request.query(query);
   return result.recordset;
 }
@@ -90,57 +105,76 @@ async function getProductStock(productId) {
   const result = await pool.request()
     .input('productId', sql.Int, productId)
     .query(`
-      SELECT 
-        sl.StockLevelID, sl.WarehouseID, sl.Quantity,
-        w.WarehouseName
+      SELECT sl.StockLevelID, sl.WarehouseID, sl.Quantity,
+             w.WarehouseName, w.BranchId,
+             b.BranchNameAr, b.BranchName
       FROM StockLevels sl
       INNER JOIN Warehouses w ON sl.WarehouseID = w.WarehouseID
+      LEFT JOIN Branches b ON w.BranchId = b.BranchID
       WHERE sl.ProductID = @productId
+      ORDER BY b.BranchNameAr, w.WarehouseName
     `);
   return result.recordset;
 }
 
-// جلب حركات المخزون
-async function getStockTransactions(productId = null, warehouseId = null, startDate = null, endDate = null) {
+// جلب حركات المخزون بكامل الفلاتر
+async function getStockTransactions({
+  productId = null,
+  warehouseId = null,
+  branchId = null,
+  referenceType = null,
+  search = null,
+  startDate = null,
+  endDate = null,
+} = {}) {
   const pool = await connectDB();
+  const request = pool.request();
   let query = `
-    SELECT 
+    SELECT
       st.TransactionID, st.ProductID, st.WarehouseID,
       st.TransactionType, st.Quantity, st.TransactionDate,
       st.ReferenceID, st.ReferenceType, st.UnitPrice, st.TotalAmount,
       st.Notes, st.CreatedBy, st.CreatedAt,
       p.ProductName,
-      w.WarehouseName
+      w.WarehouseName, w.BranchId,
+      b.BranchNameAr, b.BranchName
     FROM StockTransactions st
     INNER JOIN Products p ON st.ProductID = p.ProductID
     INNER JOIN Warehouses w ON st.WarehouseID = w.WarehouseID
+    LEFT JOIN Branches b ON w.BranchId = b.BranchID
     WHERE 1=1
   `;
-
-  const request = pool.request();
 
   if (productId) {
     query += ` AND st.ProductID = @productId`;
     request.input('productId', sql.Int, productId);
   }
-
   if (warehouseId) {
     query += ` AND st.WarehouseID = @warehouseId`;
     request.input('warehouseId', sql.Int, warehouseId);
   }
-
+  if (branchId) {
+    query += ` AND w.BranchId = @branchId`;
+    request.input('branchId', sql.Int, branchId);
+  }
+  if (referenceType) {
+    query += ` AND st.ReferenceType = @referenceType`;
+    request.input('referenceType', sql.NVarChar(80), referenceType);
+  }
+  if (search && String(search).trim()) {
+    query += ` AND (p.ProductName LIKE @search OR w.WarehouseName LIKE @search OR st.Notes LIKE @search OR CAST(st.ReferenceID AS NVARCHAR(100)) LIKE @search)`;
+    request.input('search', sql.NVarChar(200), `%${String(search).trim()}%`);
+  }
   if (startDate) {
     query += ` AND CAST(st.TransactionDate AS DATE) >= @startDate`;
     request.input('startDate', sql.Date, startDate);
   }
-
   if (endDate) {
     query += ` AND CAST(st.TransactionDate AS DATE) <= @endDate`;
     request.input('endDate', sql.Date, endDate);
   }
 
-  query += ` ORDER BY st.TransactionDate DESC`;
-
+  query += ` ORDER BY st.TransactionDate DESC, st.TransactionID DESC`;
   const result = await request.query(query);
   return result.recordset;
 }

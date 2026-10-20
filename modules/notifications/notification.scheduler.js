@@ -171,7 +171,8 @@ async function checkCrmFollowUps() {
             `أهلاً يا ${username}، لديك متابعة مع العميل ${clientName} ${productName} خلال ساعتين!`,
             'SalesOpportunities',
             oppId,
-            'opportunity_detail_screen'
+            'opportunity_detail_screen',
+            `DEDUP:${cacheKey}`
           );
         }
       }
@@ -185,7 +186,8 @@ async function checkCrmFollowUps() {
             `أهلاً يا ${username}، نذكرك بموعد متابعة العميل ${clientName} ${productName} غداً.`,
             'SalesOpportunities',
             oppId,
-            'opportunity_detail_screen'
+            'opportunity_detail_screen',
+            `DEDUP:${cacheKey}`
           );
         }
       }
@@ -202,7 +204,9 @@ async function checkShiftReminders() {
   try {
     const pool = await connectDB();
     const egypt = getEgyptNowParts();
-    console.log(`⏱️ [Shifts] Egypt now = ${egypt.display} | weekday=${egypt.weekday}`);
+    if (process.env.SCHEDULER_VERBOSE === 'true') {
+      console.log(`[Shifts] Egypt now = ${egypt.display} | weekday=${egypt.weekday}`);
+    }
 
     const result = await pool.request().query(`
       SELECT
