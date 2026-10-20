@@ -104,7 +104,7 @@ async function getQuotations(filters = {}, auth) {
       q.PartyID, p.PartyName, p.Phone AS PartyPhone,
       q.WarehouseID, w.WarehouseName,
       q.OpportunityID, q.EmpId, e.FullName AS EmpName,
-      q.PricingType, q.TotalAmount, q.DiscountAmount, q.GrandTotal,
+      q.[pricingType] AS PricingType, q.TotalAmount, q.DiscountAmount, q.GrandTotal,
       ISNULL(q.Status, 'Draft') AS Status, q.InvoiceID,
       inv.ReferenceNumber AS InvoiceReference,
       q.CreatedBy, q.CreatedAt, q.RejectionReason,
@@ -208,7 +208,8 @@ async function getQuotationById(id) {
     .input('id', sql.Int, id)
     .query(`
       SELECT
-        q.*, p.PartyName, p.Phone AS PartyPhone, p.Address AS PartyAddress,
+        q.*, q.[pricingType] AS PricingType,
+        p.PartyName, p.Phone AS PartyPhone, p.Address AS PartyAddress,
         p.Email AS PartyEmail, p.City AS PartyCity,
         w.WarehouseName, e.FullName AS EmpName,
         inv.ReferenceNumber AS InvoiceReference
@@ -604,7 +605,7 @@ async function saveQuotation(id, data, auth) {
             QuotationDate = @date, ValidUntil = @validUntil,
             PartyID = @partyId, WarehouseID = @warehouseId,
             OpportunityID = @opportunityId, EmpId = @empId,
-            PricingType = @pricingType, TotalAmount = @total,
+            [pricingType] = @pricingType, TotalAmount = @total,
             DiscountAmount = @discount, GrandTotal = @grand,
             Notes = @notes, Status = @status
           WHERE QuotationID = @id
@@ -627,7 +628,7 @@ async function saveQuotation(id, data, auth) {
         .query(`
           INSERT INTO Quotations
             (QuotationDate, ValidUntil, PartyID, WarehouseID, OpportunityID,
-             EmpId, PricingType, TotalAmount, DiscountAmount, GrandTotal,
+             EmpId, [pricingType], TotalAmount, DiscountAmount, GrandTotal,
              Notes, Status, CreatedBy, CreatedAt)
           OUTPUT INSERTED.QuotationID
           VALUES
