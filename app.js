@@ -325,6 +325,9 @@ app.use('/api/transactions', require('./modules/transactions/transactions.routes
 // Quotations Module
 app.use('/api/quotations', require('./modules/quotations/quotations.routes'));
 
+// Production Job Orders Module
+app.use('/api/job-orders', require('./modules/job-orders/job-orders.routes'));
+
 // Cashbox Module
 app.use('/api/cashbox', require('./modules/cashbox/cashbox.routes'));
 

@@ -26,6 +26,7 @@ const roles = {
   factory: (a) => isRole(a, 'factory'),
   productionManager: (a) => isRole(a, 'ProductionManager'),
   factoryManager: (a) => isRole(a, 'FactoryManager'),
+  hrManager: (a) => isRole(a, 'HrManager', 'HRManager'),
   user: (a) => isRole(a, 'User'),
   b2b: (a) => isRole(a, 'B2B'),
 };
@@ -142,6 +143,27 @@ const quotations = {
   canExport: (a) => quotations.canView(a) && !quotations.isCostOnlyViewer(a),
 };
 
+const jobOrders = {
+  canView: (a) => roles.admin(a)
+    || roles.salesManager(a)
+    || roles.sales(a)
+    || roles.accountManager(a)
+    || roles.hrManager(a)
+    || roles.productionManager(a)
+    || roles.factoryManager(a)
+    || roles.factory(a)
+    || hasClaim(a, 'frm_JobOrders:View'),
+  canSeeAmounts: (a) => roles.admin(a) || roles.accountManager(a) || roles.account(a),
+  canEditDueDate: (a) => roles.admin(a)
+    || roles.productionManager(a)
+    || roles.factoryManager(a)
+    || hasClaim(a, 'frm_JobOrders:Edit'),
+  canOpenInvoices: (a) => roles.admin(a) || hasClaim(a, 'frm_PartiesInvoices:View'),
+  canViewProtectedAccountManager: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || roles.account(a),
+};
+
 module.exports = {
   norm,
   isRole,
@@ -155,4 +177,5 @@ module.exports = {
   products,
   priceList,
   quotations,
+  jobOrders,
 };
