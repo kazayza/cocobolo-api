@@ -94,6 +94,14 @@ const notifications = {
   canBroadcast: (a) => roles.admin(a),
 };
 
+const products = {
+  canView: (a) => Boolean(a?.userId)
+    && (roles.admin(a) || hasClaim(a, 'frm_ProductList:View') || hasClaim(a, 'frm_Products:View')),
+  canCreate: (a) => roles.admin(a) || hasClaim(a, 'frm_Products:Add'),
+  canEdit: (a) => roles.admin(a) || roles.factory(a) || hasClaim(a, 'frm_Products:Edit'),
+  canDelete: (a) => roles.admin(a) || hasClaim(a, 'frm_Products:Delete'),
+};
+
 module.exports = {
   norm,
   isRole,
@@ -104,4 +112,5 @@ module.exports = {
   recovery,
   complaints,
   notifications,
+  products,
 };

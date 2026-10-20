@@ -53,7 +53,7 @@ async function getAllProducts(search = '', groupId = null, statusId = null, owne
       -- ✅ تاريخ أول تسعير من المصنع
       (
         SELECT MIN(ph.ChangedAt)
-        FROM PriceHistories ph
+        FROM PriceHistory ph
         WHERE ph.ProductID = p.ProductID
       ) AS FactoryPricedAt
     FROM Products p
@@ -299,6 +299,51 @@ async function saveProductComponents(productId, components, createdBy) {
   return true;
 }
 
+// حذف منتج ومرفقاته المباشرة داخل معاملة واحدة.
+// إذا كان المنتج مستخدماً في فاتورة أو حركة مخزون، يمنع SQL الحذف وتُلغى المعاملة.
+async function deleteProduct(productId) {
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
+
+  try {
+    const existing = await transaction.request()
+      .input('productId', sql.Int, productId)
+      .query('SELECT ProductID FROM Products WITH (UPDLOCK, ROWLOCK) WHERE ProductID = @productId');
+
+    if (existing.recordset.length === 0) {
+      await transaction.rollback();
+      return false;
+    }
+
+    await transaction.request()
+      .input('productId', sql.Int, productId)
+      .query('DELETE FROM ProductComponents WHERE ProductID = @productId');
+
+    await transaction.request()
+      .input('productId', sql.Int, productId)
+      .query('DELETE FROM ProductImages WHERE ProductID = @productId');
+
+    await transaction.request()
+      .input('productId', sql.Int, productId)
+      .query('DELETE FROM PriceHistory WHERE ProductID = @productId');
+
+    await transaction.request()
+      .input('productId', sql.Int, productId)
+      .query('DELETE FROM Products WHERE ProductID = @productId');
+
+    await transaction.commit();
+    return true;
+  } catch (error) {
+    try {
+      await transaction.rollback();
+    } catch (_) {
+      // The driver may have already closed the transaction.
+    }
+    throw error;
+  }
+}
+
 // إحصائيات المنتجات (إجمالي + مسعرة + معرض + مرتبطة بعميل)
 async function getProductStats() {
   const pool = await connectDB();
@@ -340,6 +385,7 @@ module.exports = {
   addProductImage,
   addProductImageByPath,
   deleteProductImage,
+  deleteProduct,
   saveProductComponents,
   getProductStats,
   getPricingStatuses

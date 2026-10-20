@@ -220,30 +220,40 @@ async function create(req, res) {
 async function update(req, res) {
   try {
     const { id } = req.params;
-    const body = req.body;
+    const authenticatedRole = req.auth?.role || req.user?.Role;
+    const authenticatedUsername = req.auth?.username || req.user?.Username;
+    const body = {
+      ...req.body,
+      actorRole: authenticatedRole || req.body.actorRole || req.headers['x-user-role'] || '',
+      updatedBy: authenticatedUsername || req.body.updatedBy || req.body.userName || 'MobileUser',
+    };
     const stageId = body.stageId ?? body.StageID ?? body.StageId ?? body.stageID;
-    // ✅ مطابق بلازور CrmStages.IsExitStage = 4,5 فقط - تم البيع (3) لا يحتاج موافقة
+
+    // مرحلتا 4 و5 فقط تحتاجان موافقة. Stage 3 (تم البيع) مباشر.
     const isExitClosure = stageId == 4 || stageId == 5;
     if (isExitClosure) {
-      const actorRole = (body.actorRole || req.headers['x-user-role'] || '').toString().toLowerCase().replace(/\s+/g, '').replace(/_/g, '');
-      const canDirect = actorRole === 'admin' || actorRole === 'salesmanager' || actorRole === 'generalmanager' || actorRole === 'gm' || actorRole === 'general';
-      // لو مش مصرح و role موجود (يعني من فلاتر) → حول لطلب موافقة مع إشعار GM
-      if (!canDirect && actorRole) {
+      const actorRole = String(body.actorRole || '')
+        .toLowerCase()
+        .replace(/[\s_-]+/g, '');
+      const canDirect = ['admin', 'salesmanager', 'generalmanager', 'gm', 'general'].includes(actorRole);
+      if (!canDirect) {
         const result = await opportunitiesQueries.requestClosureApproval(parseInt(id, 10), {
           requestedStageId: parseInt(stageId, 10),
           lostReasonId: body.lostReasonId ?? body.LostReasonID,
           requestReasonNotes: body.lostNotes || body.requestReasonNotes || body.notes || body.reason,
           requestSource: body.requestSource || 'Flutter-Edit',
-        }, body.updatedBy || body.userName || 'MobileUser');
+        }, body.updatedBy);
         if (!result.success) return res.json(result);
         return res.json({ success: true, requiresApproval: true, requestId: result.requestId, message: result.message });
       }
     }
-    await opportunitiesQueries.updateOpportunity(id, req.body);
+
+    await opportunitiesQueries.updateOpportunity(id, body);
     return res.json({ success: true, message: 'تم تعديل الفرصة بنجاح' });
   } catch (err) {
     console.error('خطأ في تعديل الفرصة:', err);
-    return errorResponse(res, 'فشل تعديل الفرصة', 500, err.message);
+    const statusCode = err.statusCode === 404 ? 404 : 500;
+    return errorResponse(res, statusCode === 404 ? err.message : 'فشل تعديل الفرصة', statusCode, err.message);
   }
 }
 
@@ -251,12 +261,13 @@ async function update(req, res) {
 async function requestClosure(req, res) {
   try {
     const { id } = req.params;
+    const actor = req.auth?.username || req.user?.Username || req.body.userName || req.body.updatedBy || 'MobileUser';
     const result = await opportunitiesQueries.requestClosureApproval(parseInt(id, 10), {
       requestedStageId: req.body.requestedStageId || req.body.stageId || req.body.RequestedStageId,
       lostReasonId: req.body.lostReasonId || req.body.LostReasonID,
       requestReasonNotes: req.body.requestReasonNotes || req.body.lostNotes || req.body.reason || req.body.notes,
       requestSource: req.body.requestSource || 'Flutter',
-    }, req.body.userName || req.body.updatedBy || 'MobileUser');
+    }, actor);
     if (!result.success) return res.json(result);
     return res.json({ success: true, requestId: result.requestId, message: result.message });
   } catch (err) {
@@ -287,10 +298,13 @@ async function getPendingClosureByOpp(req, res) {
 
 async function approveClosure(req, res) {
   try {
-    const actorRole = (req.body.actorRole || req.headers['x-user-role'] || '').toString().toLowerCase().replace(/\s+/g, '').replace(/_/g, '');
-    const canApprove = actorRole === 'admin' || actorRole === 'salesmanager' || actorRole === 'generalmanager' || actorRole === 'gm';
-    if (actorRole && !canApprove) return errorResponse(res, 'الاعتماد للمدير العام أو مدير المبيعات فقط', 403);
-    const result = await opportunitiesQueries.approveClosureRequest(parseInt(req.params.requestId, 10), req.body.userName || 'GM', req.body.reviewNotes || req.body.decisionNotes);
+    const actorRole = String(req.auth?.role || req.user?.Role || req.body.actorRole || req.headers['x-user-role'] || '')
+      .toLowerCase()
+      .replace(/[\s_-]+/g, '');
+    const canApprove = ['admin', 'salesmanager', 'generalmanager', 'gm', 'general'].includes(actorRole);
+    if (!canApprove) return errorResponse(res, 'الاعتماد للمدير العام أو مدير المبيعات فقط', 403);
+    const actor = req.auth?.username || req.user?.Username || req.body.userName || 'GM';
+    const result = await opportunitiesQueries.approveClosureRequest(parseInt(req.params.requestId, 10), actor, req.body.reviewNotes || req.body.decisionNotes);
     if (!result.success) return res.json(result);
     return res.json({ success: true, message: result.message });
   } catch (err) {
@@ -301,10 +315,13 @@ async function approveClosure(req, res) {
 
 async function rejectClosure(req, res) {
   try {
-    const actorRole = (req.body.actorRole || req.headers['x-user-role'] || '').toString().toLowerCase().replace(/\s+/g, '').replace(/_/g, '');
-    const canApprove = actorRole === 'admin' || actorRole === 'salesmanager' || actorRole === 'generalmanager' || actorRole === 'gm';
-    if (actorRole && !canApprove) return errorResponse(res, 'الرفض للمدير العام أو مدير المبيعات فقط', 403);
-    const result = await opportunitiesQueries.rejectClosureRequest(parseInt(req.params.requestId, 10), req.body.userName || 'GM', req.body.reviewNotes || req.body.decisionNotes);
+    const actorRole = String(req.auth?.role || req.user?.Role || req.body.actorRole || req.headers['x-user-role'] || '')
+      .toLowerCase()
+      .replace(/[\s_-]+/g, '');
+    const canApprove = ['admin', 'salesmanager', 'generalmanager', 'gm', 'general'].includes(actorRole);
+    if (!canApprove) return errorResponse(res, 'الرفض للمدير العام أو مدير المبيعات فقط', 403);
+    const actor = req.auth?.username || req.user?.Username || req.body.userName || 'GM';
+    const result = await opportunitiesQueries.rejectClosureRequest(parseInt(req.params.requestId, 10), actor, req.body.reviewNotes || req.body.decisionNotes);
     if (!result.success) return res.json(result);
     return res.json({ success: true, message: result.message });
   } catch (err) {
@@ -315,7 +332,8 @@ async function rejectClosure(req, res) {
 
 async function executeClosure(req, res) {
   try {
-    const result = await opportunitiesQueries.executeApprovedClosure(parseInt(req.params.id, 10), req.body.userName || 'MobileUser');
+    const actor = req.auth?.username || req.user?.Username || req.body.userName || 'MobileUser';
+    const result = await opportunitiesQueries.executeApprovedClosure(parseInt(req.params.id, 10), actor);
     if (!result.success) return res.json(result);
     return res.json({ success: true, message: result.message });
   } catch (err) {

@@ -1,4 +1,10 @@
 const { sql, connectDB } = require('../../core/database');
+let recoveryQueries;
+try {
+  recoveryQueries = require('../recovery/recovery.queries');
+} catch (_) {
+  recoveryQueries = null;
+}
 
 // تسجيل تواصل جديد (الـ Flow الكامل)
 // تسجيل تواصل جديد (الـ Flow الكامل) - معدل للـ Triggers
@@ -31,6 +37,7 @@ async function createInteraction(data) {
   lostReasonId,
   lostNotes,
   nextFollowUpDate,
+  firstContactDate,
   taskTypeId,
   createdBy
 } = data;
@@ -48,14 +55,15 @@ async function createInteraction(data) {
         .input('phone', sql.NVarChar(50), phone1)
         .input('phone2', sql.NVarChar(50), phone2 || null)
         .input('address', sql.NVarChar(250), address || null)
+        .input('email', sql.NVarChar(100), email || null)
         .input('createdBy', sql.NVarChar(100), createdBy)
         .query(`
           INSERT INTO Parties (
-            PartyName, PartyType, Phone, Phone2, Address,
+            PartyName, PartyType, Phone, Phone2, Address, Email,
             IsActive, CreatedBy, CreatedAt
           )
           VALUES (
-            @partyName, @partyType, @phone, @phone2, @address,
+            @partyName, @partyType, @phone, @phone2, @address, @email,
             1, @createdBy, GETDATE()
           );
           SELECT SCOPE_IDENTITY() AS PartyID; -- ✅ الحل هنا
@@ -82,39 +90,55 @@ async function createInteraction(data) {
       stageBeforeId = existingOpp.recordset[0].StageID; // ✅ حفظ المرحلة القديمة
 
       await transaction.request()
-  .input('oppId', sql.Int, opportunityId)
-  .input('employeeId', sql.Int, employeeId || null)
-  .input('stageId', sql.Int, stageId || null)
-  .input('statusId', sql.Int, statusId || null)
-  .input('categoryId', sql.Int, categoryId || null)
-  .input('interestedProduct', sql.NVarChar(200), interestedProduct || null)
-  .input('expectedValue', sql.Decimal(18, 2), expectedValue || null)
-  .input('location', sql.NVarChar(200), location || null)
-  .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate ? new Date(nextFollowUpDate) : null)
-  .input('lostReasonId', sql.Int, lostReasonId || null)
-  .input('lostNotes', sql.NVarChar(500), lostNotes || null)
-  .input('notes', sql.NVarChar(500), summary || null)
-  .input('guidance', sql.NVarChar(500), guidance || null)
-  .input('updatedBy', sql.NVarChar(50), createdBy)
-  .query(`
-    UPDATE SalesOpportunities SET
-      EmployeeID = CASE WHEN EmployeeID IS NULL THEN @employeeId ELSE EmployeeID END,
-      StageID = COALESCE(@stageId, StageID),
-      StatusID = COALESCE(@statusId, StatusID),
-      CategoryID = COALESCE(@categoryId, CategoryID),
-      InterestedProduct = COALESCE(@interestedProduct, InterestedProduct),
-      ExpectedValue = COALESCE(@expectedValue, ExpectedValue),
-      Location = COALESCE(@location, Location),
-      NextFollowUpDate = @nextFollowUpDate,
-      LostReasonID = @lostReasonId,
-      LostNotes = @lostNotes,
-      Notes = @notes,
-      Guidance = @guidance,
-      LastContactDate = GETDATE(),
-      LastUpdatedBy = @updatedBy,
-      LastUpdatedAt = GETDATE()
-    WHERE OpportunityID = @oppId
-  `);
+        .input('oppId', sql.Int, opportunityId)
+        .input('employeeId', sql.Int, employeeId || null)
+        .input('sourceId', sql.Int, sourceId || null)
+        .input('adTypeId', sql.Int, adTypeId || null)
+        .input('stageId', sql.Int, stageId || null)
+        .input('statusId', sql.Int, statusId || null)
+        .input('categoryId', sql.Int, categoryId || null)
+        .input('interestedProduct', sql.NVarChar(200), interestedProduct || null)
+        .input('expectedValue', sql.Decimal(18, 2), expectedValue ?? null)
+        .input('location', sql.NVarChar(200), location || null)
+        .input('firstContactDate', sql.DateTime, firstContactDate ? new Date(firstContactDate) : null)
+        .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate ? new Date(nextFollowUpDate) : null)
+        .input('lostReasonId', sql.Int, lostReasonId || null)
+        .input('lostNotes', sql.NVarChar(500), lostNotes || null)
+        .input('notes', sql.NVarChar(1000), summary || null)
+        .input('guidance', sql.NVarChar(1000), guidance || null)
+        .input('updatedBy', sql.NVarChar(50), createdBy)
+        .query(`
+          UPDATE SalesOpportunities SET
+            EmployeeID = COALESCE(@employeeId, EmployeeID),
+            SourceID = COALESCE(@sourceId, SourceID),
+            AdTypeID = @adTypeId,
+            StageID = COALESCE(@stageId, StageID),
+            StatusID = COALESCE(@statusId, StatusID),
+            CategoryID = @categoryId,
+            InterestedProduct = COALESCE(@interestedProduct, InterestedProduct),
+            ExpectedValue = COALESCE(@expectedValue, ExpectedValue),
+            Location = COALESCE(@location, Location),
+            FirstContactDate = COALESCE(@firstContactDate, FirstContactDate),
+            NextFollowUpDate = CASE WHEN @stageId IN (3,4,5) THEN NULL ELSE @nextFollowUpDate END,
+            LostReasonID = CASE WHEN @stageId IN (4,5) THEN @lostReasonId ELSE NULL END,
+            LostNotes = CASE WHEN @stageId IN (4,5) THEN @lostNotes ELSE NULL END,
+            Notes = COALESCE(@notes, Notes),
+            Guidance = @guidance,
+            LastContactDate = GETDATE(),
+            LastUpdatedBy = @updatedBy,
+            LastUpdatedAt = GETDATE(),
+            ClosedAt = CASE
+              WHEN @stageId IN (3,4,5) THEN ISNULL(ClosedAt, GETDATE())
+              WHEN @stageId NOT IN (3,4,5) THEN NULL
+              ELSE ClosedAt
+            END,
+            ClosedBy = CASE
+              WHEN @stageId IN (3,4,5) THEN ISNULL(ClosedBy, @updatedBy)
+              WHEN @stageId NOT IN (3,4,5) THEN NULL
+              ELSE ClosedBy
+            END
+          WHERE OpportunityID = @oppId
+        `);
 
     } else {
       // 3️⃣ إنشاء فرصة جديدة
@@ -131,6 +155,7 @@ async function createInteraction(data) {
   .input('interestedProduct', sql.NVarChar(200), interestedProduct || null)
   .input('expectedValue', sql.Decimal(18, 2), expectedValue || null)
   .input('location', sql.NVarChar(200), location || null)
+  .input('firstContactDate', sql.DateTime, firstContactDate ? new Date(firstContactDate) : new Date())
   .input('nextFollowUpDate', sql.DateTime, nextFollowUpDate ? new Date(nextFollowUpDate) : null)
   .input('lostReasonId', sql.Int, lostReasonId || null)
   .input('lostNotes', sql.NVarChar(500), lostNotes || null)
@@ -141,12 +166,19 @@ async function createInteraction(data) {
     INSERT INTO SalesOpportunities (
       PartyID, EmployeeID, SourceID, AdTypeID, StageID, StatusID, CategoryID,
       InterestedProduct, ExpectedValue, Location, FirstContactDate, NextFollowUpDate,
-      LostReasonID, LostNotes, Notes, Guidance, IsActive, CreatedBy, CreatedAt
+      LostReasonID, LostNotes, Notes, Guidance,
+      ClosedAt, ClosedBy, IsActive, CreatedBy, CreatedAt
     )
     VALUES (
       @partyId, @employeeId, @sourceId, @adTypeId, @stageId, @statusId, @categoryId,
-      @interestedProduct, @expectedValue, @location, GETDATE(), @nextFollowUpDate,
-      @lostReasonId, @lostNotes, @notes, @guidance, 1, @createdBy, GETDATE()
+      @interestedProduct, @expectedValue, @location, @firstContactDate,
+      CASE WHEN @stageId IN (3,4,5) THEN NULL ELSE @nextFollowUpDate END,
+      CASE WHEN @stageId IN (4,5) THEN @lostReasonId ELSE NULL END,
+      CASE WHEN @stageId IN (4,5) THEN @lostNotes ELSE NULL END,
+      @notes, @guidance,
+      CASE WHEN @stageId IN (3,4,5) THEN GETDATE() ELSE NULL END,
+      CASE WHEN @stageId IN (3,4,5) THEN @createdBy ELSE NULL END,
+      1, @createdBy, GETDATE()
     );
     SELECT SCOPE_IDENTITY() AS OpportunityID;
   `);
@@ -226,6 +258,14 @@ async function createInteraction(data) {
     }
 
     await transaction.commit();
+
+    if ((stageId == 4 || stageId == 5) && recoveryQueries) {
+      try {
+        await recoveryQueries.ensureRecoveryAssignment(opportunityId);
+      } catch (recoveryError) {
+        console.error('ensureRecovery after interaction:', recoveryError.message);
+      }
+    }
 
     return {
       partyId: finalPartyId,

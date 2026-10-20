@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const productsController = require('./products.controller');
+const { authenticate, requirePolicy } = require('../../core/auth.middleware');
+const { products: productPolicy } = require('../../shared/authorization.policy');
 
 // ===================================
 // 📦 Products Routes
@@ -48,6 +50,15 @@ router.post('/:id/components', productsController.saveComponents);
 
 // GET /api/products/:id/pdf
 router.get('/:id/pdf', productsController.getProductPdf);
+
+// حذف منتج - يتطلب جلسة وصلاحية حذف المنتجات
+// DELETE /api/products/:id
+router.delete(
+  '/:id',
+  authenticate,
+  requirePolicy(productPolicy.canDelete, 'غير مصرح لك بحذف المنتجات'),
+  productsController.remove
+);
 
 // تصدير الراوتر
 module.exports = router;

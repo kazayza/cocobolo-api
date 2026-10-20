@@ -7,6 +7,31 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 
+function normalizeRole(value) {
+  return String(value || '').toLowerCase().replace(/[\s_-]+/g, '');
+}
+
+function scopeProductPricing(product, auth) {
+  const scoped = { ...product };
+  const role = normalizeRole(auth?.role);
+  const canSeeFullPricing = role === 'admin' || role === 'accountmanager';
+  const isFactory = role === 'factory';
+
+  if (!canSeeFullPricing && !isFactory) {
+    delete scoped.PurchasePrice;
+    delete scoped.PurchasePriceCClass;
+    delete scoped.PurchasePriceElite;
+  }
+
+  if (isFactory) {
+    delete scoped.SuggestedSalePrice;
+    delete scoped.SuggestedSalePriceCClass;
+    delete scoped.SuggestedSalePriceElite;
+  }
+
+  return scoped;
+}
+
 // ===================================
 // رفع صور المنتجات (زي بلازور — ملف على القرص)
 // ===================================
@@ -45,7 +70,7 @@ async function getAll(req, res) {
     const products = await productsQueries.getAllProducts(
       search, groupId, statusId, ownership || 'all', priced || 'all', branchId || null, warehouseId || null
     );
-    return res.json(products);
+    return res.json(products.map((product) => scopeProductPricing(product, req.auth)));
   } catch (err) {
     console.error('خطأ في جلب المنتجات:', err);
     return errorResponse(res, 'فشل تحميل المنتجات', 500, err.message);
@@ -84,7 +109,7 @@ async function getById(req, res) {
       return notFoundResponse(res, 'المنتج غير موجود');
     }
 
-    return res.json(product);
+    return res.json(scopeProductPricing(product, req.auth));
   } catch (err) {
     console.error('خطأ في جلب المنتج:', err);
     return errorResponse(res, 'فشل تحميل المنتج', 500, err.message);
@@ -232,6 +257,32 @@ async function saveComponents(req, res) {
     return errorResponse(res, 'فشل حفظ المكونات', 500, err.message);
   }
 }
+// حذف منتج مع منع حذف المنتجات المستخدمة في مستندات أو حركات مخزون.
+async function remove(req, res) {
+  try {
+    const productId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(productId) || productId <= 0) {
+      return errorResponse(res, 'رقم المنتج غير صالح', 400);
+    }
+
+    const deleted = await productsQueries.deleteProduct(productId);
+    if (!deleted) return notFoundResponse(res, 'المنتج غير موجود');
+
+    return res.json({ success: true, message: 'تم حذف المنتج بنجاح' });
+  } catch (err) {
+    console.error('خطأ في حذف المنتج:', err);
+    if (err.number === 547) {
+      return errorResponse(
+        res,
+        'لا يمكن حذف المنتج لأنه مستخدم في فاتورة أو حركة مخزون أو مستند مرتبط.',
+        409,
+        err.message
+      );
+    }
+    return errorResponse(res, 'فشل حذف المنتج', 500, err.message);
+  }
+}
+
 // دالة لجلب ملف PDF المنتج
 async function getProductPdf(req, res) {
   try {
@@ -284,5 +335,6 @@ module.exports = {
   addImage,
   deleteImage,
   saveComponents,
+  remove,
   getProductPdf
 };
