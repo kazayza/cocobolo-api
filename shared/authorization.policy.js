@@ -116,6 +116,32 @@ const priceList = {
   canExport: (a) => roles.admin(a) || roles.accountManager(a),
 };
 
+const quotations = {
+  isCostOnlyViewer: (a) => roles.productionManager(a) || roles.factory(a),
+  canView: (a) => roles.admin(a)
+    || quotations.isCostOnlyViewer(a)
+    || hasClaim(a, 'frmQuotationsList:View'),
+  canAdd: (a) => !quotations.isCostOnlyViewer(a)
+    && (roles.admin(a) || hasClaim(a, 'frmQuotationsList:Add')),
+  canEdit: (a) => !quotations.isCostOnlyViewer(a)
+    && (roles.admin(a) || hasClaim(a, 'frmQuotationsList:Edit')),
+  canDelete: (a) => !quotations.isCostOnlyViewer(a)
+    && (roles.admin(a) || hasClaim(a, 'frmQuotationsList:Delete')),
+  canViewCost: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || quotations.isCostOnlyViewer(a),
+  canEditCost: (a) => roles.factory(a) && !roles.admin(a),
+  canViewSalePrices: (a) => !quotations.isCostOnlyViewer(a),
+  canConvert: (a) => quotations.canEdit(a),
+  canViewProtectedAccountManager: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || roles.account(a),
+  canApproveDiscount: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || roles.salesManager(a),
+  canExport: (a) => quotations.canView(a) && !quotations.isCostOnlyViewer(a),
+};
+
 module.exports = {
   norm,
   isRole,
@@ -128,4 +154,5 @@ module.exports = {
   notifications,
   products,
   priceList,
+  quotations,
 };

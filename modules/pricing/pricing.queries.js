@@ -617,7 +617,7 @@ async function writePriceListAudit(transaction, {
 }) {
   await transaction.request()
     .input('tableName', sql.NVarChar(100), 'Products')
-    .input('actionType', sql.NVarChar(50), actionType)
+    .input('actionType', sql.NVarChar(50), String(actionType).slice(0, 10))
     .input('primaryKey', sql.NVarChar(100), String(productId))
     .input('oldData', sql.NVarChar(sql.MAX), JSON.stringify(oldData))
     .input('newData', sql.NVarChar(sql.MAX), JSON.stringify(newData))

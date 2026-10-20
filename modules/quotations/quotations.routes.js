@@ -1,30 +1,98 @@
 const express = require('express');
 const router = express.Router();
 const quotationsController = require('./quotations.controller');
+const { authenticate, requirePolicy } = require('../../core/auth.middleware');
+const { quotations: quotationPolicy } = require('../../shared/authorization.policy');
 
-// ===================================
-// 📋 Quotations Routes
-// ===================================
+// Public customer view and response.
+router.get('/public/:id', quotationsController.getPublic);
+router.post('/public/:id/respond', quotationsController.publicRespond);
 
-// جلب كل عروض الأسعار
-// GET /api/quotations?startDate=xxx&endDate=xxx&partyId=xxx
-router.get('/', quotationsController.getAll);
+// Lookups must remain before /:id.
+router.get(
+  '/lookups/form',
+  authenticate,
+  requirePolicy(quotationPolicy.canView, 'غير مصرح لك بعرض عروض الأسعار'),
+  quotationsController.getLookups,
+);
+router.get(
+  '/lookups/products',
+  authenticate,
+  requirePolicy(quotationPolicy.canView, 'غير مصرح لك بعرض منتجات عرض السعر'),
+  quotationsController.getProducts,
+);
+router.get(
+  '/products/:productId/alternatives',
+  authenticate,
+  requirePolicy(quotationPolicy.canView, 'غير مصرح لك بعرض بدائل المنتج'),
+  quotationsController.getAlternatives,
+);
 
-// جلب عرض سعر بالـ ID
-// GET /api/quotations/:id
-router.get('/:id', quotationsController.getById);
+router.get(
+  '/',
+  authenticate,
+  requirePolicy(quotationPolicy.canView, 'غير مصرح لك بعرض عروض الأسعار'),
+  quotationsController.getAll,
+);
+router.post(
+  '/',
+  authenticate,
+  requirePolicy(quotationPolicy.canAdd, 'غير مصرح لك بإنشاء عرض سعر'),
+  quotationsController.create,
+);
+router.get(
+  '/:id',
+  authenticate,
+  requirePolicy(quotationPolicy.canView, 'غير مصرح لك بعرض عرض السعر'),
+  quotationsController.getById,
+);
+router.put(
+  '/:id',
+  authenticate,
+  requirePolicy(quotationPolicy.canEdit, 'غير مصرح لك بتعديل عرض السعر'),
+  quotationsController.update,
+);
+router.put(
+  '/:id/status',
+  authenticate,
+  requirePolicy(quotationPolicy.canEdit, 'غير مصرح لك بتغيير حالة عرض السعر'),
+  quotationsController.changeStatus,
+);
+router.delete(
+  '/:id',
+  authenticate,
+  requirePolicy(quotationPolicy.canDelete, 'غير مصرح لك بحذف عرض السعر'),
+  quotationsController.remove,
+);
+router.put(
+  '/:id/costs',
+  authenticate,
+  requirePolicy(quotationPolicy.canEditCost, 'تعديل التكاليف متاح لدور المصنع فقط'),
+  quotationsController.saveCosts,
+);
+router.post(
+  '/:id/request-pricing',
+  authenticate,
+  requirePolicy(
+    (auth) => quotationPolicy.canView(auth) && !quotationPolicy.isCostOnlyViewer(auth),
+    'طلب التسعير متاح لفريق المبيعات فقط',
+  ),
+  quotationsController.requestPricing,
+);
+router.post(
+  '/:id/request-discount',
+  authenticate,
+  requirePolicy(
+    (auth) => quotationPolicy.canAdd(auth) || quotationPolicy.canEdit(auth),
+    'غير مصرح لك بطلب خصم',
+  ),
+  quotationsController.requestDiscount,
+);
+router.post(
+  '/:id/convert',
+  authenticate,
+  requirePolicy(quotationPolicy.canConvert, 'غير مصرح لك بتحويل العرض إلى فاتورة'),
+  quotationsController.convertToInvoice,
+);
 
-// إنشاء عرض سعر جديد
-// POST /api/quotations
-router.post('/', quotationsController.create);
-
-// تحويل عرض سعر لفاتورة
-// PUT /api/quotations/:id/convert
-router.put('/:id/convert', quotationsController.convertToInvoice);
-
-// حذف عرض سعر
-// DELETE /api/quotations/:id
-router.delete('/:id', quotationsController.remove);
-
-// تصدير الراوتر
 module.exports = router;
