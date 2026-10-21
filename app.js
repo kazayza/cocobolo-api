@@ -335,6 +335,9 @@ app.use('/api/additional-charges', require('./modules/additional-charges/additio
 // Customer Care feedback queues, callbacks, and history
 app.use('/api/customer-care', require('./modules/customer-care/customer-care.routes'));
 
+// Executive and financial reporting foundation
+app.use('/api/executive-cockpit', require('./modules/executive-cockpit/executive-cockpit.routes'));
+
 // Cashbox Module
 app.use('/api/cashbox', require('./modules/cashbox/cashbox.routes'));
 

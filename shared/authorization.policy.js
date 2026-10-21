@@ -266,6 +266,28 @@ const customerCare = {
   canHide: (a) => customerCare.canViewAll(a),
 };
 
+// Shared reports policy foundation. Individual reports still use their exact
+// Blazor form claim and never rely on Flutter visibility alone.
+const reports = {
+  canViewExecutiveCockpit: (a) => roles.admin(a)
+    || hasClaim(a, 'frm_ExecutiveCockpit:View'),
+  canViewFinancialStatements: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || roles.account(a)
+    || hasAnyClaim(
+      a,
+      'frm_BalanceSheet:View',
+      'frm_IncomeStatement:View',
+      'frm_CashFlowStatement:View',
+    ),
+  canViewSalesAnalytics: (a) => roles.admin(a)
+    || roles.generalManager(a)
+    || roles.accountManager(a)
+    || roles.salesManager(a)
+    || hasClaim(a, 'frm_SalesAnalytics:View'),
+  canExportExecutiveCockpit: (a) => reports.canViewExecutiveCockpit(a),
+};
+
 module.exports = {
   norm,
   isRole,
@@ -284,4 +306,5 @@ module.exports = {
   purchaseReceipts,
   additionalCharges,
   customerCare,
+  reports,
 };
