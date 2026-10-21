@@ -328,6 +328,10 @@ app.use('/api/quotations', require('./modules/quotations/quotations.routes'));
 // Production Job Orders Module
 app.use('/api/job-orders', require('./modules/job-orders/job-orders.routes'));
 
+// Delivery, purchase receipt, and customer advances/charges workflows
+app.use('/api/purchase-receipts', require('./modules/purchase-receipts/purchase-receipts.routes'));
+app.use('/api/additional-charges', require('./modules/additional-charges/additional-charges.routes'));
+
 // Cashbox Module
 app.use('/api/cashbox', require('./modules/cashbox/cashbox.routes'));
 

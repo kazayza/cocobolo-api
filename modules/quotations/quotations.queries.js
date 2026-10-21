@@ -1084,7 +1084,10 @@ async function convertQuotationToInvoice(id, data, auth) {
       const advancesResult = await advanceRequest.query(`
         SELECT ChargeID, ChargeAmount, ChargeDescription
         FROM AdditionalCharges WITH (UPDLOCK, HOLDLOCK)
-        WHERE PartyID = @partyId AND TransactionID IS NULL
+        WHERE PartyID = @partyId
+          AND TransactionID IS NULL
+          AND AppliedToTransactionId IS NULL
+          AND ISNULL(Status, N'Paid') = N'Paid'
           AND ChargeID IN (${advanceParams.join(',')})
       `);
       if (advancesResult.recordset.length !== selectedAdvanceIds.length) {
@@ -1100,8 +1103,13 @@ async function convertQuotationToInvoice(id, data, auth) {
           .input('chargeId', sql.Int, advance.ChargeID)
           .input('transactionId', sql.Int, saleId)
           .query(`
-            UPDATE AdditionalCharges SET TransactionID = @transactionId
-            WHERE ChargeID = @chargeId AND TransactionID IS NULL
+            UPDATE AdditionalCharges
+            SET TransactionID = @transactionId,
+                AppliedToTransactionId = @transactionId,
+                Status = N'Applied'
+            WHERE ChargeID = @chargeId
+              AND TransactionID IS NULL
+              AND AppliedToTransactionId IS NULL
           `);
         await transaction.request()
           .input('transactionId', sql.Int, saleId)

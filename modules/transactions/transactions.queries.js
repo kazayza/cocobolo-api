@@ -101,7 +101,7 @@ async function getAllTransactions({
   const offset = ((page || 1) - 1) * (limit || 20);
 
   const query = `
-    SELECT 
+    SELECT
       t.TransactionID, t.TransactionDate, t.TransactionType,
       t.TotalAmount, t.DiscountPercentage, t.DiscountAmount,
       t.NetTotalAmount, t.PaidAmount, t.TotalChargesAmount,
@@ -221,8 +221,8 @@ async function getTransactionById(id) {
   const result = await pool.request()
     .input('id', sql.Int, id)
     .query(`
-      SELECT 
-        t.*, 
+      SELECT
+        t.*,
         p.PartyName, p.Phone, p.Address, p.TaxNumber,
         w.WarehouseName,
         e.FullName AS EmployeeName,
@@ -243,7 +243,7 @@ async function getTransactionDetails(transactionId) {
   const result = await pool.request()
     .input('transactionId', sql.Int, transactionId)
     .query(`
-      SELECT 
+      SELECT
         td.DetailID, td.ProductID, td.Quantity,
         td.UnitPrice, td.TotalAmount, td.Notes,
         p.ProductName, p.ProductDescription
@@ -273,7 +273,7 @@ async function getPayments(transactionId) {
   const result = await pool.request()
     .input('transactionId', sql.Int, transactionId)
     .query(`
-      SELECT 
+      SELECT
         PaymentID, PaymentDate, Amount,
         PaymentMethod, Notes, CreatedBy, CreatedAt
       FROM Payments
@@ -398,7 +398,7 @@ async function addPayment(data) {
       .input('transactionId', sql.Int, data.transactionId)
       .input('amount', sql.Decimal(18, 2), data.amount)
       .query(`
-        UPDATE Transactions 
+        UPDATE Transactions
         SET PaidAmount = PaidAmount + @amount
         WHERE TransactionID = @transactionId
       `);
@@ -423,7 +423,7 @@ async function getTransactionsSummary(type = null) {
   }
 
   const result = await request.query(`
-    SELECT 
+    SELECT
       COUNT(*) as totalCount,
       ISNULL(SUM(GrandTotal), 0) as totalAmount,
       ISNULL(SUM(PaidAmount), 0) as totalPaid,
@@ -732,8 +732,8 @@ async function updateDetailPrice(transactionId, detailId, newUnitPrice, editedBy
     .input('detailId', sql.Int, detailId)
     .input('newPrice', sql.Decimal(18, 2), newUnitPrice)
     .query(`
-      UPDATE TransactionDetails 
-      SET UnitPrice = @newPrice, 
+      UPDATE TransactionDetails
+      SET UnitPrice = @newPrice,
           TotalAmount = Quantity * @newPrice
       WHERE DetailID = @detailId
     `);
@@ -749,7 +749,7 @@ async function updateDetailPrice(transactionId, detailId, newUnitPrice, editedBy
       .input('reason', sql.NVarChar(200), changeReason || `تعديل سعر صنف في فاتورة #${transactionId}`)
       .query(`
         INSERT INTO PriceHistory (
-          ProductID, PriceType, OldPrice, NewPrice, 
+          ProductID, PriceType, OldPrice, NewPrice,
           ChangedBy, ChangedAt, ChangeReason
         )
         VALUES (

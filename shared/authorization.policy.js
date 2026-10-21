@@ -164,6 +164,85 @@ const jobOrders = {
     || roles.account(a),
 };
 
+// DeliveryPermissions.cs is the source of truth for this matrix.
+const delivery = {
+  canView: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || roles.account(a)
+    || roles.sales(a)
+    || roles.user(a)
+    || hasClaim(a, 'frmInvoiceDeliveryStatus:View'),
+  canSeeAmounts: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || roles.account(a)
+    || roles.sales(a),
+  canEditFull: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || roles.sales(a)
+    || hasClaim(a, 'frmInvoiceDeliveryStatus:Edit'),
+  canConfirm: (a) => roles.admin(a)
+    || roles.sales(a)
+    || roles.user(a)
+    || hasClaim(a, 'frmInvoiceDeliveryStatus:Deliver'),
+  canOverrideRemaining: (a) => roles.admin(a) || roles.accountManager(a),
+  canPrint: (a) => delivery.canView(a),
+};
+
+// PurchaseReceiptStatus.razor role/claim matrix.
+const purchaseReceipts = {
+  canView: (a) => roles.admin(a)
+    || roles.generalManager(a)
+    || roles.accountManager(a)
+    || roles.sales(a)
+    || roles.user(a)
+    || roles.factory(a)
+    || roles.productionManager(a)
+    || roles.factoryManager(a)
+    || hasClaim(a, 'frm_PurchaseReceiptStatus:View')
+    || hasClaim(a, 'frm_SupplierInvoices:View'),
+  canSeeAmounts: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || roles.factory(a)
+    || roles.productionManager(a)
+    || roles.factoryManager(a)
+    || hasClaim(a, 'frm_SupplierInvoices:View'),
+  canOpenInvoice: (a) => roles.admin(a)
+    || roles.factory(a)
+    || roles.productionManager(a)
+    || roles.factoryManager(a)
+    || hasClaim(a, 'frm_SupplierInvoices:View'),
+  canConfirm: (a) => purchaseReceipts.canView(a)
+    && (roles.admin(a)
+      || roles.generalManager(a)
+      || roles.factory(a)
+      || roles.productionManager(a)
+      || roles.factoryManager(a)
+      || hasClaim(a, 'frm_PurchaseReceiptStatus:Edit')),
+};
+
+const additionalCharges = {
+  canView: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || roles.account(a)
+    || hasClaim(a, 'frmInspectionCharge:View'),
+  canCreate: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || roles.account(a)
+    || hasClaim(a, 'frmInspectionCharge:Add')
+    || hasClaim(a, 'frmInvoices:Add'),
+  canEdit: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || roles.account(a)
+    || hasClaim(a, 'frmInspectionCharge:Edit'),
+  canDelete: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || hasClaim(a, 'frmInspectionCharge:Delete')
+    || hasClaim(a, 'frmInvoices:Delete'),
+  canApply: (a) => additionalCharges.canEdit(a),
+  canMarkNonRefundable: (a) => additionalCharges.canEdit(a),
+  canSeeAmounts: (a) => additionalCharges.canView(a),
+};
+
 module.exports = {
   norm,
   isRole,
@@ -178,4 +257,7 @@ module.exports = {
   priceList,
   quotations,
   jobOrders,
+  delivery,
+  purchaseReceipts,
+  additionalCharges,
 };
