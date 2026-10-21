@@ -3,6 +3,14 @@ const { sql, connectDB } = require('../../core/database');
 // tedious/mssql requires a JavaScript Date for sql.Time; Flutter sends HH:mm.
 // Normalize every supported representation before binding so invalid input returns
 // a controlled 400 instead of an EPARAM stack trace from the SQL driver.
+function normalizeTaskPriority(value) {
+  const priority = String(value || '').trim().toLowerCase();
+  if (priority === 'high') return 'High';
+  if (priority === 'low') return 'Low';
+  if (priority === 'medium' || priority === 'normal') return 'Normal';
+  return 'Normal';
+}
+
 function normalizeSqlTime(value) {
   if (value == null || String(value).trim() === '') return null;
 
@@ -198,7 +206,7 @@ async function createTask(data) {
     .input('taskDescription', sql.NVarChar(500), data.taskDescription || null)
     .input('dueDate', sql.DateTime, data.dueDate)
     .input('dueTime', sql.Time, dueTime)
-    .input('priority', sql.NVarChar(20), data.priority || 'Normal')
+    .input('priority', sql.NVarChar(20), normalizeTaskPriority(data.priority))
     .input('status', sql.NVarChar(20), data.status || 'Pending')
     .input('reminderEnabled', sql.Bit, data.reminderEnabled !== undefined ? data.reminderEnabled : true)
     .input('reminderMinutes', sql.Int, data.reminderMinutes || 30)
@@ -234,7 +242,7 @@ async function updateTask(id, data) {
     .input('taskDescription', sql.NVarChar(500), data.taskDescription || null)
     .input('dueDate', sql.DateTime, data.dueDate)
     .input('dueTime', sql.Time, dueTime)
-    .input('priority', sql.NVarChar(20), data.priority || 'Normal')
+    .input('priority', sql.NVarChar(20), normalizeTaskPriority(data.priority))
     .input('reminderEnabled', sql.Bit, data.reminderEnabled !== undefined ? data.reminderEnabled : true)
     .input('reminderMinutes', sql.Int, data.reminderMinutes || 30)
     .query(`
@@ -349,7 +357,7 @@ async function createGeneralTask(data, userName) {
     .input('taskDescription', sql.NVarChar(sql.MAX), data.taskDescription)
     .input('dueDate', sql.Date, data.dueDate)
     .input('dueTime', sql.Time, dueTime)
-    .input('priority', sql.NVarChar(20), data.priority || 'Medium')
+    .input('priority', sql.NVarChar(20), normalizeTaskPriority(data.priority))
     .input('assignmentSource', sql.NVarChar(50), data.assignmentSource || 'Admin')
     .input('createdBy', sql.NVarChar(100), userName)
     .query(`
@@ -430,6 +438,7 @@ async function completeGeneralTask(taskId, notes, userName) {
 
 // تصدير الدوال
 module.exports = {
+  normalizeTaskPriority,
   normalizeSqlTime,
   getAllTasks,
   getTodayTasks,
