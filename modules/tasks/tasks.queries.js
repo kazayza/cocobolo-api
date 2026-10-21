@@ -1,5 +1,35 @@
 const { sql, connectDB } = require('../../core/database');
 
+// tedious/mssql requires a JavaScript Date for sql.Time; Flutter sends HH:mm.
+// Normalize every supported representation before binding so invalid input returns
+// a controlled 400 instead of an EPARAM stack trace from the SQL driver.
+function normalizeSqlTime(value) {
+  if (value == null || String(value).trim() === '') return null;
+
+  if (value instanceof Date) {
+    if (!Number.isNaN(value.getTime())) return value;
+    throw Object.assign(new Error('وقت تنفيذ المهمة غير صالح'), {
+      statusCode: 400,
+      code: 'INVALID_DUE_TIME',
+    });
+  }
+
+  const raw = String(value).trim();
+  const match = raw.match(/^([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d)(?:\.(\d{1,7}))?)?$/);
+  if (!match) {
+    throw Object.assign(
+      new Error('وقت تنفيذ المهمة غير صالح. استخدم الصيغة HH:mm مثل 10:30'),
+      { statusCode: 400, code: 'INVALID_DUE_TIME' },
+    );
+  }
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const seconds = Number(match[3] || 0);
+  const milliseconds = Number(String(match[4] || '').padEnd(3, '0').slice(0, 3) || 0);
+  return new Date(Date.UTC(1970, 0, 1, hours, minutes, seconds, milliseconds));
+}
+
 // جلب كل المهام
 // في tasks.queries.js
 // جلب كل المهام (شامل التعديلات الجديدة)
@@ -158,6 +188,7 @@ async function getTaskById(id) {
 
 // إنشاء مهمة جديدة
 async function createTask(data) {
+  const dueTime = normalizeSqlTime(data.dueTime);
   const pool = await connectDB();
   const result = await pool.request()
     .input('opportunityId', sql.Int, data.opportunityId || null)
@@ -166,7 +197,7 @@ async function createTask(data) {
     .input('taskTypeId', sql.Int, data.taskTypeId || null)
     .input('taskDescription', sql.NVarChar(500), data.taskDescription || null)
     .input('dueDate', sql.DateTime, data.dueDate)
-    .input('dueTime', sql.Time, data.dueTime || null)
+    .input('dueTime', sql.Time, dueTime)
     .input('priority', sql.NVarChar(20), data.priority || 'Normal')
     .input('status', sql.NVarChar(20), data.status || 'Pending')
     .input('reminderEnabled', sql.Bit, data.reminderEnabled !== undefined ? data.reminderEnabled : true)
@@ -190,6 +221,7 @@ async function createTask(data) {
 
 // تعديل مهمة
 async function updateTask(id, data) {
+  const dueTime = normalizeSqlTime(data.dueTime);
   const pool = await connectDB();
   await pool.request()
     .input('id', sql.Int, id)
@@ -197,7 +229,7 @@ async function updateTask(id, data) {
     .input('taskTypeId', sql.Int, data.taskTypeId || null)
     .input('taskDescription', sql.NVarChar(500), data.taskDescription || null)
     .input('dueDate', sql.DateTime, data.dueDate)
-    .input('dueTime', sql.Time, data.dueTime || null)
+    .input('dueTime', sql.Time, dueTime)
     .input('priority', sql.NVarChar(20), data.priority || 'Normal')
     .input('reminderEnabled', sql.Bit, data.reminderEnabled !== undefined ? data.reminderEnabled : true)
     .input('reminderMinutes', sql.Int, data.reminderMinutes || 30)
@@ -305,13 +337,14 @@ async function getGeneralTasks(userName, filters = {}) {
 }
 
 async function createGeneralTask(data, userName) {
+  const dueTime = normalizeSqlTime(data.dueTime);
   const pool = await connectDB();
   const result = await pool.request()
     .input('assignedTo', sql.Int, data.assignedTo)
     .input('taskTypeId', sql.Int, data.taskTypeId || null)
     .input('taskDescription', sql.NVarChar(sql.MAX), data.taskDescription)
     .input('dueDate', sql.Date, data.dueDate)
-    .input('dueTime', sql.Time, data.dueTime || null)
+    .input('dueTime', sql.Time, dueTime)
     .input('priority', sql.NVarChar(20), data.priority || 'Medium')
     .input('assignmentSource', sql.NVarChar(50), data.assignmentSource || 'Admin')
     .input('createdBy', sql.NVarChar(100), userName)
@@ -389,6 +422,7 @@ async function completeGeneralTask(taskId, notes, userName) {
 
 // تصدير الدوال
 module.exports = {
+  normalizeSqlTime,
   getAllTasks,
   getTodayTasks,
   getOverdueTasks,

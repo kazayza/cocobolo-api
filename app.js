@@ -332,6 +332,9 @@ app.use('/api/job-orders', require('./modules/job-orders/job-orders.routes'));
 app.use('/api/purchase-receipts', require('./modules/purchase-receipts/purchase-receipts.routes'));
 app.use('/api/additional-charges', require('./modules/additional-charges/additional-charges.routes'));
 
+// Customer Care feedback queues, callbacks, and history
+app.use('/api/customer-care', require('./modules/customer-care/customer-care.routes'));
+
 // Cashbox Module
 app.use('/api/cashbox', require('./modules/cashbox/cashbox.routes'));
 

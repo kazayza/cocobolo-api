@@ -243,6 +243,29 @@ const additionalCharges = {
   canSeeAmounts: (a) => additionalCharges.canView(a),
 };
 
+// CustomerCarePermissions.cs role/claim matrix.
+const customerCare = {
+  canView: (a) => roles.customerService(a)
+    || roles.admin(a)
+    || roles.accountManager(a)
+    || roles.salesManager(a)
+    || roles.generalManager(a)
+    || roles.account(a)
+    || hasClaim(a, 'frm_CustomerCare:View'),
+  canLog: (a) => customerCare.canView(a),
+  canViewAll: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || roles.salesManager(a)
+    || roles.generalManager(a)
+    || roles.account(a),
+  canExport: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || roles.salesManager(a)
+    || roles.generalManager(a)
+    || hasClaim(a, 'frm_CustomerCare:Export'),
+  canHide: (a) => customerCare.canViewAll(a),
+};
+
 module.exports = {
   norm,
   isRole,
@@ -260,4 +283,5 @@ module.exports = {
   delivery,
   purchaseReceipts,
   additionalCharges,
+  customerCare,
 };

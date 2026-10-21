@@ -104,7 +104,12 @@ async function create(req, res) {
     });
   } catch (err) {
     console.error('خطأ في إنشاء المهمة:', err);
-    return errorResponse(res, 'فشل إنشاء المهمة', 500, err.message);
+    return errorResponse(
+      res,
+      err.statusCode ? err.message : 'فشل إنشاء المهمة',
+      err.statusCode || 500,
+      err.code || err.message,
+    );
   }
 }
 
@@ -122,7 +127,12 @@ async function update(req, res) {
     });
   } catch (err) {
     console.error('خطأ في تعديل المهمة:', err);
-    return errorResponse(res, 'فشل تعديل المهمة', 500, err.message);
+    return errorResponse(
+      res,
+      err.statusCode ? err.message : 'فشل تعديل المهمة',
+      err.statusCode || 500,
+      err.code || err.message,
+    );
   }
 }
 
@@ -202,7 +212,12 @@ async function createGeneral(req, res) {
     return res.json({ success: true, taskId, message: 'تم إرسال التكليف بنجاح' });
   } catch (err) {
     console.error('createGeneral:', err);
-    return errorResponse(res, 'فشل إنشاء التكليف العام', 500, err.message);
+    return errorResponse(
+      res,
+      err.statusCode ? err.message : 'فشل إنشاء التكليف العام',
+      err.statusCode || 500,
+      err.code || err.message,
+    );
   }
 }
 
