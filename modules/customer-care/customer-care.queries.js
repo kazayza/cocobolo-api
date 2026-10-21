@@ -11,7 +11,7 @@ const OUTCOMES = new Set([
 ]);
 const STATUSES = new Set(['Open', 'Done', 'Skipped']);
 const CHANNELS = new Set(['اتصال', 'واتساب', 'إيميل']);
-const TABLE = '[dbo].[CustomerFeedbacks]';
+const TABLE = '[dbo].[CustomerFeedback]';
 const SQL_INT_MAX = 2147483647;
 
 function intValue(value, fallback = 0) {
@@ -35,12 +35,12 @@ function cleanDate(value) {
 
 async function ensureSchema(pool) {
   const result = await pool.request().query(`
-    SELECT CASE WHEN OBJECT_ID(N'dbo.CustomerFeedbacks', N'U') IS NULL
+    SELECT CASE WHEN OBJECT_ID(N'dbo.CustomerFeedback', N'U') IS NULL
       THEN CAST(0 AS bit) ELSE CAST(1 AS bit) END AS ExistsFlag
   `);
   if (!(result.recordset[0]?.ExistsFlag === true || result.recordset[0]?.ExistsFlag === 1)) {
     throw Object.assign(
-      new Error('جدول CustomerFeedbacks غير موجود. نفّذ CustomerCareModule.sql على قاعدة البيانات.'),
+      new Error('جدول CustomerFeedback غير موجود. نفّذ CustomerCareModule.sql على قاعدة البيانات.'),
       { statusCode: 503, code: 'CUSTOMER_CARE_SCHEMA_MISSING' },
     );
   }
@@ -327,7 +327,7 @@ async function writeAudit(transaction, action, id, username, oldData, newData) {
         (TableName, ActionType, PrimaryKeyValue, OldData, NewData,
          ActionDate, LoginName, AppName, AccessUserName)
       VALUES
-        (N'CustomerFeedbacks', @action, @key, @oldData, @newData,
+        (N'CustomerFeedback', @action, @key, @oldData, @newData,
          GETDATE(), @username, N'COCOBOLO Flutter', @username)
     `);
 }
