@@ -204,17 +204,21 @@ async function createTask(data) {
     .input('reminderMinutes', sql.Int, data.reminderMinutes || 30)
     .input('createdBy', sql.NVarChar(50), data.createdBy)
     .query(`
+      DECLARE @InsertedTasks TABLE (TaskID int NOT NULL);
+
       INSERT INTO CRM_Tasks (
         OpportunityID, PartyID, AssignedTo, TaskTypeID,
         TaskDescription, DueDate, DueTime, Priority, Status,
         ReminderEnabled, ReminderMinutes, IsActive, CreatedBy, CreatedAt
       )
-      OUTPUT INSERTED.TaskID
+      OUTPUT INSERTED.TaskID INTO @InsertedTasks (TaskID)
       VALUES (
         @opportunityId, @partyId, @assignedTo, @taskTypeId,
         @taskDescription, @dueDate, @dueTime, @priority, @status,
         @reminderEnabled, @reminderMinutes, 1, @createdBy, GETDATE()
-      )
+      );
+
+      SELECT TaskID FROM @InsertedTasks;
     `);
   return result.recordset[0].TaskID;
 }
@@ -349,15 +353,19 @@ async function createGeneralTask(data, userName) {
     .input('assignmentSource', sql.NVarChar(50), data.assignmentSource || 'Admin')
     .input('createdBy', sql.NVarChar(100), userName)
     .query(`
+      DECLARE @InsertedTasks TABLE (TaskID int NOT NULL);
+
       INSERT INTO CRM_Tasks (
         AssignedTo, TaskTypeID, TaskDescription, DueDate, DueTime,
         Priority, Status, AssignmentSource, TaskScope, IsActive, CreatedBy, CreatedAt
       )
-      OUTPUT INSERTED.TaskID
+      OUTPUT INSERTED.TaskID INTO @InsertedTasks (TaskID)
       VALUES (
         @assignedTo, @taskTypeId, @taskDescription, @dueDate, @dueTime,
         @priority, N'Pending', @assignmentSource, N'General', 1, @createdBy, GETDATE()
-      )
+      );
+
+      SELECT TaskID FROM @InsertedTasks;
     `);
   const taskId = result.recordset[0].TaskID;
 
