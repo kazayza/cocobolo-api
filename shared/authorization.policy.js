@@ -158,7 +158,12 @@ const jobOrders = {
     || roles.productionManager(a)
     || roles.factoryManager(a)
     || hasClaim(a, 'frm_JobOrders:Edit'),
-  canOpenInvoices: (a) => roles.admin(a) || hasClaim(a, 'frm_PartiesInvoices:View'),
+  canOpenInvoices: (a) => roles.admin(a)
+    || roles.factory(a)
+    || roles.productionManager(a)
+    || roles.factoryManager(a)
+    || hasClaim(a, 'frm_PartiesInvoices:View')
+    || hasClaim(a, 'frm_SupplierInvoices:View'),
   canViewProtectedAccountManager: (a) => roles.admin(a)
     || roles.accountManager(a)
     || roles.account(a),
@@ -218,6 +223,31 @@ const purchaseReceipts = {
       || roles.productionManager(a)
       || roles.factoryManager(a)
       || hasClaim(a, 'frm_PurchaseReceiptStatus:Edit')),
+};
+
+// FactoryPurchases.razor + InvoiceForm purchase-create policy.
+const factoryPurchases = {
+  canView: (a) => invoices.canViewPurchases(a),
+  canCreate: (a) => roles.admin(a)
+    || roles.factory(a)
+    || hasClaim(a, 'frm_SupplierInvoices:View'),
+  canSeeAmounts: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || roles.account(a)
+    || roles.factory(a)
+    || roles.productionManager(a)
+    || roles.factoryManager(a)
+    || hasClaim(a, 'frm_SupplierInvoices:View'),
+  canReceive: (a) => roles.admin(a)
+    || roles.generalManager(a)
+    || roles.factory(a)
+    || roles.productionManager(a)
+    || roles.factoryManager(a)
+    || hasClaim(a, 'frm_PurchaseReceiptStatus:Edit')
+    || hasClaim(a, 'frm_SupplierInvoices:View'),
+  canCancel: (a) => roles.admin(a) || roles.accountManager(a),
+  canOpenInvoice: (a) => invoices.canViewPurchases(a),
+  canOpenJobOrder: (a) => jobOrders.canView(a),
 };
 
 const additionalCharges = {
@@ -304,6 +334,7 @@ module.exports = {
   jobOrders,
   delivery,
   purchaseReceipts,
+  factoryPurchases,
   additionalCharges,
   customerCare,
   reports,

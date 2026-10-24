@@ -10,8 +10,7 @@ function buildWhere(request, filters = {}, options = {}) {
     `(t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')`,
     `(
       t.TransactionType = 'Sale'
-      OR (t.TransactionType = 'Purchase'
-          AND (t.ReferenceType IS NULL OR t.ReferenceType NOT LIKE 'MirrorOf:%'))
+      OR (t.TransactionType = 'Purchase' AND t.ReferenceType = 'PurchaseInvoice')
     )`,
   ];
   if (filters.type === 'sale') clauses.push(`t.TransactionType = 'Sale'`);
@@ -58,11 +57,15 @@ async function getJobOrders(filters = {}, options = {}) {
   const offset = (page - 1) * limit;
   const result = await request.query(`
     SELECT
-      t.TransactionID, t.PartyID, t.ReferenceNumber, t.TransactionType,
+      t.TransactionID, t.PartyID, t.ReferenceNumber, t.ReferenceType, t.TransactionType,
       t.TransactionDate, t.DueDate, ISNULL(t.IsDelivered, 0) AS IsDelivered,
       t.InvoiceStatus, t.EmpId, t.GrandTotal, t.CreatedBy,
       p.PartyName, p.Phone,
-      e.FullName AS EmpName,
+      CASE WHEN t.TransactionType = 'Purchase'
+        THEN linkedCustomer.PartyName ELSE e.FullName END AS EmpName,
+      linkedCustomer.PartyID AS LinkedCustomerID,
+      linkedCustomer.PartyName AS LinkedCustomerName,
+      linkedCustomer.Phone AS LinkedCustomerPhone,
       ISNULL(counts.ItemsCount, 0) AS ItemsCount,
       ISNULL(counts.AlternativeItemsCount, 0) AS AlternativeItemsCount,
       ISNULL(counts.MaxPeriodDays, 0) AS MaxPeriodDays,
@@ -70,6 +73,8 @@ async function getJobOrders(filters = {}, options = {}) {
     FROM Transactions t
     INNER JOIN Parties p ON t.PartyID = p.PartyID
     LEFT JOIN Employees e ON t.EmpId = e.EmployeeID
+    LEFT JOIN Parties linkedCustomer
+      ON t.TransactionType = 'Purchase' AND t.EmpId = linkedCustomer.PartyID
     OUTER APPLY (
       SELECT COUNT(*) AS ItemsCount,
              SUM(CASE WHEN d.SelectedAlternativeID IS NOT NULL THEN 1 ELSE 0 END) AS AlternativeItemsCount,
@@ -124,20 +129,29 @@ async function getJobOrderById(id) {
     .input('id', sql.Int, id)
     .query(`
       SELECT
-        t.TransactionID, t.PartyID, t.ReferenceNumber, t.TransactionType,
+        t.TransactionID, t.PartyID, t.ReferenceNumber, t.ReferenceType, t.TransactionType,
         t.TransactionDate, t.DueDate, ISNULL(t.IsDelivered, 0) AS IsDelivered,
         t.InvoiceStatus, t.EmpId, t.GrandTotal, t.Notes, t.CreatedBy,
         t.EditBy, t.EditStatus,
         p.PartyName, p.Phone, p.Address,
-        e.FullName AS EmpName,
+        CASE WHEN t.TransactionType = 'Purchase'
+          THEN linkedCustomer.PartyName ELSE e.FullName END AS EmpName,
+        linkedCustomer.PartyID AS LinkedCustomerID,
+        linkedCustomer.PartyName AS LinkedCustomerName,
+        linkedCustomer.Phone AS LinkedCustomerPhone,
         w.WarehouseName
       FROM Transactions t
       INNER JOIN Parties p ON t.PartyID = p.PartyID
       LEFT JOIN Employees e ON t.EmpId = e.EmployeeID
+      LEFT JOIN Parties linkedCustomer
+        ON t.TransactionType = 'Purchase' AND t.EmpId = linkedCustomer.PartyID
       LEFT JOIN Warehouses w ON t.WarehouseID = w.WarehouseID
       WHERE t.TransactionID = @id
         AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')
-        AND (t.TransactionType = 'Sale' OR t.TransactionType = 'Purchase')
+        AND (
+          t.TransactionType = 'Sale'
+          OR (t.TransactionType = 'Purchase' AND t.ReferenceType = 'PurchaseInvoice')
+        )
     `);
   const header = headerResult.recordset[0];
   if (!header) return null;
@@ -203,7 +217,10 @@ async function updateDueDate(id, dueDate, notes, username) {
                PartyID, CreatedBy
         FROM Transactions WITH (UPDLOCK, HOLDLOCK)
         WHERE TransactionID = @id
-          AND (TransactionType = 'Sale' OR TransactionType = 'Purchase')
+          AND (
+            TransactionType = 'Sale'
+            OR (TransactionType = 'Purchase' AND ReferenceType = 'PurchaseInvoice')
+          )
       `);
     const current = currentResult.recordset[0];
     if (!current) {
