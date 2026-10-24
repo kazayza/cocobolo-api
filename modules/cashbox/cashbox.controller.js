@@ -12,13 +12,28 @@ async function getAll(req, res) {
   }
 }
 
+// جلب الخزائن النشطة فقط — مطابق لبلازور activeOnly:true
+async function getActive(req, res) {
+  try {
+    const cashboxes = await cashboxQueries.getActiveCashboxes();
+    return res.json(cashboxes);
+  } catch (err) {
+    console.error('خطأ في جلب الخزائن النشطة:', err);
+    return errorResponse(res, 'فشل تحميل الخزائن النشطة', 500, err.message);
+  }
+}
 
 
-// جلب خزينة بالـ ID
+
+// جلب خزينة بالـ ID — مع تحقق من صحة الرقم (زي بلازور: CashBoxID رقمي فقط)
 async function getById(req, res) {
   try {
     const { id } = req.params;
-    const cashbox = await cashboxQueries.getCashboxById(id);
+    const parsed = Number(id);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      return errorResponse(res, 'معرّف الخزينة غير صالح', 400, 'INVALID_CASHBOX_ID');
+    }
+    const cashbox = await cashboxQueries.getCashboxById(parsed);
 
     if (!cashbox) {
       return notFoundResponse(res, 'الخزينة غير موجودة');
@@ -244,6 +259,7 @@ async function getFullDashboard(req, res) {
 module.exports = {
   getFullDashboard,
   getAll,
+  getActive,
   getById,
   getSummary,
   getTransactions,

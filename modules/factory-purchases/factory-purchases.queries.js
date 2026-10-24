@@ -239,7 +239,7 @@ async function searchShowroomProducts({ search = '', limit = 40 } = {}) {
        WHERE pi.ProductID = p.ProductID
        ORDER BY pi.ProductImagesID) AS MainImageId,
       (SELECT COUNT(*) FROM ProductFactoryAlternatives a
-       WHERE a.ProductID = p.ProductID AND ISNULL(a.IsActive, 1) = 1) AS AlternativesCount
+       WHERE a.ProductID = p.ProductID AND ISNULL(a.Status,'') <> 'Rejected') AS AlternativesCount
     FROM Products p
     INNER JOIN ProductGroups pg ON p.ProductGroupID = pg.ProductGroupID
     ${where}
@@ -257,10 +257,10 @@ async function getProductAlternatives(value) {
       SELECT AlternativeID, ProductID, AlternativeName,
              SpecificationSummary, ManufacturingDescription,
              PurchasePriceCClass, PurchasePricePremium, PurchasePriceElite,
-             Period, ISNULL(IsActive, 1) AS IsActive
+             Period, Status, IsPrimary
       FROM ProductFactoryAlternatives
-      WHERE ProductID = @productId AND ISNULL(IsActive, 1) = 1
-      ORDER BY AlternativeName, AlternativeID
+      WHERE ProductID = @productId AND ISNULL(Status,'') <> 'Rejected'
+      ORDER BY IsPrimary DESC, AlternativeName, AlternativeID
     `);
   return result.recordset;
 }
@@ -393,10 +393,10 @@ async function createFactoryPurchase(data, auth) {
           .query(`
             SELECT AlternativeID, ProductID, AlternativeName,
                    PurchasePriceCClass, PurchasePricePremium, PurchasePriceElite,
-                   Period
+                   Period, Status, IsPrimary
             FROM ProductFactoryAlternatives
             WHERE AlternativeID = @alternativeId AND ProductID = @productId
-              AND ISNULL(IsActive, 1) = 1
+              AND ISNULL(Status,'') <> 'Rejected'
           `);
         alternative = altResult.recordset[0] || null;
         if (!alternative) {

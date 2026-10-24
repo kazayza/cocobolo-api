@@ -54,6 +54,10 @@ router.get('/dashboard/comparison', cashboxController.getMonthlyComparison);
 // GET /api/cashbox
 router.get('/', cashboxController.getAll);
 
+// جلب الخزائن النشطة فقط — مطابق لبلازور GetCashBoxesAsync(activeOnly: true)
+// GET /api/cashbox/active — يجب أن يكون قبل /:id حتى لا يُعامل كـ id
+router.get('/active', cashboxController.getActive);
+
 // جلب خزينة بالـ ID
 // GET /api/cashbox/:id
 router.get('/:id', cashboxController.getById);

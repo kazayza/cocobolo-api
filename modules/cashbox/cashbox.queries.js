@@ -20,11 +20,33 @@ async function getAllCashboxes() {
 }
 
 
-// جلب خزينة بالـ ID
-async function getCashboxById(id) {
+// جلب الخزائن النشطة فقط — مطابق لبلازور activeOnly:true
+async function getActiveCashboxes() {
   const pool = await connectDB();
   const result = await pool.request()
-    .input('id', sql.Int, id)
+    .query(`
+      SELECT 
+        c.CashBoxID, c.CashBoxName, c.Description,
+        c.CashBoxKind, c.Icon, c.Color, c.IsActive, c.IsDefault,
+        c.CreatedBy, c.CreatedAt,
+        ISNULL((
+          SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE -Amount END)
+          FROM CashboxTransactions WHERE CashBoxID = c.CashBoxID
+        ), 0) AS CurrentBalance
+      FROM CashBoxes c
+      WHERE c.IsActive = 1
+      ORDER BY c.IsDefault DESC, c.CashBoxName
+    `);
+  return result.recordset;
+}
+
+// جلب خزينة بالـ ID — مع تحقق رقمي (يمنع EREQUEST Invalid number)
+async function getCashboxById(id) {
+  const parsed = Number(id);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('id', sql.Int, parsed)
     .query(`
       SELECT 
         c.*,
@@ -360,9 +382,10 @@ async function getCashboxSummary(cashboxId = null) {
   const request = pool.request();
 
   let whereClause = '';
-  if (cashboxId) {
+  const parsedId = Number(cashboxId);
+  if (cashboxId != null && cashboxId !== '' && Number.isInteger(parsedId) && parsedId > 0) {
     whereClause = 'WHERE CashBoxID = @cashboxId';
-    request.input('cashboxId', sql.Int, cashboxId);
+    request.input('cashboxId', sql.Int, parsedId);
   }
 
   const result = await request.query(`
@@ -808,6 +831,9 @@ async function getFullDashboard() {
 module.exports = {
   getAllCashboxes,
   getFullDashboard,
+  getCashboxById,
+  getAllCashboxes,
+  getActiveCashboxes,
   getCashboxById,
   getCashboxTransactions,
   getCashboxSummary,
