@@ -23,16 +23,16 @@ async function getList(req, res) {
   }
 }
 
-// البحث عن عميل
+// البحث عن عميل — يدعم q و search و term (توافق مع كل نسخ الفلاتر والبلازور)
 async function search(req, res) {
   try {
-    const { q } = req.query;
+    const q = req.query.q || req.query.search || req.query.term || req.query.query || '';
 
-    if (!q) {
+    if (!q || String(q).trim() === '') {
       return res.json([]);
     }
 
-    const clients = await clientsQueries.searchClients(q);
+    const clients = await clientsQueries.searchClients(String(q).trim());
     return res.json(clients);
   } catch (err) {
     console.error('خطأ في البحث عن العميل:', err);
