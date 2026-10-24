@@ -1,4 +1,5 @@
 const payrollQueries = require('./payroll.queries');
+const notificationsQueries = require('../notifications/notifications.queries');
 const { successResponse, errorResponse, notFoundResponse } = require('../../shared/response.helper');
 
 // جلب مرتبات شهر معين
@@ -61,6 +62,15 @@ async function create(req, res) {
 
     const payrollId = await payrollQueries.createPayroll(req.body);
 
+    // إشعار للمديرين - مطابق للبلازور NotifyRoleAsync (frm_Payroll)
+    try {
+      const title = 'مرتب جديد يحتاج مراجعة';
+      const msg = `تم إنشاء مرتب ${req.body.payrollMonth||''} للموظف #${req.body.employeeId} — بواسطة ${req.auth?.username||'system'}`;
+      for (const role of ['Admin','AccountManager']) {
+        await notificationsQueries.createNotificationSmart({ title, message: msg, createdBy: req.auth?.username||'system', formName: 'frm_Payroll', relatedTable: 'Payroll', relatedId: payrollId }, role);
+      }
+    } catch(_){}
+
     return res.json({
       success: true,
       payrollId: payrollId,
@@ -100,6 +110,11 @@ async function updateStatus(req, res) {
     }
 
     await payrollQueries.updatePaymentStatus(id, status, paymentDate);
+
+    try {
+      const m = status === 'معتمد' ? 'تم اعتماد المرتب' : status === 'مدفوع' ? 'تم صرف المرتب' : `تم تحديث حالة المرتب إلى ${status}`;
+      await notificationsQueries.createNotificationSmart({ title: m, message: `${m} #${id} بواسطة ${req.auth?.username||'system'}`, createdBy: req.auth?.username||'system', formName: 'frm_PayrollPayment', relatedTable: 'Payroll', relatedId: parseInt(id) }, 'Admin');
+    } catch(_){}
 
     return res.json({
       success: true,
