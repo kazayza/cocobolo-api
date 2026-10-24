@@ -44,7 +44,7 @@ async function getEmployeeTimeline(req, res) {
     console.error('executiveCockpit.getEmployeeTimeline:', error);
     return errorResponse(
       res,
-      error.message || 'فشل تحميل الخط الزمني للموظف',
+      error.message || 'فشل تحميل الخط  الزمني للموظف',
       error.statusCode || 500,
       error.message,
     );
