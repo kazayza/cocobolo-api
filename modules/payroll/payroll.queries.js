@@ -22,9 +22,11 @@ async function getPayrollByMonth(payrollMonth) {
 
 // جلب مرتبات موظف معين
 async function getPayrollByEmployee(employeeId) {
+  const parsed = Number(employeeId);
+  if (!Number.isInteger(parsed) || parsed <= 0) return [];
   const pool = await connectDB();
   const result = await pool.request()
-    .input('employeeId', sql.Int, employeeId)
+    .input('employeeId', sql.Int, parsed)
     .query(`
       SELECT 
         p.PayrollID, p.PayrollMonth, p.BasicSalary,
@@ -37,11 +39,13 @@ async function getPayrollByEmployee(employeeId) {
   return result.recordset;
 }
 
-// جلب مرتب بالـ ID
+// جلب مرتب بالـ ID — مع تحقق رقمي (يمنع EPARAM)
 async function getPayrollById(id) {
+  const parsed = Number(id);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
   const pool = await connectDB();
   const result = await pool.request()
-    .input('id', sql.Int, id)
+    .input('id', sql.Int, parsed)
     .query(`
       SELECT 
         p.*, e.FullName AS EmployeeName, e.Department

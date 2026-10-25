@@ -32,15 +32,18 @@ async function getList(filter = {}) {
   const offset = (page-1)*pageSize;
   const rs = await req.query(`
     SELECT p.PayrollID, p.EmployeeID, p.PayrollMonth, p.BasicSalary, p.NetSalary, p.PaymentStatus, p.Notes, p.CreatedAt,
-           e.FullName AS EmployeeName, e.Department, e.JobTitle,
-           p.Amount AS OffAmount, p.PaymentType
+           e.FullName AS EmployeeName, e.Department, e.JobTitle
     FROM Payroll p
     INNER JOIN Employees e ON p.EmployeeID = e.EmployeeID
     ${where}
     ORDER BY p.CreatedAt DESC
     OFFSET ${offset} ROWS FETCH NEXT ${pageSize} ROWS ONLY
   `);
-  const cnt = await pool.request().query(`SELECT COUNT(*) AS Total FROM Payroll p INNER JOIN Employees e ON p.EmployeeID=e.EmployeeID ${where}`);
+  const cntReq = pool.request();
+  if (filter.search) cntReq.input('search', sql.NVarChar(100), `%${filter.search}%`);
+  if (filter.status) cntReq.input('status', sql.NVarChar(20), filter.status);
+  if (filter.month) cntReq.input('month', sql.NVarChar(7), filter.month);
+  const cnt = await cntReq.query(`SELECT COUNT(*) AS Total FROM Payroll p INNER JOIN Employees e ON p.EmployeeID=e.EmployeeID ${where}`);
   return { items: rs.recordset, totalCount: cnt.recordset[0]?.Total || rs.recordset.length };
 }
 
@@ -54,13 +57,12 @@ async function create(data, username) {
       .input('empId', sql.Int, data.employeeId)
       .input('month', sql.NVarChar(7), data.paymentMonth || data.effectiveMonth)
       .input('amount', sql.Decimal(18,2), data.amount)
-      .input('type', sql.NVarChar(30), data.paymentType || 'BonusSeparate')
       .input('notes', sql.NVarChar(500), notes)
       .input('user', sql.NVarChar(50), username)
       .query(`
-        INSERT INTO Payroll (EmployeeID, PayrollMonth, BasicSalary, NetSalary, PaymentStatus, PaymentType, Amount, Notes, CreatedBy, CreatedAt)
+        INSERT INTO Payroll (EmployeeID, PayrollMonth, BasicSalary, NetSalary, PaymentStatus, Notes, CreatedBy, CreatedAt)
         OUTPUT INSERTED.PayrollID
-        VALUES (@empId, @month, @amount, @amount, N'قيد المراجعة', @type, @amount, @notes, @user, GETDATE())
+        VALUES (@empId, @month, @amount, @amount, N'قيد المراجعة', @notes, @user, GETDATE())
       `);
     const payrollId = rs.recordset[0].PayrollID;
     await tx.request().input('id', sql.Int, payrollId).input('user', sql.NVarChar(50), username).query(`

@@ -31,17 +31,21 @@ async function getByEmployee(req, res) {
   }
 }
 
-// جلب مرتب بالـ ID مع التفاصيل
+// جلب مرتب بالـ ID مع التفاصيل — مع تحقق رقمي (يمنع EPARAM Invalid number)
 async function getById(req, res) {
   try {
     const { id } = req.params;
-    const payroll = await payrollQueries.getPayrollById(id);
+    const parsedId = Number(id);
+    if (!Number.isInteger(parsedId) || parsedId <= 0) {
+      return errorResponse(res, 'معرّف المرتب غير صالح', 400, 'INVALID_PAYROLL_ID');
+    }
+    const payroll = await payrollQueries.getPayrollById(parsedId);
 
     if (!payroll) {
       return notFoundResponse(res, 'المرتب غير موجود');
     }
 
-    const details = await payrollQueries.getPayrollDetails(id);
+    const details = await payrollQueries.getPayrollDetails(parsedId);
     payroll.details = details;
 
     return res.json(payroll);
