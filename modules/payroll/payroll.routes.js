@@ -10,6 +10,10 @@ const payrollController = require('./payroll.controller');
 // GET /api/payroll?month=2025-01
 router.get('/', payrollController.getByMonth);
 
+// قائمة الشهور المتاحة — يجب أن يكون قبل /:id
+// GET /api/payroll/months
+router.get('/months', payrollController.getMonths);
+
 // جلب مرتبات موظف
 // GET /api/payroll/employee/:employeeId
 router.get('/employee/:employeeId', payrollController.getByEmployee);

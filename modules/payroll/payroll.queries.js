@@ -1,11 +1,15 @@
 const { sql, connectDB } = require('../../core/database');
 
-// جلب كل المرتبات لشهر معين
+// جلب كل المرتبات لشهر معين — يدعم null لاسترجاع الكل (للأرشيف)
 async function getPayrollByMonth(payrollMonth) {
   const pool = await connectDB();
-  const result = await pool.request()
-    .input('payrollMonth', sql.Char(7), payrollMonth)
-    .query(`
+  const request = pool.request();
+  let where = '';
+  if (payrollMonth && String(payrollMonth).trim() !== '' && payrollMonth !== 'all') {
+    request.input('payrollMonth', sql.Char(7), String(payrollMonth).trim());
+    where = 'WHERE p.PayrollMonth = @payrollMonth';
+  }
+  const result = await request.query(`
       SELECT 
         p.PayrollID, p.EmployeeID, p.PayrollMonth,
         p.BasicSalary, p.Allowances, p.Deductions, p.NetSalary,
@@ -14,8 +18,21 @@ async function getPayrollByMonth(payrollMonth) {
         e.FullName AS EmployeeName, e.Department, e.JobTitle
       FROM Payroll p
       INNER JOIN Employees e ON p.EmployeeID = e.EmployeeID
-      WHERE p.PayrollMonth = @payrollMonth
-      ORDER BY e.FullName
+      ${where}
+      ORDER BY p.PayrollMonth DESC, e.FullName
+    `);
+  return result.recordset;
+}
+
+// جلب قائمة الشهور المتاحة (للـ month-chips)
+async function getPayrollMonths() {
+  const pool = await connectDB();
+  const result = await pool.request().query(`
+      SELECT DISTINCT PayrollMonth, COUNT(*) AS PayrollCount, ISNULL(SUM(NetSalary),0) AS TotalNet
+      FROM Payroll
+      WHERE PayrollMonth IS NOT NULL
+      GROUP BY PayrollMonth
+      ORDER BY PayrollMonth DESC
     `);
   return result.recordset;
 }
@@ -162,6 +179,7 @@ async function deletePayrollDetail(detailId) {
 // تصدير الدوال
 module.exports = {
   getPayrollByMonth,
+  getPayrollMonths,
   getPayrollByEmployee,
   getPayrollById,
   getPayrollDetails,

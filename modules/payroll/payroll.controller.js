@@ -2,20 +2,26 @@ const payrollQueries = require('./payroll.queries');
 const notificationsQueries = require('../notifications/notifications.queries');
 const { successResponse, errorResponse, notFoundResponse } = require('../../shared/response.helper');
 
-// جلب مرتبات شهر معين
+// جلب مرتبات شهر معين — يدعم month=null للأرشيف (كل الشهور)
 async function getByMonth(req, res) {
   try {
     const { month } = req.query;
-
-    if (!month) {
-      return errorResponse(res, 'الشهر مطلوب (مثال: 2025-01)', 400);
-    }
-
-    const payrolls = await payrollQueries.getPayrollByMonth(month);
+    const payrolls = await payrollQueries.getPayrollByMonth(month || null);
     return res.json(payrolls);
   } catch (err) {
     console.error('خطأ في جلب المرتبات:', err);
     return errorResponse(res, 'فشل تحميل المرتبات', 500, err.message);
+  }
+}
+
+// جلب قائمة الشهور المتاحة (للـ chips)
+async function getMonths(req, res) {
+  try {
+    const months = await payrollQueries.getPayrollMonths();
+    return res.json(months);
+  } catch (err) {
+    console.error('خطأ في جلب الشهور:', err);
+    return errorResponse(res, 'فشل تحميل الشهور', 500, err.message);
   }
 }
 
@@ -173,6 +179,7 @@ async function deleteDetail(req, res) {
 // تصدير الدوال
 module.exports = {
   getByMonth,
+  getMonths,
   getByEmployee,
   getById,
   create,
