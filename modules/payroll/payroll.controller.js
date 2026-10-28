@@ -2,15 +2,27 @@ const payrollQueries = require('./payroll.queries');
 const notificationsQueries = require('../notifications/notifications.queries');
 const { successResponse, errorResponse, notFoundResponse } = require('../../shared/response.helper');
 
-// جلب مرتبات شهر معين — يدعم month=null للأرشيف (كل الشهور)
+// جلب مرتبات شهر معين — يدعم month=null للأرشيف (كل الشهور) + branch/paymentStatus/search
 async function getByMonth(req, res) {
   try {
-    const { month } = req.query;
-    const payrolls = await payrollQueries.getPayrollByMonth(month || null);
+    const { month, branchId, paymentStatus, searchText } = req.query;
+    const payrolls = await payrollQueries.getPayrollByMonth(month || null, { branchId, paymentStatus, searchText });
     return res.json(payrolls);
   } catch (err) {
     console.error('خطأ في جلب المرتبات:', err);
     return errorResponse(res, 'فشل تحميل المرتبات', 500, err.message);
+  }
+}
+
+// إحصائيات الرواتب
+async function getStats(req, res) {
+  try {
+    const { month } = req.query;
+    const stats = await payrollQueries.getPayrollStats(month || null);
+    return res.json(stats);
+  } catch (err) {
+    console.error('خطأ في جلب إحصائيات الرواتب:', err);
+    return errorResponse(res, 'فشل تحميل الإحصائيات', 500, err.message);
   }
 }
 
@@ -180,6 +192,7 @@ async function deleteDetail(req, res) {
 module.exports = {
   getByMonth,
   getMonths,
+  getStats,
   getByEmployee,
   getById,
   create,

@@ -14,6 +14,10 @@ router.get('/', payrollController.getByMonth);
 // GET /api/payroll/months
 router.get('/months', payrollController.getMonths);
 
+// إحصائيات الرواتب
+// GET /api/payroll/stats
+router.get('/stats', payrollController.getStats);
+
 // جلب مرتبات موظف
 // GET /api/payroll/employee/:employeeId
 router.get('/employee/:employeeId', payrollController.getByEmployee);
