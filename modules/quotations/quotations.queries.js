@@ -950,10 +950,11 @@ async function generateInvoiceReference(transaction, type) {
   const year = new Date().getFullYear();
   const result = await transaction.request()
     .input('prefix', sql.NVarChar(20), `${prefix}-${year}-%`)
+    .input('txType', sql.NVarChar(20), type)
     .query(`
       SELECT TOP 1 ReferenceNumber
       FROM Transactions WITH (UPDLOCK, HOLDLOCK)
-      WHERE TransactionType = '${type}' AND ReferenceNumber LIKE @prefix
+      WHERE TransactionType = @txType AND ReferenceNumber LIKE @prefix
       ORDER BY TransactionID DESC
     `);
   const last = result.recordset[0]?.ReferenceNumber;

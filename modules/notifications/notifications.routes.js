@@ -23,7 +23,8 @@ router.put('/:id/read', authenticate, notificationsController.markAsRead);
 
 // إنشاء إشعار جديد
 // POST /api/notifications
-router.post('/', notificationsController.create);
+// Phase 0: كان بلا مصادقة (عالٍ-18) — الآن بجلسة؛ سياسات البث على مساراتها كما هي.
+router.post('/', authenticate, notificationsController.create);
 
 // إرسال إشعار ذكي
 router.post('/smart', authenticate, requirePolicy(notificationPolicy.canBroadcast), notificationsController.createSmart);

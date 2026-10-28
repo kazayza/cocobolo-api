@@ -6,7 +6,13 @@ const { products: productPolicy } = require('../../shared/authorization.policy')
 
 // ===================================
 // 📦 Products Routes
+// Phase 0 (عالٍ-22): الكتابات كانت بلا مصادقة — الآن جلسة للكل وسياسات على الكتابة.
 // ===================================
+
+router.use(authenticate);
+
+const canCreate = requirePolicy(productPolicy.canCreate, 'غير مصرح لك بإضافة منتج');
+const canEdit = requirePolicy(productPolicy.canEdit, 'غير مصرح لك بتعديل المنتج');
 
 // جلب مجموعات المنتجات
 // GET /api/products/groups
@@ -30,23 +36,23 @@ router.get('/:id', productsController.getById);
 
 // إضافة منتج جديد
 // POST /api/products
-router.post('/', productsController.create);
+router.post('/', canCreate, productsController.create);
 
 // تعديل منتج
 // PUT /api/products/:id
-router.put('/:id', productsController.update);
+router.put('/:id', canEdit, productsController.update);
 
 // إضافة صورة للمنتج
 // POST /api/products/:id/images  (multipart — زي بلازور)
-router.post('/:id/images', productsController.uploadProductImage, productsController.addImage);
+router.post('/:id/images', canEdit, productsController.uploadProductImage, productsController.addImage);
 
 // حذف صورة
 // DELETE /api/products/images/:id
-router.delete('/images/:id', productsController.deleteImage);
+router.delete('/images/:id', canEdit, productsController.deleteImage);
 
 // حفظ مكونات المنتج
 // POST /api/products/:id/components
-router.post('/:id/components', productsController.saveComponents);
+router.post('/:id/components', canEdit, productsController.saveComponents);
 
 // GET /api/products/:id/pdf
 router.get('/:id/pdf', productsController.getProductPdf);

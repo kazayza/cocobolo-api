@@ -301,10 +301,12 @@ async function getEmployeeNameByUserId(userId) {
 }
 
 // جلب الاستثناءات (بفلاتر)
+// Phase 0 (حرج-4): الفلاتر كانت تُدمج نصيًا في الاستعلام (حقن SQL) — الآن معاملات مربوطة.
 async function getAllExemptions(filters = {}) {
   const pool = await connectDB();
+  const request = pool.request();
   let query = `
-    SELECT 
+    SELECT
       x.ExemptionID, x.ExemptionDate, x.ReasonCode, x.Description,
       e.FullName as EmployeeName, e.Department
     FROM DailyExemptions x
@@ -313,16 +315,18 @@ async function getAllExemptions(filters = {}) {
   `;
 
   if (filters.date) {
-    query += ` AND CAST(x.ExemptionDate AS DATE) = '${filters.date}'`;
+    request.input('exemptionDate', sql.Date, filters.date);
+    query += ` AND CAST(x.ExemptionDate AS DATE) = @exemptionDate`;
   }
-  
+
   if (filters.employeeName) {
-    query += ` AND e.FullName LIKE N'%${filters.employeeName}%'`;
+    request.input('employeeName', sql.NVarChar(200), `%${String(filters.employeeName).trim()}%`);
+    query += ` AND e.FullName LIKE @employeeName`;
   }
 
   query += ` ORDER BY x.ExemptionDate DESC`;
 
-  const result = await pool.request().query(query);
+  const result = await request.query(query);
   return result.recordset;
 }
 

@@ -1,7 +1,5 @@
 const { sql, connectDB } = require('../../core/database');
 
-const { sql, connectDB } = require('../../core/database');
-
 // جلب كل المرتبات — مطابق 100% لـ PayrollService.GetPayrollsAsync في البلازور
 // يستثني دفعات خارج الراتب ([OFFPAYROLL]) ويستخدم نفس الفلتر: PayrollMonth / MonthFrom-To / BranchId عبر Employee
 async function getPayrollByMonth(payrollMonth, extra = {}) {

@@ -3,10 +3,25 @@ const router = express.Router();
 const quotationsController = require('./quotations.controller');
 const { authenticate, requirePolicy } = require('../../core/auth.middleware');
 const { quotations: quotationPolicy } = require('../../shared/authorization.policy');
+const { validateShareToken } = require('../../shared/share-token');
 
-// Public customer view and response.
-router.get('/public/:id', quotationsController.getPublic);
-router.post('/public/:id/respond', quotationsController.publicRespond);
+// Public customer view and response — Phase 0 (حرج-5):
+// أُغلقت الروابط بالرقم الخام نهائيًا كما في بلازور. المسار العام الوحيد الآن
+// بتوكن موقّع مطابق لآلية بلازور (HMAC-SHA256، السر في SHARE_SECRET بنفس قيمة
+// Security:ShareSecret عند بلازور). التوكن الصالح يُترجم إلى req.params.id
+// فتعمل المعالجات القديمة كما هي دون تغيير سلوكها أو قواعد حالاتها.
+function resolvePublicQuotation(req, res, next) {
+  const payload = validateShareToken(req.params.token);
+  if (!payload || payload.type !== 'quotation') {
+    console.warn(`[public-quotation] rejected token for path ${req.originalUrl}`);
+    return res.status(404).json({ success: false, message: 'عرض السعر غير موجود' });
+  }
+  req.params.id = String(payload.id);
+  return next();
+}
+
+router.get('/public/:token', resolvePublicQuotation, quotationsController.getPublic);
+router.post('/public/:token/respond', resolvePublicQuotation, quotationsController.publicRespond);
 
 // Lookups must remain before /:id.
 router.get(

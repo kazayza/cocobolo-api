@@ -54,15 +54,31 @@ router.post(
 
 // جلب النسب الحالية
 // GET /api/pricing/margins
-router.get('/margins', pricingController.getActiveMargins);
+// Phase 0 (عالٍ-15): كانت بلا مصادقة — النسب والتكلفة بيانات حساسة.
+router.get(
+  '/margins',
+  authenticate,
+  requirePolicy(priceListPolicy.canViewHistory, 'غير مصرح لك بعرض نسب الربح'),
+  pricingController.getActiveMargins,
+);
 
 // جلب سجل تغييرات النسب
 // GET /api/pricing/margins/history
-router.get('/margins/history', pricingController.getMarginsHistory);
+router.get(
+  '/margins/history',
+  authenticate,
+  requirePolicy(priceListPolicy.canViewHistory, 'غير مصرح لك بعرض سجل نسب الربح'),
+  pricingController.getMarginsHistory,
+);
 
 // تحديث النسب
 // PUT /api/pricing/margins
-router.put('/margins', pricingController.updateMargins);
+router.put(
+  '/margins',
+  authenticate,
+  requirePolicy(priceListPolicy.canEditSalePrice, 'تعديل نسب الربح متاح للمدير ومدير الحسابات فقط'),
+  pricingController.updateMargins,
+);
 
 // -----------------------------------------------
 // 💰 تسعير المنتج (Factory فقط)
@@ -70,7 +86,12 @@ router.put('/margins', pricingController.updateMargins);
 
 // تسعير منتج (تكلفة فقط)
 // PUT /api/pricing/products/:id/cost
-router.put('/products/:id/cost', pricingController.updateProductPricing);
+router.put(
+  '/products/:id/cost',
+  authenticate,
+  requirePolicy(priceListPolicy.canEditCost, 'تعديل التكلفة غير متاح لهذا المستخدم'),
+  pricingController.updateProductPricing,
+);
 
 // -----------------------------------------------
 // 💵 تعديل سعر البيع (Admin / AccountManager فقط)
@@ -78,7 +99,12 @@ router.put('/products/:id/cost', pricingController.updateProductPricing);
 
 // تعديل سعر البيع مباشرة
 // PUT /api/pricing/products/:id/sale-price
-router.put('/products/:id/sale-price', pricingController.updateSalePrice);
+router.put(
+  '/products/:id/sale-price',
+  authenticate,
+  requirePolicy(priceListPolicy.canEditSalePrice, 'التعديل المباشر متاح للمدير ومدير الحسابات فقط'),
+  pricingController.updateSalePrice,
+);
 
 // -----------------------------------------------
 // 📝 طلبات تعديل الأسعار
@@ -86,7 +112,12 @@ router.put('/products/:id/sale-price', pricingController.updateSalePrice);
 
 // إنشاء طلب تعديل (Sales)
 // POST /api/pricing/products/:id/price-request
-router.post('/products/:id/price-request', pricingController.createPriceRequest);
+router.post(
+  '/products/:id/price-request',
+  authenticate,
+  requirePolicy(priceListPolicy.canRequestPriceChange, 'غير مصرح لك بطلب تعديل السعر'),
+  pricingController.createPriceRequest,
+);
 
 // جلب الطلبات المعلقة (SalesManager)
 // GET /api/pricing/price-requests/pending
@@ -134,7 +165,12 @@ router.put(
 
 // جلب تاريخ أسعار منتج
 // GET /api/pricing/products/:id/history
-router.get('/products/:id/history', pricingController.getPriceHistory);
+router.get(
+  '/products/:id/history',
+  authenticate,
+  requirePolicy(priceListPolicy.canView, 'غير مصرح لك بعرض تاريخ أسعار المنتج'),
+  pricingController.getPriceHistory,
+);
 
 // تصدير الراوتر
 module.exports = router;

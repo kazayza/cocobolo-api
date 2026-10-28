@@ -318,6 +318,64 @@ const reports = {
   canExportExecutiveCockpit: (a) => reports.canViewExecutiveCockpit(a),
 };
 
+// ============================================================
+// Phase 0 — بوابات الوحدات المالية/الإدارية التي كانت مفتوحة،
+// بمرآة حرّاس بلازور F-09 (AppAuthorization.HasClaim: دور Admin أو الـ Claim نفسه).
+// أسماء الـ Claims مطابقة حرفيًا لما في بلازور؛ القراءات واسعة كشاشات بلازور والكتابات مقيدة.
+// ============================================================
+const cashbox = {
+  canView: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || roles.account(a)
+    || hasAnyClaim(a, 'frmCashBox:View', 'frmCashBoxDashboard:View', 'frmCashBoxTransactions:View'),
+  // إنشاء حركة خزينة أو تحويل بين الصناديق = عملية يدوية على الخزينة (CashBoxService F-09).
+  canCreateTransaction: (a) => roles.admin(a) || hasClaim(a, 'frm_CashBoxManual:Add'),
+  canAddBox: (a) => roles.admin(a) || hasClaim(a, 'frmCashBox:Add'),
+  canEditBox: (a) => roles.admin(a) || hasClaim(a, 'frmCashBox:Edit'),
+  canDeleteBox: (a) => roles.admin(a) || hasClaim(a, 'frmCashBox:Delete'),
+};
+
+const payroll = {
+  // نفس مجموعة عرض PayrollList.razor في بلازور.
+  canView: (a) => roles.admin(a)
+    || roles.hrManager(a)
+    || roles.accountManager(a)
+    || roles.account(a)
+    || isRole(a, 'AccountsManager')
+    || hasAnyClaim(a, 'frmPayrollProcessor:View', 'frm_Payroll:View'),
+  // الاعتماد/الدفع في بلازور: Admin/AccountManager/AccountsManager — وأضيف HrManager كمشغّل للمرتبات.
+  canMutate: (a) => roles.admin(a)
+    || roles.hrManager(a)
+    || roles.accountManager(a)
+    || isRole(a, 'AccountsManager'),
+};
+
+const expenses = {
+  // ExpenseService/ExpensesList في بلازور: العرض بـ frm_ExpensesList:View،
+  // والنموذج frm_Expenses:Add/Edit، وحذف القائمة frm_ExpensesList:Delete.
+  canView: (a) => roles.admin(a) || hasClaim(a, 'frm_ExpensesList:View'),
+  canAdd: (a) => roles.admin(a) || hasClaim(a, 'frm_Expenses:Add'),
+  canEdit: (a) => roles.admin(a) || hasClaim(a, 'frm_Expenses:Edit'),
+  canDelete: (a) => roles.admin(a) || hasClaim(a, 'frm_ExpensesList:Delete'),
+  canAddGroup: (a) => roles.admin(a)
+    || hasClaim(a, 'frm_ExpensesGroup:Add')
+    || hasClaim(a, 'frm_Expenses:Add'),
+};
+
+const personalAccounts = {
+  // PersonalAccountsList/PersonalAccountForm في بلازور (لاحظ: بلا شرطة سفلية بعد frm).
+  canView: (a) => roles.admin(a) || hasClaim(a, 'frmPersonalAccounts:View'),
+  canAdd: (a) => roles.admin(a) || hasClaim(a, 'frmPersonalAccounts:Add'),
+  canEdit: (a) => roles.admin(a) || hasClaim(a, 'frmPersonalAccounts:Edit'),
+  canDelete: (a) => roles.admin(a) || hasClaim(a, 'frmPersonalAccounts:Delete'),
+};
+
+const settings = {
+  // لا يوجد Claim مطابق في بلازور لبيانات الشركة/الإصدار — البوابة بالأدوار، والتعديل للأدمن فقط.
+  canView: (a) => roles.admin(a) || roles.accountManager(a) || roles.account(a),
+  canManage: (a) => roles.admin(a),
+};
+
 module.exports = {
   norm,
   isRole,
@@ -338,4 +396,9 @@ module.exports = {
   additionalCharges,
   customerCare,
   reports,
+  cashbox,
+  payroll,
+  expenses,
+  personalAccounts,
+  settings,
 };

@@ -33,26 +33,27 @@ const dashboardController = require('./modules/dashboard/dashboard.controller');
 app.post('/api/login', authController.login);
 // Legacy URL محمي؛ التطبيق الجديد يستخدم /api/auth/save-token.
 app.post('/api/users/save-token', authenticate, authController.saveFcmToken);
-app.get('/api/users/:userId/employee', authController.getEmployeeByUserId);
+// Phase 0 (عالٍ-8): كل مسارات Legacy التالية كانت بلا مصادقة وتسبق الوحدات — الآن بجلسة.
+app.get('/api/users/:userId/employee', authenticate, authController.getEmployeeByUserId);
 
 // Dashboard
-app.get('/api/dashboard', dashboardController.getStats);
-app.get('/api/activities/recent', dashboardController.getRecentActivities);
-app.get('/api/activities/debug', dashboardController.getDebug);
+app.get('/api/dashboard', authenticate, dashboardController.getStats);
+app.get('/api/activities/recent', authenticate, dashboardController.getRecentActivities);
+app.get('/api/activities/debug', authenticate, dashboardController.getDebug);
 
 // Clients
-app.get('/api/clients/summary', clientsController.getSummary);
-app.get('/api/clients/search', clientsController.search);
-app.get('/api/clients/check-phone', clientsController.checkPhone);
-app.get('/api/clients/referral-sources', clientsController.getReferralSources);
-app.get('/api/clients/list', clientsController.getList);
-app.get('/api/clients', clientsController.getAll);
-app.get('/api/customers-list', clientsController.getList);
-app.get('/api/referral-sources', clientsController.getReferralSources);
-app.get('/api/clients/:id', clientsController.getById);
-app.post('/api/clients', clientsController.create);
-app.put('/api/clients/:id', clientsController.update);
-app.delete('/api/clients/:id', clientsController.remove);
+app.get('/api/clients/summary', authenticate, clientsController.getSummary);
+app.get('/api/clients/search', authenticate, clientsController.search);
+app.get('/api/clients/check-phone', authenticate, clientsController.checkPhone);
+app.get('/api/clients/referral-sources', authenticate, clientsController.getReferralSources);
+app.get('/api/clients/list', authenticate, clientsController.getList);
+app.get('/api/clients', authenticate, clientsController.getAll);
+app.get('/api/customers-list', authenticate, clientsController.getList);
+app.get('/api/referral-sources', authenticate, clientsController.getReferralSources);
+app.get('/api/clients/:id', authenticate, clientsController.getById);
+app.post('/api/clients', authenticate, clientsController.create);
+app.put('/api/clients/:id', authenticate, clientsController.update);
+app.delete('/api/clients/:id', authenticate, clientsController.remove);
 
 // Notifications are registered once through modules/notifications below.
 // إزالة التسجيل المكرر مهمة حتى لا يتجاوز أي Route طبقة المصادقة.

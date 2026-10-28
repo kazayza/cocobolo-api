@@ -1,18 +1,28 @@
 const jwt = require('jsonwebtoken');
 const { sql, connectDB } = require('./database');
 
-const DEV_SECRET = 'cocobolo-dev-only-change-this-secret';
-let warnedAboutSecret = false;
+// Phase 0: لا يوجد سر احتياطي مكتوب في الكود إطلاقًا.
+// السر يُقرأ من البيئة فقط (AUTH_JWT_SECRET أو JWT_SECRET)، ويجب ألا يقل عن 32 حرفًا —
+// بدونه يرفض التطبيق الإقلاع أصلًا بدل العمل بسر معروف من المستودع العام.
+const MIN_JWT_SECRET_LENGTH = 32;
 
 function getJwtSecret() {
   const secret = process.env.AUTH_JWT_SECRET || process.env.JWT_SECRET;
-  if (secret) return secret;
-
-  if (!warnedAboutSecret) {
-    warnedAboutSecret = true;
-    console.warn('⚠️ AUTH_JWT_SECRET غير مضبوط. يتم استخدام مفتاح تطوير مؤقت؛ يجب تغييره على السيرفر.');
+  if (!secret || secret.length < MIN_JWT_SECRET_LENGTH) {
+    throw new Error(
+      'JWT secret is missing or too short: set AUTH_JWT_SECRET (or JWT_SECRET) ' +
+      `to a random value of at least ${MIN_JWT_SECRET_LENGTH} characters. Refusing to run with a known/absent secret.`
+    );
   }
-  return DEV_SECRET;
+  return secret;
+}
+
+// فحص إقلاع صريح: يُستدعى عند تحميل الوحدة حتى يفشل أي تشغيل بلا سر قوي برسالة واضحة.
+try {
+  getJwtSecret();
+} catch (err) {
+  console.error(`❌ ${err.message}`);
+  throw err;
 }
 
 function issueAccessToken(user, { rememberMe = false } = {}) {

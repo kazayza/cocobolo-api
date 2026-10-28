@@ -19,9 +19,11 @@ router.post('/save-token', authenticate, authController.saveFcmToken);
 
 // جلب بيانات الموظف المرتبط بالمستخدم
 // GET /api/auth/users/:userId/employee
-router.get('/users/:userId/employee', authController.getEmployeeByUserId);
+// Phase 0: كانت عامة (تخمين تسلسلي) — الآن بجلسة.
+router.get('/users/:userId/employee', authenticate, authController.getEmployeeByUserId);
 
-router.post('/change-password', authController.changePassword);
+// Phase 0: تغيير كلمة المرور بجلسة، والهدف مستخدم التوكن (أو آخر عند الأدمن) — عالٍ-9.
+router.post('/change-password', authenticate, authController.changePassword);
 
 // تصدير الراوتر
 module.exports = router;

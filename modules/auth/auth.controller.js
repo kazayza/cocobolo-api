@@ -132,10 +132,22 @@ async function getEmployeeByUserId(req, res) {
 
 async function changePassword(req, res) {
   try {
-    const { userId, currentPassword, newPassword } = req.body;
+    const { currentPassword, newPassword } = req.body;
 
-    if (!userId || !currentPassword || !newPassword) {
+    if (!currentPassword || !newPassword) {
       return res.status(400).json({ success: false, message: 'بيانات ناقصة' });
+    }
+
+    // Phase 0: الهدف هو مستخدم التوكن نفسه دائمًا؛ userId من الجسم يُتجاهل
+    // إلا إذا كان الطالب Admin ويغيّر لمستخدم آخر (عالٍ-9).
+    const requestedId = Number(req.body.userId);
+    const isAdmin = String(req.auth?.role || '').toLowerCase() === 'admin';
+    const userId = Number.isInteger(requestedId) && requestedId > 0 && requestedId !== req.auth.userId
+      ? (isAdmin ? requestedId : null)
+      : req.auth.userId;
+
+    if (!userId) {
+      return res.status(403).json({ success: false, message: 'غير مصرح لك بتغيير كلمة مرور مستخدم آخر' });
     }
 
     // 1. التحقق من كلمة المرور الحالية
