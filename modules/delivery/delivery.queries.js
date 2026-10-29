@@ -1144,7 +1144,7 @@ async function getDeliveryEvents(value) {
       .query(`
         SELECT ChargeID, ChargeAmount, Status, ChargeDescription, SourceDeliveryId
         FROM AdditionalCharges
-        WHERE TransactionId = @id AND SourceDeliveryId IS NOT NULL
+        WHERE TransactionID = @id AND SourceDeliveryId IS NOT NULL
         ORDER BY ChargeID
       `);
 
