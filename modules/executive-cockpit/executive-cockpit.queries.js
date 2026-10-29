@@ -76,6 +76,10 @@ function humanizeWhen(value, now = new Date()) {
   return when.toISOString().slice(0, 10).replaceAll('-', '/');
 }
 
+// التعريفات الموحدة — بلازور ExecutiveCockpitService.cs:389 (FiguresAsync :403):
+// المبيعات صافية بعد مرتجعات البيع، والمشتريات صافية بعد مرتجعات الشراء
+// ومستبعدة منها فواتير المرآة، والمصروفات بالسطور المعترف بها فقط
+// (FinancialReportsService.cs:548 — السلفة الأم مستبعدة وفروعها الشهرية معدودة).
 async function getTotals(pool, from, to) {
   const result = await pool.request()
     .input('fromDate', sql.Date, toSqlDate(from))
@@ -85,6 +89,12 @@ async function getTotals(pool, from, to) {
         Sales = COALESCE((
           SELECT SUM(ISNULL(t.GrandTotal, 0)) FROM Transactions t
           WHERE t.TransactionType = 'Sale'
+            AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')
+            AND t.TransactionDate >= @fromDate
+            AND t.TransactionDate < DATEADD(DAY, 1, @toDate)
+        ), 0) - COALESCE((
+          SELECT SUM(ISNULL(t.GrandTotal, 0)) FROM Transactions t
+          WHERE t.TransactionType = 'SaleReturn'
             AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')
             AND t.TransactionDate >= @fromDate
             AND t.TransactionDate < DATEADD(DAY, 1, @toDate)
@@ -102,11 +112,19 @@ async function getTotals(pool, from, to) {
             AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')
             AND t.TransactionDate >= @fromDate
             AND t.TransactionDate < DATEADD(DAY, 1, @toDate)
+            AND (t.ReferenceType IS NULL OR t.ReferenceType NOT LIKE 'MirrorOf:%')
+        ), 0) - COALESCE((
+          SELECT SUM(ISNULL(t.GrandTotal, 0)) FROM Transactions t
+          WHERE t.TransactionType = 'PurchaseReturn'
+            AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')
+            AND t.TransactionDate >= @fromDate
+            AND t.TransactionDate < DATEADD(DAY, 1, @toDate)
         ), 0),
         Expenses = COALESCE((
           SELECT SUM(ISNULL(e.Amount, 0)) FROM Expenses e
           WHERE e.ExpenseDate >= @fromDate
             AND e.ExpenseDate < DATEADD(DAY, 1, @toDate)
+            AND (ISNULL(e.IsAdvance, 0) <> 1 OR e.AdvanceParentExpenseId IS NOT NULL)
         ), 0)
     `);
   const row = result.recordset[0] || {};
@@ -138,12 +156,18 @@ async function getTrend(pool, today) {
       SELECT
         YEAR(t.TransactionDate) AS SaleYear,
         MONTH(t.TransactionDate) AS SaleMonth,
-        COALESCE(SUM(CASE WHEN t.TransactionType = 'Sale' THEN ISNULL(t.GrandTotal, 0) ELSE 0 END), 0) AS Sales,
+        COALESCE(SUM(CASE WHEN t.TransactionType = 'Sale' THEN ISNULL(t.GrandTotal, 0)
+                          WHEN t.TransactionType = 'SaleReturn' THEN -ISNULL(t.GrandTotal, 0)
+                          ELSE 0 END), 0) AS Sales,
         COALESCE(SUM(CASE WHEN t.TransactionType = 'Sale' THEN ISNULL(t.PaidAmount, 0) ELSE 0 END), 0) AS Collected,
-        COALESCE(SUM(CASE WHEN t.TransactionType = 'Purchase' THEN ISNULL(t.GrandTotal, 0) ELSE 0 END), 0) AS Purchases
+        COALESCE(SUM(CASE WHEN t.TransactionType = 'Purchase'
+                               AND (t.ReferenceType IS NULL OR t.ReferenceType NOT LIKE 'MirrorOf:%')
+                          THEN ISNULL(t.GrandTotal, 0)
+                          WHEN t.TransactionType = 'PurchaseReturn' THEN -ISNULL(t.GrandTotal, 0)
+                          ELSE 0 END), 0) AS Purchases
       FROM Transactions t
       WHERE (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')
-        AND t.TransactionType IN ('Sale', 'Purchase')
+        AND t.TransactionType IN ('Sale', 'SaleReturn', 'Purchase', 'PurchaseReturn')
         AND t.TransactionDate >= @trendStart
       GROUP BY YEAR(t.TransactionDate), MONTH(t.TransactionDate)
       ORDER BY SaleYear, SaleMonth
@@ -206,10 +230,11 @@ async function getEmployees(pool, today) {
       .input('monthStart', sql.Date, monthStart)
       .query(`
         SELECT EmpId AS EmployeeID,
-               SUM(ISNULL(GrandTotal, 0)) AS Total,
+               SUM(CASE WHEN TransactionType = 'Sale' THEN ISNULL(GrandTotal, 0)
+                        ELSE -ISNULL(GrandTotal, 0) END) AS Total,
                SUM(ISNULL(PaidAmount, 0)) AS Paid
         FROM Transactions
-        WHERE TransactionType = 'Sale'
+        WHERE TransactionType IN ('Sale', 'SaleReturn')
           AND (InvoiceStatus IS NULL OR InvoiceStatus <> 'Cancelled')
           AND TransactionDate >= @monthStart
           AND EmpId IS NOT NULL
@@ -419,11 +444,12 @@ async function getCashPipelineBranches(pool, from, to, today) {
       .input('toDate', sql.Date, to)
       .query(`
         SELECT COALESCE(b.BranchNameAr, b.BranchNameEn, N'غير محدد') AS Name,
-               SUM(ISNULL(t.GrandTotal, 0)) AS Value
+               SUM(CASE WHEN t.TransactionType = 'Sale' THEN ISNULL(t.GrandTotal, 0)
+                        ELSE -ISNULL(t.GrandTotal, 0) END) AS Value
         FROM Transactions t
         INNER JOIN Warehouses w ON t.WarehouseID = w.WarehouseID
         INNER JOIN Branches b ON w.BranchID = b.BranchID
-        WHERE t.TransactionType = 'Sale'
+        WHERE t.TransactionType IN ('Sale', 'SaleReturn')
           AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')
           AND t.TransactionDate >= @fromDate
           AND t.TransactionDate < DATEADD(DAY, 1, @toDate)

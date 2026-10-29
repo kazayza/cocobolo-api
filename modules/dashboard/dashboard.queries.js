@@ -38,8 +38,8 @@ async function getDashboardStats(userId, username, role, employeeId) {
       SELECT 
         (SELECT COUNT(*) FROM Transactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE)) as invoicesToday,
         (SELECT COUNT(*) FROM Expenses WHERE CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE)) as expensesToday,
-        (SELECT ISNULL(SUM(Amount),0) FROM CashboxTransactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) AND TransactionType = 'In') as collectionsToday,
-        (SELECT ISNULL(SUM(CASE WHEN TransactionType = 'In' THEN Amount ELSE -Amount END),0) FROM CashboxTransactions) as cashBalance,
+        (SELECT ISNULL(SUM(Amount),0) FROM CashboxTransactions WHERE CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) AND TransactionType = N'قبض') as collectionsToday,
+        (SELECT ISNULL(SUM(ISNULL(OpeningBalance,0)),0) FROM CashBoxes) + (SELECT ISNULL(SUM(CASE WHEN TransactionType = N'قبض' THEN Amount WHEN TransactionType = N'صرف' THEN -Amount ELSE 0 END),0) FROM CashboxTransactions) as cashBalance,
         (SELECT COUNT(*) FROM Notifications WHERE RecipientUser = @username AND IsRead = 0) as unreadCount
     `;
   } else {

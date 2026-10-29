@@ -1,0 +1,2417 @@
+diff --git a/modules/delivery/delivery.controller.js b/modules/delivery/delivery.controller.js
+index 5d2104c..5c70dbf 100644
+--- a/modules/delivery/delivery.controller.js
++++ b/modules/delivery/delivery.controller.js
+@@ -1,14 +1,18 @@
+ const queries = require('./delivery.queries');
+ const notifications = require('../notifications/notifications.queries');
+ const policy = require('../../shared/authorization.policy');
++const dates = require('../../shared/delivery-dates');
+ const { errorResponse, notFoundResponse } = require('../../shared/response.helper');
+ 
+ function capabilities(auth) {
+   return {
+     canView: policy.delivery.canView(auth),
+     canSeeAmounts: policy.delivery.canSeeAmounts(auth),
++    canSeeRealDate: policy.delivery.canSeeRealDate(auth),
+     canEditFull: policy.delivery.canEditFull(auth),
+     canConfirmDelivery: policy.delivery.canConfirm(auth),
++    canRecordDelivery: policy.delivery.canConfirm(auth),
++    canVoidDelivery: policy.delivery.canOverrideRemaining(auth),
+     canOverrideRemaining: policy.delivery.canOverrideRemaining(auth),
+     canPrint: policy.delivery.canPrint(auth),
+     canViewPurchaseReceipts: policy.purchaseReceipts.canView(auth),
+@@ -31,6 +35,14 @@ function maskAmounts(row) {
+       return masked;
+     });
+   }
++  // رسوم التعديل المولودة من أحداث التسليم مبالغ أيضًا — تُحجب بنفس القاعدة
++  if (Array.isArray(copy.Charges)) {
++    copy.Charges = copy.Charges.map((charge) => {
++      const masked = { ...charge };
++      delete masked.ChargeAmount;
++      return masked;
++    });
++  }
+   return copy;
+ }
+ 
+@@ -50,19 +62,27 @@ async function notifyRoles(data, roles) {
+ 
+ async function getDeliveries(req, res) {
+   try {
++    const dateFilterType = req.query.dateFilterType || 'due';
++    // فلاتر مدى الاستحقاق للمخفيين تُزاح +الهامش قبل الاستعلام (بلازور:
++    // ShiftDueDateRange) فتطابق النتائج التواريخ المعروضة لهم
++    const range = dateFilterType === 'due'
++      ? dates.shiftDueRange(req.query.dateFrom, req.query.dateTo, req.auth)
++      : { dateFrom: req.query.dateFrom, dateTo: req.query.dateTo };
+     const result = await queries.getDeliveries({
+       status: req.query.status || 'all',
+       search: req.query.search,
+-      dateFrom: req.query.dateFrom,
+-      dateTo: req.query.dateTo,
+-      dateFilterType: req.query.dateFilterType || 'due',
++      dateFrom: range.dateFrom,
++      dateTo: range.dateTo,
++      dateFilterType,
+       debt: req.query.debt || 'all',
+       page: req.query.page,
+       limit: req.query.limit,
+-    });
++    }, req.auth);
+     const rows = result.rows.map((raw) => {
+       const row = scoped(raw, req.auth);
+       delete row.TotalRows;
++      // إخفاء تاريخ الاستحقاق المتفق عليه لغير المستثنين — عرض فقط
++      dates.maskRowDueDate(row, req.auth);
+       return row;
+     });
+     return res.json({
+@@ -87,11 +107,15 @@ async function getDeliveries(req, res) {
+ 
+ async function getDeliveryStats(req, res) {
+   try {
++    const dateFilterType = req.query.dateFilterType || 'due';
++    const range = dateFilterType === 'due'
++      ? dates.shiftDueRange(req.query.dateFrom, req.query.dateTo, req.auth)
++      : { dateFrom: req.query.dateFrom, dateTo: req.query.dateTo };
+     const stats = await queries.getDeliveryStats({
+       search: req.query.search,
+-      dateFrom: req.query.dateFrom,
+-      dateTo: req.query.dateTo,
+-      dateFilterType: req.query.dateFilterType || 'due',
++      dateFrom: range.dateFrom,
++      dateTo: range.dateTo,
++      dateFilterType,
+       debt: req.query.debt || 'all',
+     });
+     return res.json({
+@@ -109,9 +133,11 @@ async function getDeliveryStats(req, res) {
+ 
+ async function getDeliveryDetails(req, res) {
+   try {
+-    const details = await queries.getDeliveryDetails(req.params.id);
++    const details = await queries.getDeliveryDetails(req.params.id, req.auth);
+     if (!details) return notFoundResponse(res, 'فاتورة التسليم غير موجودة');
+     const data = scoped(details, req.auth);
++    // تاريخ الاستحقاق يُخفى لغير المستثنين؛ تواريخ الأحداث الفعلية لا تُمس
++    dates.maskRowDueDate(data, req.auth);
+     data.capabilities = capabilities(req.auth);
+     return res.json({ success: true, data });
+   } catch (error) {
+@@ -146,7 +172,7 @@ async function markAsDelivered(req, res) {
+       formName: 'sales-delivery-status',
+       relatedTable: 'Transactions',
+       relatedId: row.TransactionID,
+-    }, ['Admin', 'AccountManager', 'SalesManager']);
++    }, ['Admin', 'AccountManager', 'SalesManager', 'ProductionManager']);
+     return res.json({ success: true, message: 'تم تأكيد التسليم بنجاح', data: row });
+   } catch (error) {
+     console.error('delivery.markAsDelivered:', error);
+@@ -220,12 +246,15 @@ async function grantPermission(req, res) {
+ 
+ async function getDailySheet(req, res) {
+   try {
++    const range = dates.shiftDueRange(req.query.dateFrom, req.query.dateTo, req.auth);
+     const rows = await queries.getDailySheet({
+-      dateFrom: req.query.dateFrom,
+-      dateTo: req.query.dateTo,
++      dateFrom: range.dateFrom,
++      dateTo: range.dateTo,
+       search: req.query.search,
+     });
+-    return res.json({ success: true, data: rows });
++    // الكشف بتواريخ الاستحقاق — تُعرض مخفية لغير المستثنين كالقائمة
++    const masked = rows.map((row) => dates.maskRowDueDate({ ...row }, req.auth));
++    return res.json({ success: true, data: masked });
+   } catch (error) {
+     console.error('delivery.getDailySheet:', error);
+     return errorResponse(res, 'فشل تحميل كشف التسليمات', 500, error.message);
+@@ -234,7 +263,7 @@ async function getDailySheet(req, res) {
+ 
+ async function getUpcomingDeliveries(req, res) {
+   try {
+-    const rows = await queries.getUpcomingDeliveries();
++    const rows = await queries.getUpcomingDeliveries(req.auth, req.query.days);
+     return res.json({ success: true, data: rows });
+   } catch (error) {
+     console.error('delivery.getUpcomingDeliveries:', error);
+@@ -242,6 +271,110 @@ async function getUpcomingDeliveries(req, res) {
+   }
+ }
+ 
++// ── أحداث التسليم (التسليم على دفعات) ──────────────────────────────
++
++async function getEvents(req, res) {
++  try {
++    const data = await queries.getDeliveryEvents(req.params.id);
++    if (!policy.delivery.canSeeAmounts(req.auth)) {
++      data.Charges = data.Charges.map((charge) => {
++        const masked = { ...charge };
++        delete masked.ChargeAmount;
++        return masked;
++      });
++    }
++    return res.json({ success: true, data });
++  } catch (error) {
++    console.error('delivery.getEvents:', error);
++    return errorResponse(res, 'فشل تحميل أحداث التسليم', error.statusCode || 500, error.message);
++  }
++}
++
++async function getCoverage(req, res) {
++  try {
++    const data = await queries.getBatchCoverage(
++      req.params.id,
++      (req.body || {}).items || [],
++      req.auth,
++    );
++    return res.json({ success: true, data });
++  } catch (error) {
++    console.error('delivery.getCoverage:', error);
++    return errorResponse(res, error.message || 'فشل حساب تغطية الدفعة', error.statusCode || 500, error.code || error.message);
++  }
++}
++
++async function recordEvent(req, res) {
++  try {
++    const row = await queries.recordDeliveryEvent(req.params.id, req.body || {}, req.auth);
++    if (!row.alreadyRecorded) {
++      const reference = row.ReferenceNumber || `#${row.TransactionID}`;
++      await notifyRoles({
++        title: row.CompletedInvoice ? '✅ اكتمل تسليم الفاتورة' : '🚚 تسليمة جزئية',
++        message: row.CompletedInvoice
++          ? `اكتمل تسليم الفاتورة ${reference} للعميل ${row.PartyName} بالكامل بواسطة ${req.auth.username}`
++          : `سُجلت دفعة تسليم للفاتورة ${reference} للعميل ${row.PartyName} بواسطة ${req.auth.username} — المتبقي ${row.OpenQty} من ${row.TotalInvoicedQty}`,
++        createdBy: req.auth.username,
++        formName: 'sales-delivery-status',
++        relatedTable: 'Transactions',
++        relatedId: row.TransactionID,
++      }, ['Admin', 'AccountManager', 'SalesManager', 'ProductionManager']);
++      if (row.courierUsername && row.courierUsername !== req.auth.username) {
++        try {
++          await notifications.createNotification({
++            title: row.CompletedInvoice ? '✅ اكتمل تسليم فاتورة سلمتها' : '🚚 سجلت دفعة تسليم',
++            message: `الفاتورة ${reference} للعميل ${row.PartyName}`,
++            recipientUser: row.courierUsername,
++            createdBy: req.auth.username,
++            formName: 'sales-delivery-status',
++            relatedTable: 'Transactions',
++            relatedId: row.TransactionID,
++          });
++        } catch (error) {
++          console.error('delivery courier notification:', error.message);
++        }
++      }
++      if (Number(row.TotalReturnedQty || 0) > 0) {
++        await notifyRoles({
++          title: '↩️ مرتجعات من تسليم',
++          message: `وصلت مرتجعات بكمية ${row.TotalReturnedQty} من تسليم الفاتورة ${reference} للعميل ${row.PartyName} — بانتظار فحص الجودة/الصيانة`,
++          createdBy: req.auth.username,
++          formName: 'sales-delivery-status',
++          relatedTable: 'Transactions',
++          relatedId: row.TransactionID,
++        }, ['ProductionManager', 'FactoryManager']);
++      }
++    }
++    return res.json({ success: true, message: row.message, data: row });
++  } catch (error) {
++    console.error('delivery.recordEvent:', error);
++    return errorResponse(res, error.message || 'فشل تسجيل التسليمة', error.statusCode || 500, error.code || error.message);
++  }
++}
++
++async function voidEvent(req, res) {
++  try {
++    const row = await queries.voidDeliveryEvent(
++      req.params.id,
++      req.params.deliveryId,
++      req.body || {},
++      req.auth,
++    );
++    await notifyRoles({
++      title: '↩️ أُلغيت تسليمة',
++      message: `أُلغيت تسليمة من الفاتورة #${row.TransactionID} بواسطة ${req.auth.username} — السبب: ${(req.body || {}).reason || ''}`,
++      createdBy: req.auth.username,
++      formName: 'sales-delivery-status',
++      relatedTable: 'Transactions',
++      relatedId: row.TransactionID,
++    }, ['Admin', 'AccountManager']);
++    return res.json({ success: true, message: row.message, data: row });
++  } catch (error) {
++    console.error('delivery.voidEvent:', error);
++    return errorResponse(res, error.message || 'فشل إلغاء التسليمة', error.statusCode || 500, error.code || error.message);
++  }
++}
++
+ module.exports = {
+   getDeliveries,
+   getDeliveryStats,
+@@ -253,4 +386,8 @@ module.exports = {
+   grantPermission,
+   getDailySheet,
+   getUpcomingDeliveries,
++  getEvents,
++  getCoverage,
++  recordEvent,
++  voidEvent,
+ };
+diff --git a/modules/delivery/delivery.queries.js b/modules/delivery/delivery.queries.js
+index 35b316a..a9ea713 100644
+--- a/modules/delivery/delivery.queries.js
++++ b/modules/delivery/delivery.queries.js
+@@ -1,9 +1,54 @@
++const crypto = require('crypto');
+ const { sql, connectDB } = require('../../core/database');
++const policy = require('../../shared/authorization.policy');
++const dates = require('../../shared/delivery-dates');
+ 
+ const ACTION_PERMISSION_REQUEST = 'DeliveryPermissionRequest';
+ const ACTION_PERMISSION_GRANTED = 'DeliveryPermissionGranted';
++const ACTION_EVENT_RECORDED = 'DeliveryEventRecorded';
++const ACTION_EVENT_VOIDED = 'DeliveryEventVoided';
+ const SQL_INT_MAX = 2147483647;
+ 
++// ثوابت بلازور (SalesDeliveryStatusService.cs:18-19, 1404 + DeliveryProjection.cs):
++// تسامح الكميات 0.0005 وتسامح النقود 0.01.
++const QTY_EPSILON = 0.0005;
++const MONEY_EPSILON = 0.01;
++// حالات سجل الصيانة التي تُبقي الكمية «داخل الحلقة» (DeliveryOutcomesDto.cs)
++const MAINTENANCE_IN_LOOP = ['Pending', 'InProgress', 'ReadyForRedelivery', 'Unrepairable'];
++const MAINTENANCE_SETTLED = 'ClosedByCredit';
++
++function num(value, fallback = 0) {
++  const parsed = Number(value);
++  return Number.isFinite(parsed) ? parsed : fallback;
++}
++
++function round3(value) {
++  return Math.round(num(value) * 1000) / 1000;
++}
++
++// تنسيق كمية كما في بلازور (0.###) لرسائل الأخطاء
++function fmtQty(value) {
++  return String(parseFloat(num(value).toFixed(3)));
++}
++
++function fmtMoney(value) {
++  return num(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
++}
++
++function isMissingTableError(error) {
++  return Boolean(error) && (error.number === 208 || /Invalid object name/i.test(String(error.message || '')));
++}
++
++// يربط قائمة معرّفات كمعاملات @prefix0..n ويعيد نص الـ IN (...).
++function bindIdList(request, prefix, ids) {
++  const placeholders = ids.map((id, index) => {
++    const name = `${prefix}${index}`;
++    request.input(name, sql.Int, id);
++    return `@${name}`;
++  });
++  return `(${placeholders.join(', ')})`;
++}
++
+ function intValue(value, fallback = 0) {
+   const parsed = Number(value);
+   return Number.isInteger(parsed) ? parsed : fallback;
+@@ -77,7 +122,7 @@ function buildWhere(request, filters = {}, { includeStatus = true } = {}) {
+   return clauses.map((clause) => `(${clause})`).join(' AND ');
+ }
+ 
+-async function getDeliveries(filters = {}) {
++async function getDeliveries(filters = {}, auth = null) {
+   const pool = await connectDB();
+   const request = pool.request();
+   const page = Math.max(intValue(filters.page, 1), 1);
+@@ -121,6 +166,8 @@ async function getDeliveries(filters = {}) {
+     OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY
+   `);
+ 
++  await attachProgressAndSchedules(pool, result.recordset, auth);
++
+   return {
+     rows: result.recordset,
+     page,
+@@ -154,7 +201,7 @@ async function getDeliveryStats(filters = {}) {
+   return result.recordset[0] || {};
+ }
+ 
+-async function getDeliveryDetails(value) {
++async function getDeliveryDetails(value, auth = null) {
+   const id = assertId(value, 'معرّف الفاتورة');
+   const pool = await connectDB();
+   const headerResult = await pool.request()
+@@ -199,6 +246,7 @@ async function getDeliveryDetails(value) {
+     .query(`
+       SELECT d.DetailID, d.ProductID, p.ProductName, d.Quantity,
+              d.UnitPrice, d.TotalAmount, d.Notes, d.SelectedAlternativeID,
++             d.DeliveryDate, d.DeliveryDateIsCustom,
+              alt.AlternativeName, alt.SpecificationSummary
+       FROM TransactionDetails d
+       INNER JOIN Products p ON d.ProductID = p.ProductID
+@@ -207,7 +255,81 @@ async function getDeliveryDetails(value) {
+       WHERE d.TransactionID = @id
+       ORDER BY d.DetailID
+     `);
+-  return { ...header, Products: itemsResult.recordset };
++  // تقدم كل بند من أحداث التسليم + موعده المعروض لهذا المستخدم + أحداث
++  // الفاتورة (مرآة GetDeliveryDetailsAsync في بلازور). غياب جداول الأحداث
++  // (SQL لم يُشغَّل) → تقدم صفري بلا انهيار، كما في بلازور.
++  const products = itemsResult.recordset;
++  let state = null;
++  try {
++    state = await loadDeliveryState(() => pool.request(), id);
++  } catch (error) {
++    if (!isMissingTableError(error)) throw error;
++  }
++  const eventsData = await getDeliveryEvents(id);
++
++  const seesReal = auth ? dates.canSeeRealDate(auth) : true;
++  let totalDelivered = 0;
++  let totalInLoop = 0;
++  let totalSettled = 0;
++  let totalInvoiced = 0;
++  for (const product of products) {
++    const detailId = Number(product.DetailID);
++    const invoiced = num(product.Quantity);
++    const delivered = state?.acceptedByDetail.get(detailId) || 0;
++    const inLoop = state?.inLoopByDetail.get(detailId) || 0;
++    const settled = state?.settledByDetail.get(detailId) || 0;
++    const remaining = invoiced - delivered - settled;
++    totalInvoiced += invoiced;
++    totalDelivered += delivered;
++    totalInLoop += inLoop;
++    totalSettled += settled;
++
++    const isCustom = Boolean(product.DeliveryDateIsCustom) && Boolean(product.DeliveryDate);
++    const effective = dates.effectiveLineDate(product.DeliveryDate, isCustom, header.DueDate);
++    const scheduled = dates.displayDate(effective, header.TransactionDate, seesReal);
++    const lastDeliveryDate = state?.lastDateByDetail.get(detailId) || null;
++
++    product.DeliveredQty = round3(delivered);
++    product.InLoopQty = round3(inLoop);
++    product.SettledQty = round3(settled);
++    product.RemainingQty = round3(remaining);
++    product.ScheduledDate = scheduled;
++    product.ScheduledDateIsCustom = isCustom;
++    product.IsScheduleOverdue = dates.isLineOverdue(scheduled, remaining);
++    product.LastDeliveryDate = lastDeliveryDate;
++    // تأخر الإنجاز عن المتفق عليه — حقائق فعلية لا تُخفى (بلازور: DeliveredLate)
++    product.DeliveredLate = Boolean(
++      lastDeliveryDate && header.DueDate
++      && dates.dateOnly(lastDeliveryDate) > dates.dateOnly(header.DueDate),
++    );
++  }
++
++  const totalRemaining = totalInvoiced - totalDelivered - totalSettled;
++  const hasEvents = (state?.eventCount || 0) > 0;
++  let progressStatus = 'pending';
++  if (String(header.DeliveredNotes || '').startsWith('مرتجع:')) progressStatus = 'returned';
++  else if (hasEvents && totalRemaining <= QTY_EPSILON) progressStatus = 'delivered';
++  else if (hasEvents) progressStatus = 'partial';
++
++  return {
++    ...header,
++    Products: products,
++    Progress: {
++      TotalInvoicedQty: round3(totalInvoiced),
++      TotalDeliveredQty: round3(totalDelivered),
++      TotalInLoopQty: round3(totalInLoop),
++      TotalSettledQty: round3(totalSettled),
++      TotalRemainingQty: round3(totalRemaining),
++      TotalAwaitingQty: round3(totalRemaining - totalInLoop),
++      EventCount: state?.eventCount || 0,
++      HasEvents: hasEvents,
++      IsPartiallyDelivered: hasEvents && totalRemaining > QTY_EPSILON,
++      Status: progressStatus,
++    },
++    Events: eventsData.Events,
++    Maintenance: eventsData.Maintenance,
++    Charges: eventsData.Charges,
++  };
+ }
+ 
+ async function getDeliveryEmployees() {
+@@ -280,121 +402,44 @@ async function resolveDeliveryEmployee(transaction, auth, requestedId, requested
+   return { employeeId: employeeId || null, employeeName };
+ }
+ 
++// تأكيد تسليم الفاتورة كاملة (المسار القائم): لم يعد يكتب IsDelivered
++// مباشرة — يبني دفعة اكتمال بكل الكميات المتاحة مقبولة ويمر بمحرك
++// الأحداث، فتصبح IsDelivered/DeliveredAt إسقاطًا من الأحداث وحده.
+ async function markAsDelivered(value, data, auth, { canOverrideRemaining = false } = {}) {
+-  const id = assertId(value, 'معرّف الفاتورة');
+-  const pool = await connectDB();
+-  const transaction = new sql.Transaction(pool);
+-  await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+-  try {
+-    const currentResult = await transaction.request()
+-      .input('id', sql.Int, id)
+-      .query(`
+-        SELECT t.TransactionID, t.ReferenceNumber, t.TransactionType,
+-               t.InvoiceStatus, t.IsDelivered, t.DeliveredAt, t.DeliveredNotes,
+-               t.DeliveryEmployeeId, t.DeliveryEmployeeName,
+-               t.PartyID, p.PartyName,
+-               t.GrandTotal, t.PaidAmount
+-        FROM Transactions t WITH (UPDLOCK, HOLDLOCK)
+-        INNER JOIN Parties p ON t.PartyID = p.PartyID
+-        WHERE t.TransactionID = @id
+-      `);
+-    const current = currentResult.recordset[0];
+-    if (!current || current.TransactionType !== 'Sale') {
+-      throw Object.assign(new Error('فاتورة البيع غير موجودة'), { statusCode: 404 });
+-    }
+-    if (current.InvoiceStatus === 'Cancelled') {
+-      throw Object.assign(new Error('لا يمكن تسليم فاتورة ملغية'), { statusCode: 409 });
+-    }
+-    if (current.IsDelivered === true || current.IsDelivered === 1) {
+-      throw Object.assign(new Error('تم تسليم هذه الفاتورة بالفعل'), { statusCode: 409 });
+-    }
+-
+-    const remaining = Number(current.GrandTotal || 0) - Number(current.PaidAmount || 0);
+-    let approvalNote = null;
+-    if (remaining > 0.005) {
+-      if (canOverrideRemaining) {
+-        approvalNote = `تم التسليم بموافقة ${auth.username} رغم وجود مبلغ متبقٍ`;
+-      } else {
+-        const latest = await latestPermissionAction(transaction, id);
+-        if (!latest || latest.ActionType !== ACTION_PERMISSION_GRANTED) {
+-          throw Object.assign(
+-            new Error('لا يمكن التسليم لوجود مبلغ متبقٍ. اطلب إذن التسليم أولًا.'),
+-            { statusCode: 409, code: 'DELIVERY_PERMISSION_REQUIRED' },
+-          );
+-        }
+-        approvalNote = `تم التسليم بإذن ${latest.LoginName || 'الإدارة'} رغم وجود مبلغ متبقٍ`;
+-      }
+-    }
+-
+-    const employee = await resolveDeliveryEmployee(
+-      transaction,
+-      auth,
+-      data.deliveryEmployeeId,
+-      data.deliveryEmployeeName,
+-    );
+-    const rawNotes = String(data.deliveredNotes || data.notes || '').trim();
+-    const notes = [rawNotes || null, approvalNote].filter(Boolean).join(' — ') || null;
+-
+-    await transaction.request()
+-      .input('id', sql.Int, id)
+-      .input('employeeId', sql.Int, employee.employeeId)
+-      .input('employeeName', sql.NVarChar(200), employee.employeeName)
+-      .input('notes', sql.NVarChar(1000), notes)
+-      .query(`
+-        UPDATE Transactions
+-        SET IsDelivered = 1,
+-            DeliveredAt = GETDATE(),
+-            DeliveredNotes = @notes,
+-            DeliveryEmployeeId = COALESCE(@employeeId, DeliveryEmployeeId),
+-            DeliveryEmployeeName = COALESCE(@employeeName, DeliveryEmployeeName)
+-        WHERE TransactionID = @id
+-      `);
+-
+-    await insertAudit(transaction, {
+-      id,
+-      action: 'UpdateDeliveryStatus',
+-      username: auth.username,
+-      oldData: {
+-        IsDelivered: current.IsDelivered,
+-        DeliveredAt: current.DeliveredAt,
+-        DeliveredNotes: current.DeliveredNotes,
+-        DeliveryEmployeeId: current.DeliveryEmployeeId,
+-      },
+-      newData: {
+-        IsDelivered: true,
+-        DeliveryEmployeeId: employee.employeeId,
+-        DeliveryEmployeeName: employee.employeeName,
+-        DeliveredNotes: notes,
+-        RemainingAtDelivery: remaining,
+-      },
+-    });
+-
+-    await transaction.commit();
+-    return {
+-      TransactionID: id,
+-      ReferenceNumber: current.ReferenceNumber,
+-      PartyID: current.PartyID,
+-      PartyName: current.PartyName,
+-      RemainingAmount: remaining,
+-      DeliveryEmployeeId: employee.employeeId,
+-      DeliveryEmployeeName: employee.employeeName,
+-    };
+-  } catch (error) {
+-    try { await transaction.rollback(); } catch (_) {}
+-    throw error;
+-  }
++  void canOverrideRemaining; // البوابة تقرأ الصلاحية من auth عبر السياسة الموحدة
++  const result = await recordDeliveryEvent(value, data, auth, { completeAll: true });
++  return {
++    TransactionID: result.TransactionID,
++    ReferenceNumber: result.ReferenceNumber,
++    PartyID: result.PartyID,
++    PartyName: result.PartyName,
++    RemainingAmount: result.RemainingAmount,
++    DeliveryEmployeeId: result.DeliveryEmployeeId,
++    DeliveryEmployeeName: result.DeliveryEmployeeName,
++    DeliveryId: result.DeliveryId,
++    CompletedInvoice: result.CompletedInvoice,
++    courierUsername: result.courierUsername,
++  };
+ }
+ 
++// تعديل بيانات التسليم اليدوي — مرآة UpdateDeliveryStatusAsync الحالية
++// في بلازور: «تم التسليم» مرفوضة من هذا المسار (التسليم أحداث بكميات
++// البنود)، ويُعدَّل المندوب والملاحظات فقط — IsDelivered/DeliveredAt
++// إسقاط أحداث لا يمسّه هذا المسار أبدًا.
+ async function updateDeliveryDetails(
+   value,
+   data,
+   auth,
+   { canOverrideRemaining = false } = {},
+ ) {
++  void canOverrideRemaining;
+   const id = assertId(value, 'معرّف الفاتورة');
+   const status = String(data.status || 'pending').toLowerCase();
+   if (status === 'delivered') {
+-    return markAsDelivered(id, data, auth, { canOverrideRemaining });
++    throw Object.assign(
++      new Error('تسجيل التسليم أصبح يتم من إجراء «تسليم» بكميات البنود (التسليم على دفعات) — برجاء استخدام تسجيل تسليمة.'),
++      { statusCode: 400 },
++    );
+   }
+ 
+   const pool = await connectDB();
+@@ -423,6 +468,15 @@ async function updateDeliveryDetails(
+       data.deliveryEmployeeId,
+       data.deliveryEmployeeName,
+     );
++    // بقاء اسم المندوب نفسه مع معرّف مختلف يُبقي المعرّف الحالي
++    // (قاعدة بلازور لمنع فقدان ربط المندوب عند إعادة الحفظ بالاسم)
++    let employeeId = employee.employeeId;
++    if (employee.employeeName && current.DeliveryEmployeeName
++      && employee.employeeName.trim() === String(current.DeliveryEmployeeName).trim()
++      && current.DeliveryEmployeeId) {
++      employeeId = current.DeliveryEmployeeId;
++    }
++
+     const rawNotes = String(data.notes || data.deliveredNotes || '').trim();
+     const notes = status === 'returned'
+       ? `مرتجع: ${rawNotes || 'تم تسجيل الفاتورة كمرتجع'}`
+@@ -430,16 +484,14 @@ async function updateDeliveryDetails(
+ 
+     await transaction.request()
+       .input('id', sql.Int, id)
+-      .input('employeeId', sql.Int, employee.employeeId)
++      .input('employeeId', sql.Int, employeeId)
+       .input('employeeName', sql.NVarChar(200), employee.employeeName)
+       .input('notes', sql.NVarChar(1000), notes)
+       .query(`
+         UPDATE Transactions
+-        SET IsDelivered = 0,
+-            DeliveredAt = NULL,
+-            DeliveredNotes = @notes,
+-            DeliveryEmployeeId = @employeeId,
+-            DeliveryEmployeeName = @employeeName
++        SET DeliveredNotes = @notes,
++            DeliveryEmployeeId = COALESCE(@employeeId, DeliveryEmployeeId),
++            DeliveryEmployeeName = COALESCE(@employeeName, DeliveryEmployeeName)
+         WHERE TransactionID = @id
+       `);
+     await insertAudit(transaction, {
+@@ -449,13 +501,21 @@ async function updateDeliveryDetails(
+       oldData: current,
+       newData: {
+         RequestedStatus: status,
+-        DeliveryEmployeeId: employee.employeeId,
++        DeliveryEmployeeId: employeeId,
+         DeliveryEmployeeName: employee.employeeName,
+         DeliveredNotes: notes,
+       },
+     });
+     await transaction.commit();
+-    return { TransactionID: id, status };
++    return {
++      TransactionID: id,
++      status,
++      IsDelivered: Boolean(current.IsDelivered),
++      DeliveredAt: current.DeliveredAt,
++      DeliveryEmployeeId: employeeId,
++      DeliveryEmployeeName: employee.employeeName,
++      DeliveredNotes: notes,
++    };
+   } catch (error) {
+     try { await transaction.rollback(); } catch (_) {}
+     throw error;
+@@ -550,7 +610,7 @@ async function getDailySheet(filters = {}) {
+   const where = buildWhere(request, { ...filters, status: 'pending' });
+   const result = await request.query(`
+     SELECT TOP 500 t.TransactionID, t.ReferenceNumber, p.PartyName,
+-           p.Phone, p.Address, t.DueDate,
++           p.Phone, p.Address, t.TransactionDate, t.DueDate,
+            DATEDIFF(DAY, CAST(GETDATE() AS DATE), CAST(t.DueDate AS DATE)) AS DaysRemaining,
+            ${buildDeliveryStatusSql('t')} AS DeliveryStatus,
+            COALESCE(e.FullName, t.DeliveryEmployeeName) AS DeliveryEmployeeName
+@@ -563,31 +623,1259 @@ async function getDailySheet(filters = {}) {
+   return result.recordset;
+ }
+ 
+-async function getUpcomingDeliveries() {
++
++// آخر إجراء تدقيق من أنواع محددة — تعميم لـ latestPermissionAction
++// (بوابة التغطية في بلازور تبحث عن آخر منح فقط مهما تلاه من طلبات).
++async function latestPermissionActionOf(transaction, id, actionTypes) {
++  const request = transaction.request();
++  request.input('key', sql.NVarChar(200), String(id));
++  const placeholders = actionTypes.map((actionType, index) => {
++    const name = `actionType${index}`;
++    request.input(name, sql.NVarChar(100), actionType);
++    return `@${name}`;
++  });
++  const result = await request.query(`
++    SELECT TOP 1 AuditID, ActionType, LoginName, ActionDate
++    FROM [dbo].[Audit_Log] WITH (UPDLOCK, HOLDLOCK)
++    WHERE TableName = N'Transactions' AND PrimaryKeyValue = @key
++      AND ActionType IN (${placeholders.join(', ')})
++    ORDER BY AuditID DESC
++  `);
++  return result.recordset[0] || null;
++}
++
++// ════════════════════════════════════════════════════════════════════
++// محرك أحداث التسليم — مرآة SalesDeliveryStatusService.RecordDeliveryAsync
++// و DeliveryProjection.RecomputeAsync في بلازور: الأحداث في
++// InvoiceDeliveries/InvoiceDeliveryItems هي مصدر الحقيقة الوحيد، و
++// IsDelivered/DeliveredAt إسقاط اكتمال صارم يُعاد حسابه ولا يُكتب مباشرة.
++// ════════════════════════════════════════════════════════════════════
++
++// يلحق بصفوف القائمة: DeliveryProgress (كميات الأحداث) و Schedule
++// (مجموعات مواعيد البنود بالتواريخ المعروضة لهذا المستخدم) — مرآة
++// GetDeliveryProgressBatchAsync + GetLineScheduleSummariesBatchAsync.
++// غياب جداول الأحداث → تقدم صفري بلا انهيار، كما في بلازور.
++async function attachProgressAndSchedules(pool, rows, auth) {
++  if (!rows.length) return;
++  const ids = rows.map((r) => Number(r.TransactionID));
++
++  const progressByTx = new Map();
++  try {
++    const progressRequest = pool.request();
++    const inList = bindIdList(progressRequest, 'pid', ids);
++    const progressResult = await progressRequest.query(`
++      SELECT idl.TransactionId,
++             COUNT(DISTINCT idl.DeliveryId) AS EventCount,
++             MAX(idl.DeliveryDate) AS LastEventDate,
++             COALESCE(SUM(idi.AcceptedQty), 0) AS TotalAccepted
++      FROM InvoiceDeliveries idl
++      LEFT JOIN InvoiceDeliveryItems idi ON idi.DeliveryId = idl.DeliveryId
++      WHERE idl.IsVoided = 0 AND idl.TransactionId IN ${inList}
++      GROUP BY idl.TransactionId
++    `);
++    for (const row of progressResult.recordset) {
++      progressByTx.set(Number(row.TransactionId), row);
++    }
++
++    const settledRequest = pool.request();
++    const settledIn = bindIdList(settledRequest, 'sid', ids);
++    const settledResult = await settledRequest.query(`
++      SELECT TransactionId, COALESCE(SUM(Quantity), 0) AS TotalSettled
++      FROM DeliveryMaintenanceItems
++      WHERE IsVoided = 0 AND Status = '${MAINTENANCE_SETTLED}' AND TransactionId IN ${settledIn}
++      GROUP BY TransactionId
++    `);
++    for (const row of settledResult.recordset) {
++      const entry = progressByTx.get(Number(row.TransactionId)) || {};
++      entry.TotalSettled = row.TotalSettled;
++      progressByTx.set(Number(row.TransactionId), entry);
++    }
++
++    const inLoopRequest = pool.request();
++    const inLoopIn = bindIdList(inLoopRequest, 'lid', ids);
++    const inLoopResult = await inLoopRequest.query(`
++      SELECT TransactionId, COALESCE(SUM(Quantity), 0) AS TotalInLoop
++      FROM DeliveryMaintenanceItems
++      WHERE IsVoided = 0 AND Status IN (${MAINTENANCE_IN_LOOP.map((s) => `N'${s}'`).join(', ')})
++        AND TransactionId IN ${inLoopIn}
++      GROUP BY TransactionId
++    `);
++    for (const row of inLoopResult.recordset) {
++      const entry = progressByTx.get(Number(row.TransactionId)) || {};
++      entry.TotalInLoop = row.TotalInLoop;
++      progressByTx.set(Number(row.TransactionId), entry);
++    }
++  } catch (error) {
++    if (!isMissingTableError(error)) throw error;
++  }
++
++  const linesRequest = pool.request();
++  const linesIn = bindIdList(linesRequest, 'tid', ids);
++  const linesResult = await linesRequest.query(`
++    SELECT td.TransactionID, td.DetailID, td.Quantity,
++           td.DeliveryDate, td.DeliveryDateIsCustom
++    FROM TransactionDetails td
++    WHERE td.TransactionID IN ${linesIn}
++    ORDER BY td.DetailID
++  `);
++  const acceptedByDetail = new Map();
++  const settledByDetail = new Map();
++  try {
++    const accRequest = pool.request();
++    const accIn = bindIdList(accRequest, 'aid', ids);
++    const accResult = await accRequest.query(`
++      SELECT idl.TransactionId, idi.TransactionDetailId,
++             COALESCE(SUM(idi.AcceptedQty), 0) AS AcceptedQty
++      FROM InvoiceDeliveryItems idi
++      JOIN InvoiceDeliveries idl ON idl.DeliveryId = idi.DeliveryId
++      WHERE idl.IsVoided = 0 AND idl.TransactionId IN ${accIn}
++      GROUP BY idl.TransactionId, idi.TransactionDetailId
++    `);
++    for (const row of accResult.recordset) {
++      acceptedByDetail.set(`${row.TransactionId}:${row.TransactionDetailId}`, num(row.AcceptedQty));
++    }
++    const setRequest = pool.request();
++    const setIn = bindIdList(setRequest, 'mid', ids);
++    const setResult = await setRequest.query(`
++      SELECT TransactionId, TransactionDetailId, COALESCE(SUM(Quantity), 0) AS SettledQty
++      FROM DeliveryMaintenanceItems
++      WHERE IsVoided = 0 AND Status = '${MAINTENANCE_SETTLED}' AND TransactionId IN ${setIn}
++      GROUP BY TransactionId, TransactionDetailId
++    `);
++    for (const row of setResult.recordset) {
++      settledByDetail.set(`${row.TransactionId}:${row.TransactionDetailId}`, num(row.SettledQty));
++    }
++  } catch (error) {
++    if (!isMissingTableError(error)) throw error;
++  }
++
++  const seesReal = auth ? dates.canSeeRealDate(auth) : true;
++  const linesByTx = new Map();
++  for (const line of linesResult.recordset) {
++    const key = Number(line.TransactionID);
++    if (!linesByTx.has(key)) linesByTx.set(key, []);
++    linesByTx.get(key).push(line);
++  }
++
++  for (const row of rows) {
++    const txId = Number(row.TransactionID);
++    const lines = linesByTx.get(txId) || [];
++    const totalInvoiced = lines.reduce((sum, l) => sum + num(l.Quantity), 0);
++    const progress = progressByTx.get(txId) || {};
++    const totalAccepted = num(progress.TotalAccepted);
++    const totalSettled = num(progress.TotalSettled);
++    const totalInLoop = num(progress.TotalInLoop);
++    const totalRemaining = round3(totalInvoiced - totalAccepted - totalSettled);
++    row.DeliveryProgress = {
++      HasEvents: num(progress.EventCount) > 0,
++      EventCount: num(progress.EventCount),
++      TotalInvoicedQty: round3(totalInvoiced),
++      TotalDeliveredQty: round3(totalAccepted),
++      TotalInLoopQty: round3(totalInLoop),
++      TotalSettledQty: round3(totalSettled),
++      TotalRemainingQty: totalRemaining,
++      IsPartiallyDelivered: num(progress.EventCount) > 0 && totalRemaining > QTY_EPSILON,
++      LastEventDate: progress.LastEventDate || null,
++    };
++
++    const groups = new Map();
++    let hasCustom = false;
++    for (const line of lines) {
++      const isCustom = Boolean(line.DeliveryDateIsCustom) && Boolean(line.DeliveryDate);
++      if (isCustom) hasCustom = true;
++      const effective = dates.effectiveLineDate(line.DeliveryDate, isCustom, row.DueDate);
++      const shown = dates.displayDate(effective, row.TransactionDate, seesReal);
++      const key = shown ? shown.toISOString().slice(0, 10) : 'null';
++      if (!groups.has(key)) {
++        groups.set(key, {
++          DisplayDate: shown, LineCount: 0, PendingLineCount: 0, PendingQty: 0, HasOverdue: false,
++        });
++      }
++      const group = groups.get(key);
++      group.LineCount += 1;
++      const accepted = acceptedByDetail.get(`${txId}:${line.DetailID}`) || 0;
++      const settled = settledByDetail.get(`${txId}:${line.DetailID}`) || 0;
++      const remaining = num(line.Quantity) - accepted - settled;
++      if (remaining > QTY_EPSILON) {
++        group.PendingLineCount += 1;
++        group.PendingQty = round3(group.PendingQty + remaining);
++        if (dates.isLineOverdue(shown, remaining)) group.HasOverdue = true;
++      }
++    }
++    row.Schedule = {
++      HasCustomDates: hasCustom,
++      Groups: [...groups.values()].sort((a, b) => {
++        if (!a.DisplayDate) return 1;
++        if (!b.DisplayDate) return -1;
++        return a.DisplayDate - b.DisplayDate;
++      }),
++    };
++  }
++}
++
++// يحمّل بنود الفاتورة + المقبول/المسوّى/داخل الحلقة لكل بند + سجلات الصيانة
++async function loadDeliveryState(requestFactory, transactionId) {
++  const detailsResult = await requestFactory()
++    .input('txId', sql.Int, transactionId)
++    .query(`
++      SELECT td.DetailID, td.ProductID, p.ProductName,
++             td.Quantity AS InvoicedQty, td.UnitPrice, td.TotalAmount,
++             td.DeliveryDate, td.DeliveryDateIsCustom
++      FROM TransactionDetails td
++      LEFT JOIN Products p ON p.ProductID = td.ProductID
++      WHERE td.TransactionID = @txId
++      ORDER BY td.DetailID
++    `);
++  const details = detailsResult.recordset;
++
++  const acceptedResult = await requestFactory()
++    .input('txId', sql.Int, transactionId)
++    .query(`
++      SELECT idi.TransactionDetailId, COALESCE(SUM(idi.AcceptedQty), 0) AS AcceptedQty
++      FROM InvoiceDeliveryItems idi
++      JOIN InvoiceDeliveries idl ON idl.DeliveryId = idi.DeliveryId
++      WHERE idl.TransactionId = @txId AND idl.IsVoided = 0
++      GROUP BY idi.TransactionDetailId
++    `);
++  const acceptedByDetail = new Map(
++    acceptedResult.recordset.map((r) => [Number(r.TransactionDetailId), num(r.AcceptedQty)]),
++  );
++
++  const maintenanceResult = await requestFactory()
++    .input('txId', sql.Int, transactionId)
++    .query(`
++      SELECT MaintenanceId, DeliveryItemId, DeliveryId, TransactionDetailId,
++             Quantity, Status, ReasonClass, IssueDescription, Billable
++      FROM DeliveryMaintenanceItems
++      WHERE TransactionId = @txId AND IsVoided = 0
++    `);
++  const settledByDetail = new Map();
++  const inLoopByDetail = new Map();
++  const maintenanceById = new Map();
++  for (const record of maintenanceResult.recordset) {
++    maintenanceById.set(Number(record.MaintenanceId), record);
++    const detailId = Number(record.TransactionDetailId);
++    if (record.Status === MAINTENANCE_SETTLED) {
++      settledByDetail.set(detailId, (settledByDetail.get(detailId) || 0) + num(record.Quantity));
++    } else if (MAINTENANCE_IN_LOOP.includes(record.Status)) {
++      inLoopByDetail.set(detailId, (inLoopByDetail.get(detailId) || 0) + num(record.Quantity));
++    }
++  }
++
++  const lastDateResult = await requestFactory()
++    .input('txId', sql.Int, transactionId)
++    .query(`
++      SELECT idi.TransactionDetailId, MAX(idl.DeliveryDate) AS LastDeliveryDate
++      FROM InvoiceDeliveryItems idi
++      JOIN InvoiceDeliveries idl ON idl.DeliveryId = idi.DeliveryId
++      WHERE idl.TransactionId = @txId AND idl.IsVoided = 0
++      GROUP BY idi.TransactionDetailId
++    `);
++  const lastDateByDetail = new Map(
++    lastDateResult.recordset.map((r) => [Number(r.TransactionDetailId), r.LastDeliveryDate]),
++  );
++
++  const eventCountResult = await requestFactory()
++    .input('txId', sql.Int, transactionId)
++    .query(`
++      SELECT COUNT(*) AS EventCount FROM InvoiceDeliveries
++      WHERE TransactionId = @txId AND IsVoided = 0
++    `);
++
++  return {
++    details,
++    acceptedByDetail,
++    settledByDetail,
++    inLoopByDetail,
++    maintenanceById,
++    lastDateByDetail,
++    eventCount: num(eventCountResult.recordset[0]?.EventCount),
++  };
++}
++
++// DeliveryProjection.RecomputeAsync: يعيد حساب IsDelivered/DeliveredAt
++// ولقطة المندوب من الأحداث غير الملغاة. الاكتمال = حدث واحد على الأقل ولا
++// كمية مفتوحة (مفوترة − مقبولة − مسوّاة بائتمان ≤ 0.0005)، وختم الاكتمال =
++// تاريخ الحدث المُكمل (آخر دفعة)، فإن اكتملت بالتسوية وحدها فآخر إغلاق ائتماني.
++async function recomputeDeliveryProjection(requestFactory, transactionId) {
++  const invoicedResult = await requestFactory()
++    .input('txId', sql.Int, transactionId)
++    .query(`SELECT COALESCE(SUM(Quantity), 0) AS Total FROM TransactionDetails WHERE TransactionID = @txId`);
++  const totalInvoiced = num(invoicedResult.recordset[0]?.Total);
++
++  const acceptedResult = await requestFactory()
++    .input('txId', sql.Int, transactionId)
++    .query(`
++      SELECT COALESCE(SUM(idi.AcceptedQty), 0) AS Total
++      FROM InvoiceDeliveryItems idi
++      JOIN InvoiceDeliveries idl ON idl.DeliveryId = idi.DeliveryId
++      WHERE idl.TransactionId = @txId AND idl.IsVoided = 0
++    `);
++  const totalAccepted = num(acceptedResult.recordset[0]?.Total);
++
++  const settledResult = await requestFactory()
++    .input('txId', sql.Int, transactionId)
++    .query(`
++      SELECT COALESCE(SUM(Quantity), 0) AS Total FROM DeliveryMaintenanceItems
++      WHERE TransactionId = @txId AND IsVoided = 0 AND Status = '${MAINTENANCE_SETTLED}'
++    `);
++  const totalSettled = num(settledResult.recordset[0]?.Total);
++
++  const eventsResult = await requestFactory()
++    .input('txId', sql.Int, transactionId)
++    .query(`
++      SELECT DeliveryId, DeliveryDate, DeliveryEmployeeId, DeliveryEmployeeName, CompletedInvoice
++      FROM InvoiceDeliveries
++      WHERE TransactionId = @txId AND IsVoided = 0
++      ORDER BY DeliveryDate, DeliveryId
++    `);
++  const events = eventsResult.recordset;
++
++  const openQty = totalInvoiced - totalAccepted - totalSettled;
++  const completed = events.length > 0 && openQty <= QTY_EPSILON;
++
++  let deliveredAt = null;
++  if (completed) {
++    const completing = [...events].reverse().find((e) => Boolean(e.CompletedInvoice));
++    if (completing) {
++      deliveredAt = completing.DeliveryDate;
++    } else {
++      const settleResult = await requestFactory()
++        .input('txId', sql.Int, transactionId)
++        .query(`
++          SELECT MAX(ClosedAt) AS LastSettle FROM DeliveryMaintenanceItems
++          WHERE TransactionId = @txId AND IsVoided = 0 AND Status = '${MAINTENANCE_SETTLED}'
++            AND ClosedAt IS NOT NULL
++        `);
++      deliveredAt = settleResult.recordset[0]?.LastSettle
++        || events[events.length - 1]?.DeliveryDate
++        || null;
++    }
++  }
++
++  const lastEvent = events[events.length - 1];
++  const updateRequest = requestFactory()
++    .input('txId', sql.Int, transactionId)
++    .input('isDelivered', sql.Bit, completed ? 1 : 0)
++    .input('deliveredAt', sql.DateTime2, deliveredAt ? new Date(deliveredAt) : null);
++  let courierClause = '';
++  if (lastEvent) {
++    updateRequest
++      .input('empId', sql.Int, lastEvent.DeliveryEmployeeId ?? null)
++      .input('empName', sql.NVarChar(150), lastEvent.DeliveryEmployeeName ?? null);
++    courierClause = ', DeliveryEmployeeId = @empId, DeliveryEmployeeName = @empName';
++  }
++  await updateRequest.query(`
++    UPDATE Transactions
++    SET IsDelivered = @isDelivered, DeliveredAt = @deliveredAt${courierClause}
++    WHERE TransactionID = @txId
++  `);
++
++  return {
++    totalInvoiced: round3(totalInvoiced),
++    totalAccepted: round3(totalAccepted),
++    totalSettled: round3(totalSettled),
++    openQty: round3(openQty),
++    completed,
++    deliveredAt,
++  };
++}
++
++function lineUnitValue(detail) {
++  const qty = num(detail.InvoicedQty);
++  if (qty <= 0) return 0;
++  const total = detail.TotalAmount != null ? num(detail.TotalAmount) : qty * num(detail.UnitPrice);
++  return total / qty;
++}
++
++// رسالة رفض بوابة التغطية: بالأرقام لمن يرى المبالغ، وبالحالة فقط لمن لا
++// يراها (قاعدة المالك: المندوب لا يرى أي رقم في أي مكان).
++function coverageRejectionMessage(auth, values) {
++  if (!policy.delivery.canSeeAmounts(auth)) {
++    return 'المدفوع لا يغطي قيمة هذه الدفعة — برجاء سداد الفرق أو إرسال طلب إذن تسليم من زر «طلب إذن».';
++  }
++  return `لا يمكن تسليم هذه الدفعة: المدفوع (${fmtMoney(values.paidAmount)} ج) لا يغطي قيمة المسلَّم سابقًا (${fmtMoney(values.previousValue)} ج) + قيمة هذه الدفعة (${fmtMoney(values.batchValue)} ج). برجاء سداد الفرق أو إرسال طلب إذن تسليم.`;
++}
++
++// CheckBatchCoverageGateAsync في بلازور: مسددة بالكامل تمر دائمًا، وإلا
++// المدفوع + 0.01 ≥ قيمة المقبول سابقًا + قيمة هذه الدفعة، وإلا موافقة
++// ضمنية لمن له تجاوز المتبقي أو إذن ممنوح سابق في سجل التدقيق.
++async function checkBatchCoverageGate(transaction, invoice, detailsById, acceptedByDetail, batchItems, auth) {
++  const remaining = num(invoice.GrandTotal) - num(invoice.PaidAmount);
++  if (remaining <= 0) return { passed: true, approvalNote: null };
++
++  let previousValue = 0;
++  let batchValue = 0;
++  for (const detail of detailsById.values()) {
++    previousValue += (acceptedByDetail.get(Number(detail.DetailID)) || 0) * lineUnitValue(detail);
++  }
++  for (const item of batchItems) {
++    const detail = detailsById.get(item.transactionDetailId);
++    if (detail) batchValue += item.acceptedQty * lineUnitValue(detail);
++  }
++
++  if (num(invoice.PaidAmount) + MONEY_EPSILON >= previousValue + batchValue) {
++    return { passed: true, approvalNote: null };
++  }
++
++  if (policy.delivery.canOverrideRemaining(auth)) {
++    return {
++      passed: true,
++      approvalNote: `تم التسليم بموافقة ${auth.username} رغم أن المدفوع لا يغطي قيمة الدفعة`,
++    };
++  }
++
++  const grant = await latestPermissionActionOf(transaction, invoice.TransactionID, [ACTION_PERMISSION_GRANTED]);
++  if (grant) {
++    return {
++      passed: true,
++      approvalNote: `تم التسليم بناءً على إذن مسبق من ${grant.LoginName} بتاريخ ${new Date(grant.ActionDate).toISOString().slice(0, 10)}`,
++    };
++  }
++
++  throw Object.assign(new Error(coverageRejectionMessage(auth, {
++    paidAmount: invoice.PaidAmount, previousValue, batchValue,
++  })), { statusCode: 409, code: 'DELIVERY_PERMISSION_REQUIRED' });
++}
++
++// معاينة بوابة التغطية لدفعة مقترحة — مرآة GetBatchCoverageAsync:
++// الأرقام تُحجب عمن لا يرى المبالغ وتبقى الحالة (يغطي/لا يغطي) فقط.
++async function getBatchCoverage(value, rawItems, auth) {
++  const id = assertId(value, 'معرّف الفاتورة');
+   const pool = await connectDB();
+-  const result = await pool.request().query(`
+-    SELECT TOP 200 t.TransactionID, t.ReferenceNumber, t.DueDate,
+-           t.PartyID, p.PartyName AS ClientName, p.Phone,
+-           DATEDIFF(DAY, CAST(GETDATE() AS DATE), CAST(t.DueDate AS DATE)) AS DaysRemaining
+-    FROM Transactions t
+-    INNER JOIN Parties p ON t.PartyID = p.PartyID
+-    WHERE t.TransactionType = 'Sale'
+-      AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')
+-      AND ISNULL(t.IsDelivered, 0) = 0
+-      AND t.DueDate IS NOT NULL
+-      AND DATEDIFF(DAY, CAST(GETDATE() AS DATE), CAST(t.DueDate AS DATE)) BETWEEN 0 AND 7
+-    ORDER BY t.DueDate, t.TransactionID
++
++  const invoiceResult = await pool.request()
++    .input('id', sql.Int, id)
++    .query(`
++      SELECT TransactionID, TransactionType, InvoiceStatus, IsDelivered, GrandTotal, PaidAmount
++      FROM Transactions WHERE TransactionID = @id
++    `);
++  const invoice = invoiceResult.recordset[0];
++  if (!invoice) throw Object.assign(new Error('الفاتورة غير موجودة.'), { statusCode: 404 });
++
++  const state = await loadDeliveryState(() => pool.request(), id);
++  const detailsById = new Map(state.details.map((d) => [Number(d.DetailID), d]));
++
++  const batchItems = [];
++  for (const raw of Array.isArray(rawItems) ? rawItems : []) {
++    const detailId = Number(raw.transactionDetailId ?? raw.TransactionDetailId ?? raw.detailId ?? raw.DetailID);
++    const quantity = num(raw.quantity ?? raw.Quantity);
++    if (!detailsById.has(detailId) || quantity <= 0) continue;
++    const returnedTotal = num(raw.returnedManufacturingQty) + num(raw.returnedHandlingQty)
++      + num(raw.returnedModificationQty);
++    const acceptedQty = raw.acceptedQty != null || raw.AcceptedQty != null
++      ? num(raw.acceptedQty ?? raw.AcceptedQty)
++      : (returnedTotal <= QTY_EPSILON ? quantity : 0);
++    batchItems.push({ transactionDetailId: detailId, acceptedQty });
++  }
++
++  let previousValue = 0;
++  let batchValue = 0;
++  for (const detail of state.details) {
++    previousValue += (state.acceptedByDetail.get(Number(detail.DetailID)) || 0) * lineUnitValue(detail);
++  }
++  for (const item of batchItems) {
++    batchValue += item.acceptedQty * lineUnitValue(detailsById.get(item.transactionDetailId));
++  }
++
++  const paidAmount = num(invoice.PaidAmount);
++  const remainingAmount = num(invoice.GrandTotal) - paidAmount;
++  const totalRequired = previousValue + batchValue;
++  const covered = remainingAmount <= 0 || paidAmount + MONEY_EPSILON >= totalRequired;
++  const canSeeAmounts = policy.delivery.canSeeAmounts(auth);
++
++  return {
++    TransactionID: id,
++    Covered: covered,
++    RequiresPermission: !covered,
++    PaidAmount: canSeeAmounts ? paidAmount : null,
++    RemainingAmount: canSeeAmounts ? remainingAmount : null,
++    PreviousDeliveredValue: canSeeAmounts ? Math.round(previousValue * 100) / 100 : null,
++    ThisBatchValue: canSeeAmounts ? Math.round(batchValue * 100) / 100 : null,
++    TotalRequired: canSeeAmounts ? Math.round(totalRequired * 100) / 100 : null,
++    Message: covered
++      ? 'المدفوع يغطي قيمة هذه الدفعة — يمكن التسليم دون إذن إضافي.'
++      : coverageRejectionMessage(auth, { paidAmount, previousValue, batchValue }),
++  };
++}
++
++// أحداث الفاتورة وبنودها وسجلات الصيانة ورسوم التعديل المولودة منها —
++// تواريخ الأحداث حقائق فعلية تُعاد كما هي دون أي إخفاء.
++async function getDeliveryEvents(value) {
++  const id = assertId(value, 'معرّف الفاتورة');
++  const pool = await connectDB();
++  try {
++    const eventsResult = await pool.request()
++      .input('id', sql.Int, id)
++      .query(`
++        SELECT DeliveryId, TransactionId, DeliveryDate, DeliveryEmployeeId,
++               DeliveryEmployeeName, Notes, RecordedBy, RecordedAt, IsVoided,
++               VoidedBy, VoidedAt, VoidReason, CompletedInvoice, IsLegacy
++        FROM InvoiceDeliveries
++        WHERE TransactionId = @id
++        ORDER BY DeliveryDate DESC, DeliveryId DESC
++      `);
++    const itemsResult = await pool.request()
++      .input('id', sql.Int, id)
++      .query(`
++        SELECT idi.DeliveryItemId, idi.DeliveryId, idi.TransactionDetailId,
++               p.ProductName, idi.Quantity, idi.AcceptedQty,
++               idi.ReturnedManufacturingQty, idi.ReturnedHandlingQty,
++               idi.ReturnedModificationQty, idi.DispositionNotes, idi.MaintenanceId
++        FROM InvoiceDeliveryItems idi
++        JOIN InvoiceDeliveries idl ON idl.DeliveryId = idi.DeliveryId
++        LEFT JOIN TransactionDetails td ON td.DetailID = idi.TransactionDetailId
++        LEFT JOIN Products p ON p.ProductID = td.ProductID
++        WHERE idl.TransactionId = @id
++        ORDER BY idi.DeliveryItemId
++      `);
++    const maintenanceResult = await pool.request()
++      .input('id', sql.Int, id)
++      .query(`
++        SELECT MaintenanceId, DeliveryItemId, DeliveryId, TransactionDetailId,
++               Quantity, ReasonClass, IssueDescription, Status, Billable,
++               AdditionalChargeId, IsVoided, CreatedAt, ClosedAt
++        FROM DeliveryMaintenanceItems
++        WHERE TransactionId = @id
++        ORDER BY MaintenanceId
++      `);
++    const chargesResult = await pool.request()
++      .input('id', sql.Int, id)
++      .query(`
++        SELECT ChargeID, ChargeAmount, Status, ChargeDescription, SourceDeliveryId
++        FROM AdditionalCharges
++        WHERE TransactionId = @id AND SourceDeliveryId IS NOT NULL
++        ORDER BY ChargeID
++      `);
++
++    const itemsByEvent = new Map();
++    for (const item of itemsResult.recordset) {
++      const key = Number(item.DeliveryId);
++      if (!itemsByEvent.has(key)) itemsByEvent.set(key, []);
++      itemsByEvent.get(key).push(item);
++    }
++    const events = eventsResult.recordset.map((event) => ({
++      ...event,
++      Items: itemsByEvent.get(Number(event.DeliveryId)) || [],
++    }));
++    return {
++      Events: events,
++      Maintenance: maintenanceResult.recordset,
++      Charges: chargesResult.recordset,
++    };
++  } catch (error) {
++    if (isMissingTableError(error)) return { Events: [], Maintenance: [], Charges: [] };
++    throw error;
++  }
++}
++
++// ════════════════════════════════════════════════════════════════════
++// تسجيل تسليمة (حدث) — مرآة RecordDeliveryAsync كاملة: تصرفات البنود،
++// بوابة تغطية الدفعة، سجلات الصيانة ورسوم التعديل المولودة، إغلاق روابط
++// إعادة التسليم، ثم إعادة حساب الإسقاط — كل ذلك في معاملة SERIALIZABLE.
++// ════════════════════════════════════════════════════════════════════
++function normalizeRecordItem(raw = {}) {
++  const pick = (...keys) => {
++    for (const key of keys) if (raw[key] != null) return raw[key];
++    return null;
++  };
++  const quantity = num(pick('quantity', 'Quantity'));
++  const returnedManufacturingQty = num(pick('returnedManufacturingQty', 'ReturnedManufacturingQty'));
++  const returnedHandlingQty = num(pick('returnedHandlingQty', 'ReturnedHandlingQty'));
++  const returnedModificationQty = num(pick('returnedModificationQty', 'ReturnedModificationQty'));
++  const returnedTotal = returnedManufacturingQty + returnedHandlingQty + returnedModificationQty;
++  const acceptedRaw = pick('acceptedQty', 'AcceptedQty');
++  const agreedRaw = pick('agreedModificationPrice', 'AgreedModificationPrice');
++  const maintenanceRaw = pick('maintenanceId', 'MaintenanceId');
++  const notesRaw = pick('dispositionNotes', 'DispositionNotes');
++  return {
++    transactionDetailId: intValue(pick('transactionDetailId', 'TransactionDetailId', 'detailId', 'DetailID')),
++    quantity,
++    acceptedQty: acceptedRaw != null ? num(acceptedRaw) : (returnedTotal <= QTY_EPSILON ? quantity : 0),
++    returnedManufacturingQty,
++    returnedHandlingQty,
++    returnedModificationQty,
++    dispositionNotes: notesRaw ? String(notesRaw).trim() || null : null,
++    agreedModificationPrice: agreedRaw != null ? num(agreedRaw) : null,
++    maintenanceId: maintenanceRaw ? intValue(maintenanceRaw) || null : null,
++  };
++}
++
++async function recordDeliveryEvent(value, data = {}, auth, options = {}) {
++  const id = assertId(value, 'معرّف الفاتورة');
++  const pool = await connectDB();
++  const username = auth?.username || 'System';
++  const completeAll = options.completeAll === true;
++
++  // تاريخ التسليم: اليوم افتراضيًا ولا يقبل المستقبل (بلازور)
++  const deliveryDateRaw = data.deliveryDate ?? data.DeliveryDate;
++  const deliveryDate = deliveryDateRaw ? new Date(deliveryDateRaw) : new Date();
++  if (Number.isNaN(deliveryDate.getTime())) {
++    throw Object.assign(new Error('تاريخ التسليم غير صالح.'), { statusCode: 400 });
++  }
++  if (dates.dateOnly(deliveryDate) > dates.todayOnly()) {
++    throw Object.assign(new Error('تاريخ التسليم لا يمكن أن يكون في المستقبل.'), { statusCode: 400 });
++  }
++
++  // معرّف الحدث لمنع التكرار عند إعادة الإرسال (EventGuid في بلازور)
++  let eventGuid = data.eventGuid ?? data.EventGuid;
++  if (!eventGuid || !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(String(eventGuid))) {
++    eventGuid = crypto.randomUUID();
++  }
++
++  let rawItems = null;
++  if (!completeAll) {
++    const sourceItems = data.items ?? data.Items;
++    rawItems = (Array.isArray(sourceItems) ? sourceItems : [])
++      .map(normalizeRecordItem)
++      .filter((item) => item.quantity > 0);
++    if (!rawItems.length) {
++      throw Object.assign(new Error('برجاء إدخال كمية تسليم واحدة على الأقل في هذه الدفعة.'), { statusCode: 400 });
++    }
++    for (const item of rawItems) {
++      if (item.transactionDetailId <= 0) {
++        throw Object.assign(new Error('أحد بنود التسليمة غير صالح.'), { statusCode: 400 });
++      }
++      if (item.acceptedQty < 0 || item.returnedManufacturingQty < 0
++        || item.returnedHandlingQty < 0 || item.returnedModificationQty < 0) {
++        throw Object.assign(new Error('كميات التسليمة لا يمكن أن تكون سالبة.'), { statusCode: 400 });
++      }
++      if (item.agreedModificationPrice != null && item.agreedModificationPrice < 0) {
++        throw Object.assign(new Error('سعر التعديل المتفق عليه لا يمكن أن يكون سالبًا.'), { statusCode: 400 });
++      }
++    }
++  }
++
++  // منع التكرار قبل المعاملة — نجاح صامت كما في بلازور
++  const preExisting = await pool.request()
++    .input('guid', sql.UniqueIdentifier, eventGuid)
++    .query('SELECT DeliveryId, CompletedInvoice FROM InvoiceDeliveries WHERE EventGuid = @guid');
++  if (preExisting.recordset[0]) {
++    return {
++      success: true,
++      alreadyRecorded: true,
++      message: 'تم تسجيل هذه التسليمة مسبقًا.',
++      DeliveryId: preExisting.recordset[0].DeliveryId,
++      TransactionID: id,
++      CompletedInvoice: Boolean(preExisting.recordset[0].CompletedInvoice),
++    };
++  }
++
++  const transaction = new sql.Transaction(pool);
++  await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
++  const factory = () => transaction.request();
++  try {
++    const dup = await factory()
++      .input('guid', sql.UniqueIdentifier, eventGuid)
++      .query('SELECT DeliveryId, CompletedInvoice FROM InvoiceDeliveries WHERE EventGuid = @guid');
++    if (dup.recordset[0]) {
++      await transaction.commit();
++      return {
++        success: true,
++        alreadyRecorded: true,
++        message: 'تم تسجيل هذه التسليمة مسبقًا.',
++        DeliveryId: dup.recordset[0].DeliveryId,
++        TransactionID: id,
++        CompletedInvoice: Boolean(dup.recordset[0].CompletedInvoice),
++      };
++    }
++
++    const invoiceResult = await factory()
++      .input('id', sql.Int, id)
++      .query(`
++        SELECT t.TransactionID, t.ReferenceNumber, t.TransactionType, t.TransactionDate,
++               t.DueDate, t.InvoiceStatus, t.IsDelivered, t.DeliveredNotes,
++               t.PartyID, p.PartyName, t.GrandTotal, t.PaidAmount
++        FROM Transactions t WITH (UPDLOCK, HOLDLOCK)
++        INNER JOIN Parties p ON t.PartyID = p.PartyID
++        WHERE t.TransactionID = @id
++      `);
++    const invoice = invoiceResult.recordset[0];
++    if (!invoice) throw Object.assign(new Error('الفاتورة غير موجودة في قاعدة البيانات.'), { statusCode: 404 });
++    if (invoice.InvoiceStatus === 'Cancelled') {
++      throw Object.assign(new Error('لا يمكن تسجيل تسليمة لفاتورة ملغية.'), { statusCode: 409 });
++    }
++    // حارس البيع فقط كما في بلازور حرفيًا
++    if (invoice.TransactionType !== 'Sale') {
++      throw Object.assign(new Error('تسجيل التسليمات متاح لفواتير البيع فقط.'), { statusCode: 400 });
++    }
++    if (String(invoice.DeliveredNotes || '').startsWith('مرتجع:')) {
++      throw Object.assign(new Error('لا يمكن تسجيل تسليمة لفاتورة مرتجعة — غيّر حالتها من تعديل التسليم أولًا.'), { statusCode: 409 });
++    }
++
++    // المندوب إلزامي (معرّف أو اسم) كما في بلازور — الحل داخل المعاملة
++    const employee = await resolveDeliveryEmployee(
++      transaction,
++      auth,
++      data.deliveryEmployeeId ?? data.DeliveryEmployeeId,
++      data.deliveryEmployeeName ?? data.DeliveryEmployeeName,
++    );
++    if (!employee.employeeId && !employee.employeeName) {
++      throw Object.assign(new Error('برجاء اختيار مندوب التسليم.'), { statusCode: 400 });
++    }
++
++    const state = await loadDeliveryState(factory, id);
++    const detailsById = new Map(state.details.map((d) => [Number(d.DetailID), d]));
++
++    let items;
++    if (completeAll) {
++      // مسار «تأكيد التسليم» القائم: دفعة واحدة بكل المتاح مقبولًا
++      items = [];
++      for (const detail of state.details) {
++        const detailId = Number(detail.DetailID);
++        const available = num(detail.InvoicedQty)
++          - (state.acceptedByDetail.get(detailId) || 0)
++          - (state.settledByDetail.get(detailId) || 0)
++          - (state.inLoopByDetail.get(detailId) || 0);
++        if (available > QTY_EPSILON) {
++          items.push({
++            transactionDetailId: detailId,
++            quantity: round3(available),
++            acceptedQty: round3(available),
++            returnedManufacturingQty: 0,
++            returnedHandlingQty: 0,
++            returnedModificationQty: 0,
++            dispositionNotes: null,
++            agreedModificationPrice: null,
++            maintenanceId: null,
++          });
++        }
++      }
++      if (!items.length) {
++        if (invoice.IsDelivered) {
++          throw Object.assign(new Error('تم تسليم هذه الفاتورة بالفعل.'), { statusCode: 409 });
++        }
++        throw Object.assign(new Error('لا توجد كميات متاحة للتسليم الآن — الكميات المتبقية داخل الصيانة/المرتجعات أو مسوّاة.'), { statusCode: 409 });
++      }
++    } else {
++      items = rawItems;
++      for (const item of items) {
++        const detail = detailsById.get(item.transactionDetailId);
++        const name = detail?.ProductName || `صنف ${item.transactionDetailId}`;
++        const returnedTotal = item.returnedManufacturingQty + item.returnedHandlingQty
++          + item.returnedModificationQty;
++        if (Math.abs(item.acceptedQty + returnedTotal - item.quantity) > QTY_EPSILON) {
++          throw Object.assign(new Error(`كميات بند «${name}» غير مكتملة: المقبول (${fmtQty(item.acceptedQty)}) + المرتجع (${fmtQty(returnedTotal)}) يجب أن يساوي كمية الدفعة (${fmtQty(item.quantity)}).`), { statusCode: 400 });
++        }
++        if (returnedTotal > QTY_EPSILON && !item.dispositionNotes) {
++          throw Object.assign(new Error(`برجاء كتابة ملاحظة التصرف لبند «${name}» عند وجود مرتجع في الدفعة.`), { statusCode: 400 });
++        }
++      }
++    }
++
++    // بوابة التغطية قبل فحص الكميات — ترتيب بلازور نفسه
++    const gate = await checkBatchCoverageGate(transaction, invoice, detailsById, state.acceptedByDetail, items, auth);
++
++    // فحص الكميات المتاحة (تراكميًا داخل الدفعة لبند واحد مكرر)
++    const usedMaintenance = new Set();
++    const attemptedByDetail = new Map();
++    for (const item of items) {
++      const detail = detailsById.get(item.transactionDetailId);
++      if (!detail) throw Object.assign(new Error('أحد بنود التسليمة غير موجود في الفاتورة.'), { statusCode: 400 });
++      const detailId = item.transactionDetailId;
++      if (item.maintenanceId) {
++        if (usedMaintenance.has(item.maintenanceId)) {
++          throw Object.assign(new Error('سجل الصيانة نفسه مستخدم مرتين في الدفعة نفسها.'), { statusCode: 400 });
++        }
++        usedMaintenance.add(item.maintenanceId);
++        const record = state.maintenanceById.get(item.maintenanceId);
++        if (!record || Number(record.TransactionDetailId) !== detailId) {
++          throw Object.assign(new Error(`سجل الصيانة المربوط ببند «${detail.ProductName}» غير موجود.`), { statusCode: 400 });
++        }
++        if (record.Status !== 'ReadyForRedelivery') {
++          throw Object.assign(new Error(`سجل الصيانة لبند «${detail.ProductName}» ليس جاهزًا لإعادة التسليم بعد.`), { statusCode: 400 });
++        }
++        if (item.quantity > num(record.Quantity) + QTY_EPSILON) {
++          throw Object.assign(new Error(`الكمية المعاد تسليمها لبند «${detail.ProductName}» تتجاوز كمية سجل الصيانة.`), { statusCode: 400 });
++        }
++      } else {
++        const attempted = (attemptedByDetail.get(detailId) || 0) + item.quantity;
++        attemptedByDetail.set(detailId, attempted);
++        const available = num(detail.InvoicedQty)
++          - (state.acceptedByDetail.get(detailId) || 0)
++          - (state.settledByDetail.get(detailId) || 0)
++          - (state.inLoopByDetail.get(detailId) || 0);
++        if (attempted > available + QTY_EPSILON) {
++          throw Object.assign(new Error(`كمية التسليم لبند «${detail.ProductName}» (${fmtQty(attempted)}) تتجاوز المتاح (${fmtQty(Math.max(available, 0))}) — المفوتر ${fmtQty(detail.InvoicedQty)} والمسلَّم المقبول ${fmtQty(state.acceptedByDetail.get(detailId) || 0)}.`), { statusCode: 400 });
++        }
++      }
++    }
++
++    const batchAccepted = items.reduce((sum, i) => sum + i.acceptedQty, 0);
++    const totalAcceptedBefore = [...state.acceptedByDetail.values()].reduce((a, b) => a + b, 0);
++    const totalSettled = [...state.settledByDetail.values()].reduce((a, b) => a + b, 0);
++    const totalInvoiced = state.details.reduce((sum, d) => sum + num(d.InvoicedQty), 0);
++    const completes = (totalInvoiced - (totalAcceptedBefore + batchAccepted) - totalSettled) <= QTY_EPSILON;
++
++    const rawNotes = String(data.deliveredNotes || data.notes || data.Notes || '').trim();
++    const eventNotes = [rawNotes || null, gate.approvalNote].filter(Boolean).join(' — ') || null;
++
++    const eventResult = await factory()
++      .input('txId', sql.Int, id)
++      .input('date', sql.DateTime2, deliveryDate)
++      .input('empId', sql.Int, employee.employeeId)
++      .input('empName', sql.NVarChar(150), employee.employeeName)
++      .input('notes', sql.NVarChar(500), eventNotes ? String(eventNotes).slice(0, 500) : null)
++      .input('user', sql.NVarChar(100), username)
++      .input('completed', sql.Bit, completes ? 1 : 0)
++      .input('guid', sql.UniqueIdentifier, eventGuid)
++      .query(`
++        INSERT INTO InvoiceDeliveries
++          (TransactionId, DeliveryDate, DeliveryEmployeeId, DeliveryEmployeeName,
++           Notes, RecordedBy, RecordedAt, IsVoided, CompletedInvoice, IsLegacy, EventGuid)
++        OUTPUT INSERTED.DeliveryId
++        VALUES (@txId, @date, @empId, @empName, @notes, @user, GETDATE(), 0, @completed, 0, @guid)
++      `);
++    const deliveryId = eventResult.recordset[0].DeliveryId;
++
++    let totalReturned = 0;
++    const createdCharges = [];
++    for (const item of items) {
++      const detail = detailsById.get(item.transactionDetailId);
++      const itemResult = await factory()
++        .input('deliveryId', sql.Int, deliveryId)
++        .input('detailId', sql.Int, item.transactionDetailId)
++        .input('qty', sql.Decimal(18, 3), item.quantity)
++        .input('accepted', sql.Decimal(18, 3), item.acceptedQty)
++        .input('mfg', sql.Decimal(18, 3), item.returnedManufacturingQty)
++        .input('handling', sql.Decimal(18, 3), item.returnedHandlingQty)
++        .input('mod', sql.Decimal(18, 3), item.returnedModificationQty)
++        .input('notes', sql.NVarChar(500), item.dispositionNotes)
++        .input('maintenanceId', sql.Int, item.maintenanceId)
++        .query(`
++          INSERT INTO InvoiceDeliveryItems
++            (DeliveryId, TransactionDetailId, Quantity, AcceptedQty,
++             ReturnedManufacturingQty, ReturnedHandlingQty, ReturnedModificationQty,
++             DispositionNotes, MaintenanceId)
++          OUTPUT INSERTED.DeliveryItemId
++          VALUES (@deliveryId, @detailId, @qty, @accepted, @mfg, @handling, @mod, @notes, @maintenanceId)
++        `);
++      const deliveryItemId = itemResult.recordset[0].DeliveryItemId;
++      totalReturned += item.returnedManufacturingQty + item.returnedHandlingQty + item.returnedModificationQty;
++
++      // نتائج التسليم: كل شريحة مرتجعة تولّد سجل صيانة «قيد الانتظار»،
++      // وشريحة التعديل تولّد أولًا رسم تعديل معلّق الموافقة (بلازور 11.4)
++      const slices = [
++        { qty: item.returnedManufacturingQty, reasonClass: 'ManufacturingDefect', billable: false },
++        { qty: item.returnedHandlingQty, reasonClass: 'HandlingDamage', billable: false },
++        { qty: item.returnedModificationQty, reasonClass: 'CustomerModification', billable: true },
++      ];
++      for (const slice of slices) {
++        if (slice.qty <= QTY_EPSILON) continue;
++        let chargeId = null;
++        if (slice.reasonClass === 'CustomerModification') {
++          const price = item.agreedModificationPrice != null && item.agreedModificationPrice > 0
++            ? item.agreedModificationPrice : null;
++          const chargeResult = await factory()
++            .input('txId', sql.Int, id)
++            .input('partyId', sql.Int, invoice.PartyID)
++            .input('desc', sql.NVarChar(255), item.dispositionNotes ? item.dispositionNotes.slice(0, 255) : null)
++            .input('amount', sql.Decimal(18, 2), price)
++            .input('sourceDeliveryId', sql.Int, deliveryId)
++            .input('notes', sql.NVarChar(255), `رسوم تعديل من تسليمة — ${detail.ProductName || ''}`.slice(0, 255))
++            .input('user', sql.NVarChar(50), String(username).slice(0, 50))
++            .query(`
++              INSERT INTO AdditionalCharges
++                (TransactionID, PartyID, ChargeType, ChargeDescription, ChargeAmount,
++                 Status, SourceDeliveryId, Notes, CreatedBy, CreatedAt)
++              OUTPUT INSERTED.ChargeID
++              VALUES (@txId, @partyId, 'Modification', @desc, @amount,
++                      'PendingApproval', @sourceDeliveryId, @notes, @user, GETDATE())
++            `);
++          chargeId = chargeResult.recordset[0].ChargeID;
++          createdCharges.push(chargeId);
++        }
++        await factory()
++          .input('itemId', sql.Int, deliveryItemId)
++          .input('deliveryId', sql.Int, deliveryId)
++          .input('txId', sql.Int, id)
++          .input('detailId', sql.Int, item.transactionDetailId)
++          .input('qty', sql.Decimal(18, 3), slice.qty)
++          .input('reasonClass', sql.NVarChar(30), slice.reasonClass)
++          .input('issue', sql.NVarChar(500), item.dispositionNotes)
++          .input('billable', sql.Bit, slice.billable ? 1 : 0)
++          .input('chargeId', sql.Int, chargeId)
++          .input('user', sql.NVarChar(100), username)
++          .query(`
++            INSERT INTO DeliveryMaintenanceItems
++              (DeliveryItemId, DeliveryId, TransactionId, TransactionDetailId, Quantity,
++               ReasonClass, IssueDescription, Status, Billable, AdditionalChargeId,
++               CreatedAt, StatusBy, IsVoided)
++            VALUES (@itemId, @deliveryId, @txId, @detailId, @qty,
++                    @reasonClass, @issue, 'Pending', @billable, @chargeId,
++                    GETDATE(), @user, 0)
++          `);
++      }
++
++      // إغلاق رابط إعادة التسليم: قبول يعيد توزيع سجل الصيانة كما في بلازور
++      if (item.maintenanceId) {
++        const linked = state.maintenanceById.get(item.maintenanceId);
++        const unaddressed = round3(num(linked.Quantity) - item.quantity);
++        if (item.acceptedQty > QTY_EPSILON) {
++          if (unaddressed > QTY_EPSILON) {
++            await factory()
++              .input('itemId', sql.Int, linked.DeliveryItemId)
++              .input('deliveryId', sql.Int, linked.DeliveryId)
++              .input('txId', sql.Int, id)
++              .input('detailId', sql.Int, item.transactionDetailId)
++              .input('qty', sql.Decimal(18, 3), unaddressed)
++              .input('reasonClass', sql.NVarChar(30), linked.ReasonClass)
++              .input('issue', sql.NVarChar(500), linked.IssueDescription)
++              .input('billable', sql.Bit, linked.Billable ? 1 : 0)
++              .input('user', sql.NVarChar(100), username)
++              .input('resolution', sql.NVarChar(500), `أُعيد منه ${fmtQty(item.acceptedQty)} للعميل وبقي ${fmtQty(unaddressed)} جاهزًا لإعادة التسليم`)
++              .query(`
++                INSERT INTO DeliveryMaintenanceItems
++                  (DeliveryItemId, DeliveryId, TransactionId, TransactionDetailId, Quantity,
++                   ReasonClass, IssueDescription, Status, Billable, AdditionalChargeId,
++                   CreatedAt, StatusBy, ResolutionNotes, IsVoided)
++                VALUES (@itemId, @deliveryId, @txId, @detailId, @qty,
++                        @reasonClass, @issue, 'ReadyForRedelivery', @billable, NULL,
++                        GETDATE(), @user, @resolution, 0)
++              `);
++          }
++          await factory()
++            .input('mid', sql.Int, item.maintenanceId)
++            .input('qty', sql.Decimal(18, 3), item.acceptedQty)
++            .input('user', sql.NVarChar(100), username)
++            .query(`
++              UPDATE DeliveryMaintenanceItems
++              SET Quantity = @qty, Status = 'Redelivered', ClosedAt = GETDATE(),
++                  StatusBy = @user, ResolutionNotes = N'أُعيد تسليمه وقُبل عند العميل'
++              WHERE MaintenanceId = @mid
++            `);
++        } else if (unaddressed > QTY_EPSILON) {
++          await factory()
++            .input('mid', sql.Int, item.maintenanceId)
++            .input('qty', sql.Decimal(18, 3), unaddressed)
++            .query('UPDATE DeliveryMaintenanceItems SET Quantity = @qty WHERE MaintenanceId = @mid');
++        } else {
++          await factory()
++            .input('mid', sql.Int, item.maintenanceId)
++            .input('user', sql.NVarChar(100), username)
++            .query(`
++              UPDATE DeliveryMaintenanceItems
++              SET IsVoided = 1, VoidedBy = @user, VoidedAt = GETDATE(),
++                  VoidReason = N'أُعيد كامل الكمية كمرتجع عند إعادة التسليم فأُغلق السجل',
++                  StatusBy = @user
++              WHERE MaintenanceId = @mid
++            `);
++        }
++      }
++    }
++
++    const projection = await recomputeDeliveryProjection(factory, id);
++
++    await insertAudit(transaction, {
++      id,
++      action: ACTION_EVENT_RECORDED,
++      username,
++      newData: {
++        DeliveryId: deliveryId,
++        Lines: items.length,
++        CompletedInvoice: projection.completed,
++        EventGuid: eventGuid,
++      },
++    });
++
++    await transaction.commit();
++
++    let courierUsername = null;
++    if (employee.employeeId) {
++      try {
++        const userResult = await pool.request()
++          .input('employeeId', sql.Int, employee.employeeId)
++          .query('SELECT TOP 1 Username FROM Users WHERE employeeID = @employeeId AND IsActive = 1 ORDER BY UserID');
++        courierUsername = userResult.recordset[0]?.Username || null;
++      } catch {
++        courierUsername = null;
++      }
++    }
++
++    return {
++      success: true,
++      message: projection.completed
++        ? 'تم تسجيل التسليمة واكتمل تسليم الفاتورة بالكامل.'
++        : `تم تسجيل التسليمة — مفتوح ${fmtQty(projection.openQty)} من ${fmtQty(projection.totalInvoiced)}.`,
++      DeliveryId: deliveryId,
++      TransactionID: id,
++      ReferenceNumber: invoice.ReferenceNumber,
++      PartyID: invoice.PartyID,
++      PartyName: invoice.PartyName,
++      RemainingAmount: num(invoice.GrandTotal) - num(invoice.PaidAmount),
++      DeliveryEmployeeId: employee.employeeId,
++      DeliveryEmployeeName: employee.employeeName,
++      CompletedInvoice: projection.completed,
++      OpenQty: projection.openQty,
++      TotalInvoicedQty: projection.totalInvoiced,
++      TotalReturnedQty: round3(totalReturned),
++      CreatedChargeIds: createdCharges,
++      courierUsername,
++    };
++  } catch (error) {
++    try { await transaction.rollback(); } catch (_) {}
++    throw error;
++  }
++}
++
++// ════════════════════════════════════════════════════════════════════
++// إلغاء حدث تسليم — مرآة VoidDeliveryEventAsync: مدير/مدير حسابات فقط
++// وسبب إلزامي، مع حراس سجلات الصيانة والرسوم المولودة من الحدث.
++// ════════════════════════════════════════════════════════════════════
++async function voidDeliveryEvent(value, deliveryId, data = {}, auth) {
++  const id = assertId(value, 'معرّف الفاتورة');
++  const eventId = assertId(deliveryId, 'معرّف التسليمة');
++  if (!policy.delivery.canOverrideRemaining(auth)) {
++    throw Object.assign(new Error('إلغاء التسليمات متاح للمدير ومدير الحسابات فقط.'), { statusCode: 403 });
++  }
++  const reason = String(data.reason ?? data.Reason ?? '').trim();
++  if (!reason) throw Object.assign(new Error('سبب الإلغاء إلزامي.'), { statusCode: 400 });
++  const username = auth?.username || 'System';
++
++  const pool = await connectDB();
++  const transaction = new sql.Transaction(pool);
++  await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
++  const factory = () => transaction.request();
++  try {
++    const invoiceResult = await factory()
++      .input('id', sql.Int, id)
++      .query('SELECT TransactionID FROM Transactions WITH (UPDLOCK, HOLDLOCK) WHERE TransactionID = @id');
++    if (!invoiceResult.recordset[0]) {
++      throw Object.assign(new Error('الفاتورة غير موجودة.'), { statusCode: 404 });
++    }
++
++    const eventResult = await factory()
++      .input('eventId', sql.Int, eventId)
++      .input('txId', sql.Int, id)
++      .query(`
++        SELECT DeliveryId, IsVoided FROM InvoiceDeliveries WITH (UPDLOCK, HOLDLOCK)
++        WHERE DeliveryId = @eventId AND TransactionId = @txId
++      `);
++    const event = eventResult.recordset[0];
++    if (!event) throw Object.assign(new Error('التسليمة غير موجودة.'), { statusCode: 404 });
++    if (event.IsVoided) throw Object.assign(new Error('هذه التسليمة ملغاة من قبل.'), { statusCode: 409 });
++
++    const linkedResult = await factory()
++      .input('eventId', sql.Int, eventId)
++      .query('SELECT COUNT(*) AS Cnt FROM InvoiceDeliveryItems WHERE DeliveryId = @eventId AND MaintenanceId IS NOT NULL');
++    if (num(linkedResult.recordset[0]?.Cnt) > 0) {
++      throw Object.assign(new Error('لا يمكن إلغاء تسليمة إعادة تسليم مرتبطة بسجل صيانة.'), { statusCode: 409 });
++    }
++
++    const bornResult = await factory()
++      .input('eventId', sql.Int, eventId)
++      .query('SELECT MaintenanceId, Status FROM DeliveryMaintenanceItems WHERE DeliveryId = @eventId AND IsVoided = 0');
++    if (bornResult.recordset.some((r) => r.Status !== 'Pending')) {
++      throw Object.assign(new Error('لا يمكن إلغاء هذه التسليمة: توجد سجلات صيانة/مرتجعات ناتجة عنها تجاوزت مرحلة الانتظار — عالِجها أو ألغِها أولًا ثم أعد المحاولة.'), { statusCode: 409 });
++    }
++
++    const chargesResult = await factory()
++      .input('eventId', sql.Int, eventId)
++      .query('SELECT ChargeID, Status FROM AdditionalCharges WHERE SourceDeliveryId = @eventId');
++    if (chargesResult.recordset.some((r) => ['Approved', 'Paid', 'Applied'].includes(r.Status))) {
++      throw Object.assign(new Error('لا يمكن إلغاء هذه التسليمة: رسم التعديل الناتج عنها تمت الموافقة عليه أو تحصيله — عالِجه أولًا من شاشة الفاتورة.'), { statusCode: 409 });
++    }
++
++    await factory()
++      .input('eventId', sql.Int, eventId)
++      .input('user', sql.NVarChar(100), username)
++      .query(`
++        UPDATE DeliveryMaintenanceItems
++        SET IsVoided = 1, VoidedBy = @user, VoidedAt = GETDATE(),
++            VoidReason = N'أُلغي حدث التسليم المصدر'
++        WHERE DeliveryId = @eventId AND IsVoided = 0
++      `);
++
++    await factory()
++      .input('eventId', sql.Int, eventId)
++      .query(`
++        UPDATE AdditionalCharges
++        SET Status = 'Rejected',
++            Notes = LEFT(CASE WHEN ISNULL(Notes, '') = '' THEN N'رُفض تلقائيًا: أُلغي حدث التسليم المصدر'
++                              ELSE Notes + N' — رُفض تلقائيًا: أُلغي حدث التسليم المصدر' END, 255)
++        WHERE SourceDeliveryId = @eventId AND Status = 'PendingApproval'
++      `);
++
++    await factory()
++      .input('eventId', sql.Int, eventId)
++      .input('user', sql.NVarChar(100), username)
++      .input('reason', sql.NVarChar(500), reason.slice(0, 500))
++      .query(`
++        UPDATE InvoiceDeliveries
++        SET IsVoided = 1, VoidedBy = @user, VoidedAt = GETDATE(), VoidReason = @reason
++        WHERE DeliveryId = @eventId
++      `);
++
++    const projection = await recomputeDeliveryProjection(factory, id);
++
++    await insertAudit(transaction, {
++      id,
++      action: ACTION_EVENT_VOIDED,
++      username,
++      oldData: { DeliveryId: eventId },
++      newData: { Reason: reason, CompletedInvoice: projection.completed },
++    });
++
++    await transaction.commit();
++    return {
++      success: true,
++      message: 'تم إلغاء التسليمة وإعادة حساب حالة الفاتورة.',
++      TransactionID: id,
++      DeliveryId: eventId,
++      CompletedInvoice: projection.completed,
++      OpenQty: projection.openQty,
++    };
++  } catch (error) {
++    try { await transaction.rollback(); } catch (_) {}
++    throw error;
++  }
++}
++
++// ════════════════════════════════════════════════════════════════════
++// المواعيد القادمة — مرآة GetUpcomingAppointmentsAsync في بلازور:
++// (فاتورة × تاريخ بند فعّال) لا صفوف فواتير؛ النافذة على التاريخ
++// المعروض لهذا المستخدم، والحقيقي لا يخرج إلا لمن يراه أصلًا.
++// DueDate في الرد = المعروض دائمًا (توافق مع شكل الرد القائم).
++// ════════════════════════════════════════════════════════════════════
++async function getUpcomingDeliveries(auth = null, withinDays = 7) {
++  const pool = await connectDB();
++  const parsedWithin = Number(withinDays);
++  const within = Number.isInteger(parsedWithin) && parsedWithin >= 0 ? parsedWithin : 7;
++  const buffer = dates.dateBufferDays();
++  const seesReal = auth ? dates.canSeeRealDate(auth) : true;
++  const today = dates.todayOnly();
++  const windowFrom = dates.addDays(today, -buffer);
++  const windowTo = dates.addDays(today, within + buffer);
++
++  const candidatesResult = await pool.request()
++    .input('from', sql.Date, windowFrom)
++    .input('to', sql.Date, windowTo)
++    .query(`
++      SELECT t.TransactionID, t.ReferenceNumber, t.TransactionDate, t.DueDate,
++             t.PartyID, p.PartyName AS ClientName, p.Phone
++      FROM Transactions t
++      INNER JOIN Parties p ON t.PartyID = p.PartyID
++      WHERE t.TransactionType = 'Sale'
++        AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')
++        AND ISNULL(t.IsDelivered, 0) = 0
++        AND (t.DeliveredNotes IS NULL OR t.DeliveredNotes NOT LIKE N'مرتجع:%')
++        AND (
++          (t.DueDate IS NOT NULL AND CAST(t.DueDate AS DATE) BETWEEN @from AND @to)
++          OR EXISTS (
++            SELECT 1 FROM TransactionDetails td
++            WHERE td.TransactionID = t.TransactionID
++              AND td.DeliveryDateIsCustom = 1 AND td.DeliveryDate IS NOT NULL
++              AND CAST(td.DeliveryDate AS DATE) BETWEEN @from AND @to
++          )
++        )
++    `);
++  const candidates = candidatesResult.recordset;
++  if (!candidates.length) return [];
++
++  const ids = candidates.map((c) => Number(c.TransactionID));
++  const candidateById = new Map(candidates.map((c) => [Number(c.TransactionID), c]));
++
++  const linesRequest = pool.request();
++  const linesIn = bindIdList(linesRequest, 'uid', ids);
++  const linesResult = await linesRequest.query(`
++    SELECT TransactionID, DetailID, Quantity, DeliveryDate, DeliveryDateIsCustom
++    FROM TransactionDetails
++    WHERE TransactionID IN ${linesIn}
+   `);
+-  return result.recordset;
++
++  const acceptedByDetail = new Map();
++  const settledByDetail = new Map();
++  try {
++    const accRequest = pool.request();
++    const accIn = bindIdList(accRequest, 'uaid', ids);
++    const accResult = await accRequest.query(`
++      SELECT idl.TransactionId, idi.TransactionDetailId,
++             COALESCE(SUM(idi.AcceptedQty), 0) AS AcceptedQty
++      FROM InvoiceDeliveryItems idi
++      JOIN InvoiceDeliveries idl ON idl.DeliveryId = idi.DeliveryId
++      WHERE idl.IsVoided = 0 AND idl.TransactionId IN ${accIn}
++      GROUP BY idl.TransactionId, idi.TransactionDetailId
++    `);
++    for (const row of accResult.recordset) {
++      acceptedByDetail.set(`${row.TransactionId}:${row.TransactionDetailId}`, num(row.AcceptedQty));
++    }
++    const setRequest = pool.request();
++    const setIn = bindIdList(setRequest, 'umid', ids);
++    const setResult = await setRequest.query(`
++      SELECT TransactionId, TransactionDetailId, COALESCE(SUM(Quantity), 0) AS SettledQty
++      FROM DeliveryMaintenanceItems
++      WHERE IsVoided = 0 AND Status = '${MAINTENANCE_SETTLED}' AND TransactionId IN ${setIn}
++      GROUP BY TransactionId, TransactionDetailId
++    `);
++    for (const row of setResult.recordset) {
++      settledByDetail.set(`${row.TransactionId}:${row.TransactionDetailId}`, num(row.SettledQty));
++    }
++  } catch (error) {
++    if (!isMissingTableError(error)) throw error;
++  }
++
++  const groups = new Map();
++  for (const line of linesResult.recordset) {
++    const txId = Number(line.TransactionID);
++    const candidate = candidateById.get(txId);
++    if (!candidate) continue;
++    const accepted = acceptedByDetail.get(`${txId}:${line.DetailID}`) || 0;
++    const settled = settledByDetail.get(`${txId}:${line.DetailID}`) || 0;
++    const remaining = num(line.Quantity) - accepted - settled;
++    if (remaining <= QTY_EPSILON) continue;
++
++    const isCustom = Boolean(line.DeliveryDateIsCustom) && Boolean(line.DeliveryDate);
++    const effective = dates.effectiveLineDate(line.DeliveryDate, isCustom, candidate.DueDate);
++    if (!effective) continue;
++    if (effective < windowFrom || effective > windowTo) continue;
++
++    const key = `${txId}:${effective.toISOString().slice(0, 10)}`;
++    if (!groups.has(key)) {
++      groups.set(key, { candidate, realDate: effective, lineCount: 0, remainingQty: 0 });
++    }
++    const group = groups.get(key);
++    group.lineCount += 1;
++    group.remainingQty = round3(group.remainingQty + remaining);
++  }
++
++  const lastDay = dates.addDays(today, within);
++  const appointments = [];
++  for (const group of groups.values()) {
++    const shown = dates.displayDate(group.realDate, group.candidate.TransactionDate, seesReal, buffer);
++    if (!shown || shown < today || shown > lastDay) continue;
++    appointments.push({
++      TransactionID: Number(group.candidate.TransactionID),
++      ReferenceNumber: group.candidate.ReferenceNumber,
++      DueDate: shown,
++      PartyID: group.candidate.PartyID,
++      ClientName: group.candidate.ClientName,
++      Phone: group.candidate.Phone,
++      DaysRemaining: dates.diffDays(shown, today),
++      DisplayDate: shown,
++      RealDate: seesReal ? group.realDate : null,
++      DueLineCount: group.lineCount,
++      RemainingQty: group.remainingQty,
++    });
++  }
++
++  appointments.sort((a, b) => (a.DisplayDate - b.DisplayDate)
++    || String(a.ClientName || '').localeCompare(String(b.ClientName || '')));
++  return appointments;
+ }
+ 
+ module.exports = {
+   ACTION_PERMISSION_REQUEST,
+   ACTION_PERMISSION_GRANTED,
++  ACTION_EVENT_RECORDED,
++  ACTION_EVENT_VOIDED,
+   getDeliveries,
+   getDeliveryStats,
+   getDeliveryDetails,
+   getDeliveryEmployees,
++  getDeliveryEvents,
++  getBatchCoverage,
++  recordDeliveryEvent,
++  voidDeliveryEvent,
+   markAsDelivered,
+   updateDeliveryDetails,
+   requestDeliveryPermission,
+diff --git a/modules/delivery/delivery.routes.js b/modules/delivery/delivery.routes.js
+index 7d77dce..d360eec 100644
+--- a/modules/delivery/delivery.routes.js
++++ b/modules/delivery/delivery.routes.js
+@@ -27,6 +27,28 @@ router.put(
+   requirePolicy(delivery.canConfirm, 'غير مصرح لك بتأكيد التسليم'),
+   controller.markAsDelivered,
+ );
++
++// أحداث التسليم (التسليم على دفعات) — الأحداث مصدر الحقيقة كما في بلازور
++router.get(
++  '/:id/events',
++  requirePolicy(delivery.canView, 'غير مصرح بعرض تسليمات الفاتورة'),
++  controller.getEvents,
++);
++router.post(
++  '/:id/events/coverage',
++  requirePolicy(delivery.canConfirm, 'غير مصرح بتسجيل التسليم'),
++  controller.getCoverage,
++);
++router.post(
++  '/:id/events',
++  requirePolicy(delivery.canConfirm, 'غير مصرح بتسجيل التسليم'),
++  controller.recordEvent,
++);
++router.post(
++  '/:id/events/:deliveryId/void',
++  requirePolicy(delivery.canOverrideRemaining, 'إلغاء التسليمات متاح للمدير ومدير الحسابات فقط'),
++  controller.voidEvent,
++);
+ router.put(
+   '/:id',
+   requirePolicy(delivery.canEditFull, 'غير مصرح لك بتعديل بيانات التسليم'),
+diff --git a/modules/job-orders/job-orders.controller.js b/modules/job-orders/job-orders.controller.js
+index 0ce218c..d270c55 100644
+--- a/modules/job-orders/job-orders.controller.js
++++ b/modules/job-orders/job-orders.controller.js
+@@ -1,6 +1,7 @@
+ const queries = require('./job-orders.queries');
+ const notificationsQueries = require('../notifications/notifications.queries');
+ const policy = require('../../shared/authorization.policy');
++const dates = require('../../shared/delivery-dates');
+ const { errorResponse, notFoundResponse } = require('../../shared/response.helper');
+ const { sql, connectDB } = require('../../core/database');
+ 
+@@ -34,6 +35,11 @@ async function getAll(req, res) {
+       page: req.query.page,
+       limit: req.query.limit,
+     };
++    // المستخدم المخفي يختار من التواريخ المعروضة له — تُزاح حدود المدى
++    // +الهامش قبل الاستعلام كما في شاشة أوامر التشغيل في بلازور
++    const shifted = dates.shiftDueRange(filters.dueFrom, filters.dueTo, req.auth);
++    filters.dueFrom = shifted.dateFrom;
++    filters.dueTo = shifted.dateTo;
+     const options = {
+       excludeProtectedAccountManager:
+         !policy.jobOrders.canViewProtectedAccountManager(req.auth),
+@@ -48,6 +54,8 @@ async function getAll(req, res) {
+       const row = { ...raw };
+       delete row.TotalRows;
+       if (!canSeeAmounts) delete row.GrandTotal;
++      // تاريخ الاستحقاق المتفق عليه يُعرض مخفيًا لغير المستثنين (بلازور)
++      dates.maskRowDueDate(row, req.auth);
+       return row;
+     });
+     return res.json({
+@@ -80,6 +88,7 @@ async function getById(req, res) {
+       return errorResponse(res, 'أمر التشغيل محمي حسب نطاق صلاحيات الحسابات', 403);
+     }
+     if (!policy.jobOrders.canSeeAmounts(req.auth)) delete row.GrandTotal;
++    dates.maskRowDueDate(row, req.auth);
+     row.capabilities = capabilities(req.auth);
+     return res.json({ success: true, data: row });
+   } catch (error) {
+diff --git a/modules/transactions/invoice-full-edit.queries.js b/modules/transactions/invoice-full-edit.queries.js
+index a1611a7..ec94a6a 100644
+--- a/modules/transactions/invoice-full-edit.queries.js
++++ b/modules/transactions/invoice-full-edit.queries.js
+@@ -1,6 +1,7 @@
+ const { sql, connectDB } = require('../../core/database');
+ const notificationsQueries = require('../notifications/notifications.queries');
+ const policy = require('../../shared/authorization.policy');
++const { normalizeLineDate } = require('../../shared/delivery-dates');
+ 
+ const VALID_TIERS = new Set(['CClass', 'Premium', 'Elite']);
+ const VALID_NEW_CHARGES = new Set(['Shipping', 'Installation', 'Other']);
+@@ -36,6 +37,17 @@ function normalizeItem(raw) {
+       return value == null || value === '' ? null : Number(value);
+     })(),
+     notes: String(pick(raw, 'notes', 'Notes') || '').trim(),
++    // موعد تسليم البند مطبَّعًا بقاعدة DeliveryScheduleResolver.Normalize
++    // في بلازور. غياب الحقلين من الطلب كليًا = «اترك المخزون كما هو».
++    hasDeliveryDateInput: pick(raw, 'deliveryDate', 'DeliveryDate') !== undefined
++      || pick(raw, 'deliveryDateIsCustom', 'DeliveryDateIsCustom') !== undefined,
++    ...(() => {
++      const normalized = normalizeLineDate(
++        pick(raw, 'deliveryDate', 'DeliveryDate'),
++        pick(raw, 'deliveryDateIsCustom', 'DeliveryDateIsCustom'),
++      );
++      return { deliveryDate: normalized.date, deliveryDateIsCustom: normalized.isCustom };
++    })(),
+   };
+ }
+ 
+@@ -119,7 +131,7 @@ async function getDetails(poolOrTransaction, transactionId) {
+     .query(`
+       SELECT td.DetailID, td.TransactionID, td.ProductID, td.Quantity,
+              td.UnitPrice, td.TotalAmount, td.Notes, td.PricingTier,
+-             td.SelectedAlternativeID,
++             td.SelectedAlternativeID, td.DeliveryDate, td.DeliveryDateIsCustom,
+              p.ProductName, p.ProductDescription, p.Customer,
+              p.SuggestedSalePriceCClass, p.SuggestedSalePrice,
+              p.SuggestedSalePriceElite, p.PurchasePriceCClass,
+@@ -503,6 +515,56 @@ async function fullEditInvoice(transactionId, rawData, auth) {
+       return { ok: false, status: 400, message: 'يوجد صنف غير موجود أو تم حذفه.' };
+     }
+ 
++    // حارس البنود المسلَّمة — مرآة CheckDeliveredLinesGuardAsync في بلازور
++    // (InvoiceService.cs): المسلَّم فعليًا = مجموع كميات محاولات أحداث
++    // التسليم غير الملغاة لكل سطر. لا حذف ولا استبدال منتج ولا تقليل
++    // كمية دون المسلَّم. غياب جداول الأحداث → يمر الحارس بهدوء كما في بلازور.
++    if (header.TransactionType === 'Sale') {
++      let deliveredByDetail = null;
++      try {
++        const deliveredResult = await dbTransaction.request()
++          .input('txId', sql.Int, transactionId)
++          .query(`
++            SELECT idi.TransactionDetailId, COALESCE(SUM(idi.Quantity), 0) AS DeliveredQty
++            FROM InvoiceDeliveryItems idi
++            JOIN InvoiceDeliveries idl ON idl.DeliveryId = idi.DeliveryId
++            WHERE idl.TransactionId = @txId AND idl.IsVoided = 0
++            GROUP BY idi.TransactionDetailId
++          `);
++        deliveredByDetail = new Map(
++          deliveredResult.recordset.map((r) => [Number(r.TransactionDetailId), num(r.DeliveredQty)]),
++        );
++      } catch (error) {
++        if (!(error && (error.number === 208 || /Invalid object name/i.test(String(error.message || ''))))) {
++          throw error;
++        }
++      }
++      if (deliveredByDetail) {
++        const submittedById = new Map(
++          items.filter((i) => i.detailId > 0).map((i) => [i.detailId, i]),
++        );
++        for (const old of oldDetails) {
++          const delivered = deliveredByDetail.get(Number(old.DetailID)) || 0;
++          if (delivered <= 0.0005) continue;
++          const oldName = productMap.get(Number(old.ProductID))?.ProductName || `صنف ${old.ProductID}`;
++          const deliveredText = parseFloat(delivered.toFixed(3));
++          const submitted = submittedById.get(Number(old.DetailID));
++          if (!submitted) {
++            await dbTransaction.rollback();
++            return { ok: false, status: 400, message: `لا يمكن حذف الصنف «${oldName}» من الفاتورة — تم تسليم ${deliveredText} منه فعليًا. لتصحيح التسليم ألغِ التسليمة أولًا من شاشة متابعة التسليمات، ثم عدّل الفاتورة.` };
++          }
++          if (submitted.productId !== Number(old.ProductID)) {
++            await dbTransaction.rollback();
++            return { ok: false, status: 400, message: `لا يمكن استبدال الصنف «${oldName}» في الفاتورة — تم تسليم ${deliveredText} منه فعليًا. لتصحيح التسليم ألغِ التسليمة أولًا من شاشة متابعة التسليمات، ثم عدّل الفاتورة.` };
++          }
++          if (submitted.quantity < delivered - 0.0005) {
++            await dbTransaction.rollback();
++            return { ok: false, status: 400, message: `لا يمكن تقليل كمية الصنف «${oldName}» إلى ${submitted.quantity} — تم تسليم ${deliveredText} فعليًا، فلا يمكن أن تقل كمية السطر عن الكمية المسلَّمة.` };
++          }
++        }
++      }
++    }
++
+     for (const item of items) {
+       if (item.selectedAlternativeId == null) continue;
+       const alt = await dbTransaction.request()
+@@ -649,6 +711,12 @@ async function fullEditInvoice(transactionId, rawData, auth) {
+     const keepIds = [];
+     for (const item of items) {
+       const notes = item.notes ? `[${item.pricingTier}] ${item.notes}` : `[${item.pricingTier}]`;
++      // موعد البند الفعّال للكتابة: المُدخل مطبَّعًا، أو المخزون إن لم
++      // يرسل العميل حقول الموعد أصلًا (حتى لا تُمحى مواعيد قائمة بصمت)
++      const oldForDates = item.detailId > 0 ? oldById.get(item.detailId) : null;
++      const effectiveDelivery = item.hasDeliveryDateInput || !oldForDates
++        ? { date: item.deliveryDate, isCustom: item.deliveryDateIsCustom }
++        : { date: oldForDates.DeliveryDate || null, isCustom: Boolean(oldForDates.DeliveryDateIsCustom) };
+       if (item.detailId > 0) {
+         keepIds.push(item.detailId);
+         await dbTransaction.request()
+@@ -660,11 +728,14 @@ async function fullEditInvoice(transactionId, rawData, auth) {
+           .input('altId', sql.Int, item.selectedAlternativeId)
+           .input('tier', sql.NVarChar(20), item.pricingTier)
+           .input('notes', sql.NVarChar(255), notes)
++          .input('deliveryDate', sql.Date, effectiveDelivery.date)
++          .input('deliveryDateIsCustom', sql.Bit, effectiveDelivery.isCustom ? 1 : 0)
+           .query(`
+             UPDATE TransactionDetails
+             SET ProductID = @productId, Quantity = @quantity, UnitPrice = @unitPrice,
+                 TotalAmount = @total, SelectedAlternativeID = @altId,
+-                PricingTier = @tier, Notes = @notes
++                PricingTier = @tier, Notes = @notes,
++                DeliveryDate = @deliveryDate, DeliveryDateIsCustom = @deliveryDateIsCustom
+             WHERE DetailID = @detailId AND TransactionID = ${Number(transactionId)}
+           `);
+       } else {
+@@ -677,14 +748,16 @@ async function fullEditInvoice(transactionId, rawData, auth) {
+           .input('altId', sql.Int, item.selectedAlternativeId)
+           .input('tier', sql.NVarChar(20), item.pricingTier)
+           .input('notes', sql.NVarChar(255), notes)
++          .input('deliveryDate', sql.Date, effectiveDelivery.date)
++          .input('deliveryDateIsCustom', sql.Bit, effectiveDelivery.isCustom ? 1 : 0)
+           .query(`
+             INSERT INTO TransactionDetails
+               (TransactionID, ProductID, Quantity, UnitPrice, TotalAmount,
+-               SelectedAlternativeID, PricingTier, Notes)
++               SelectedAlternativeID, PricingTier, Notes, DeliveryDate, DeliveryDateIsCustom)
+             OUTPUT INSERTED.DetailID
+             VALUES
+               (@transactionId, @productId, @quantity, @unitPrice, @total,
+-               @altId, @tier, @notes)
++               @altId, @tier, @notes, @deliveryDate, @deliveryDateIsCustom)
+           `);
+         const newId = Number(inserted.recordset[0].DetailID);
+         keepIds.push(newId);
+diff --git a/modules/transactions/transactions.controller.js b/modules/transactions/transactions.controller.js
+index a1dc3cc..7006021 100644
+--- a/modules/transactions/transactions.controller.js
++++ b/modules/transactions/transactions.controller.js
+@@ -1,6 +1,7 @@
+ const transactionsQueries = require('./transactions.queries');
+ const fullEditQueries = require('./invoice-full-edit.queries');
+ const invoicePolicy = require('../../shared/authorization.policy').invoices;
++const deliveryDates = require('../../shared/delivery-dates');
+ const { successResponse, errorResponse, notFoundResponse } = require('../../shared/response.helper');
+ 
+ function sendOperationResult(res, result) {
+@@ -53,6 +54,14 @@ async function getAll(req, res) {
+       ...security,
+     });
+ 
++    // تاريخ الاستحقاق المتفق عليه لفواتير البيع يُعرض مخفيًا لغير
++    // المستثنين (قاعدة بلازور) — عرض فقط ولا يُكتب في القاعدة أبدًا.
++    // أسطح نموذج التعديل (getById/full) ليست هنا عمدًا: محرروها يرون
++    // الحقيقي، وإخفاؤها سيُحفظ مخفيًا عند الحفظ ويفسد البيانات.
++    for (const row of transactions) {
++      if (row.TransactionType === 'Sale') deliveryDates.maskRowDueDate(row, req.auth);
++    }
++
+     const stats = await transactionsQueries.getInvoicesStats({
+       type: invoiceType, startDate: effStart, endDate: effEnd,
+       search, status, hasRemaining: remainingFilter, overdue,
+diff --git a/modules/transactions/transactions.queries.js b/modules/transactions/transactions.queries.js
+index cfc0b85..85da93a 100644
+--- a/modules/transactions/transactions.queries.js
++++ b/modules/transactions/transactions.queries.js
+@@ -1,5 +1,6 @@
+ const { sql, connectDB } = require('../../core/database');
+ const notificationsQueries = require('../notifications/notifications.queries');
++const { normalizeLineDate } = require('../../shared/delivery-dates');
+ 
+ 
+ async function getInvoiceCostMap(pool, transactionIds) {
+@@ -246,6 +247,7 @@ async function getTransactionDetails(transactionId) {
+       SELECT
+         td.DetailID, td.ProductID, td.Quantity,
+         td.UnitPrice, td.TotalAmount, td.Notes,
++        td.DeliveryDate, td.DeliveryDateIsCustom,
+         p.ProductName, p.ProductDescription
+       FROM TransactionDetails td
+       INNER JOIN Products p ON td.ProductID = p.ProductID
+@@ -421,6 +423,14 @@ async function createTransaction(data) {
+     selectedAlternativeId: d.selectedAlternativeId == null || d.selectedAlternativeId === ''
+       ? null : Number(d.selectedAlternativeId),
+     notes: d.notes || null,
++    // موعد تسليم البند: يُطبَّع بقاعدة بلازور (لا يُخزَّن تاريخ إلا مفصولًا)
++    ...(() => {
++      const normalized = normalizeLineDate(
++        d.deliveryDate ?? d.DeliveryDate,
++        d.deliveryDateIsCustom ?? d.DeliveryDateIsCustom,
++      );
++      return { deliveryDate: normalized.date, deliveryDateIsCustom: normalized.isCustom };
++    })(),
+   }));
+   const totalAmount = money(lines.reduce((sum, l) => sum + l.totalAmount, 0));
+ 
+@@ -522,9 +532,11 @@ async function createTransaction(data) {
+         .input('pricingTier', sql.NVarChar(20), line.pricingTier)
+         .input('selectedAlternativeId', sql.Int, line.selectedAlternativeId)
+         .input('notes', sql.NVarChar(255), line.notes)
++        .input('deliveryDate', sql.Date, line.deliveryDate)
++        .input('deliveryDateIsCustom', sql.Bit, line.deliveryDateIsCustom ? 1 : 0)
+         .query(`
+-          INSERT INTO TransactionDetails (TransactionID, ProductID, Quantity, UnitPrice, TotalAmount, PricingTier, SelectedAlternativeID, Notes)
+-          VALUES (@transactionId, @productId, @quantity, @unitPrice, @totalAmount, @pricingTier, @selectedAlternativeId, @notes)
++          INSERT INTO TransactionDetails (TransactionID, ProductID, Quantity, UnitPrice, TotalAmount, PricingTier, SelectedAlternativeID, Notes, DeliveryDate, DeliveryDateIsCustom)
++          VALUES (@transactionId, @productId, @quantity, @unitPrice, @totalAmount, @pricingTier, @selectedAlternativeId, @notes, @deliveryDate, @deliveryDateIsCustom)
+         `);
+     }
+ 
+diff --git a/shared/authorization.policy.js b/shared/authorization.policy.js
+index d5db531..b85218f 100644
+--- a/shared/authorization.policy.js
++++ b/shared/authorization.policy.js
+@@ -28,6 +28,7 @@ const roles = {
+   factoryManager: (a) => isRole(a, 'FactoryManager'),
+   hrManager: (a) => isRole(a, 'HrManager', 'HRManager'),
+   user: (a) => isRole(a, 'User'),
++  deliveryOfficer: (a) => isRole(a, 'DeliveryOfficer'),
+   b2b: (a) => isRole(a, 'B2B'),
+ };
+ 
+@@ -157,8 +158,9 @@ const jobOrders = {
+     || roles.factory(a)
+     || hasClaim(a, 'frm_JobOrders:View'),
+   canSeeAmounts: (a) => roles.admin(a) || roles.accountManager(a) || roles.account(a),
++  // تعديل تاريخ التسليم/الاستلام — مدير الإنتاج أُزيل في بلازور بقرار المالك
++  // (JobOrders.razor:534-536): مدير عام / مدير مصنع / Claim التعديل فقط.
+   canEditDueDate: (a) => roles.admin(a)
+-    || roles.productionManager(a)
+     || roles.factoryManager(a)
+     || hasClaim(a, 'frm_JobOrders:Edit'),
+   canOpenInvoices: (a) => roles.admin(a)
+@@ -179,6 +181,7 @@ const delivery = {
+     || roles.account(a)
+     || roles.sales(a)
+     || roles.user(a)
++    || roles.deliveryOfficer(a)
+     || hasClaim(a, 'frmInvoiceDeliveryStatus:View'),
+   canSeeAmounts: (a) => roles.admin(a)
+     || roles.accountManager(a)
+@@ -191,9 +194,17 @@ const delivery = {
+   canConfirm: (a) => roles.admin(a)
+     || roles.sales(a)
+     || roles.user(a)
++    || roles.deliveryOfficer(a)
+     || hasClaim(a, 'frmInvoiceDeliveryStatus:Deliver'),
+   canOverrideRemaining: (a) => roles.admin(a) || roles.accountManager(a),
+   canPrint: (a) => delivery.canView(a),
++  // رؤية تاريخ الاستحقاق الحقيقي المتفق عليه (DeliveryPermissions.cs — CanSeeRealDeliveryDate):
++  // من عداهم يرونه منقوصًا هامش الأيام عند العرض فقط (shared/delivery-dates.js).
++  canSeeRealDate: (a) => roles.admin(a)
++    || roles.accountManager(a)
++    || roles.sales(a)
++    || roles.generalManager(a)
++    || roles.deliveryOfficer(a),
+ };
+ 
+ // PurchaseReceiptStatus.razor role/claim matrix.
+diff --git a/shared/delivery-dates.js b/shared/delivery-dates.js
+new file mode 100644
+index 0000000..908487e
+--- /dev/null
++++ b/shared/delivery-dates.js
+@@ -0,0 +1,141 @@
++// ════════════════════════════════════════════════════════════════════
++// إخفاء تاريخ الاستحقاق + حلّ جدولة بنود التسليم — مرآة بلازور:
++//   • DeliveryPermissions.CanSeeRealDeliveryDate (Services/DeliveryPermissions.cs)
++//   • SalesDeliveryStatusService.MaskValues / ShiftDueDateRange
++//     (Services/SalesDeliveryStatusService.cs:56-99)
++//   • DeliveryScheduleResolver (Services/DeliveryScheduleResolver.cs)
++// القاعدة: المستثنون (مدير/مدير حسابات/مبيعات/مدير عام/مسئول تسليمات)
++// يرون التاريخ الحقيقي، ومن عداهم يرونه منقوصًا هامش الأيام — عرض فقط،
++// ولا يُكتب أي تاريخ مخفي في قاعدة البيانات أبدًا. تواريخ أحداث التسليم
++// الفعلية حقائق منجزة لا تُخفى أبدًا فلا تمر من هنا.
++// هامش الأيام: متغير البيئة DELIVERY_DATE_BUFFER_DAYS (مرآة مفتاح بلازور
++// Delivery:DateBufferDays) والافتراضي 4 عند غيابه أو فساده.
++// ════════════════════════════════════════════════════════════════════
++const policy = require('./authorization.policy');
++
++const DAY_MS = 86400000;
++
++function dateBufferDays() {
++  const parsed = Number.parseInt(process.env.DELIVERY_DATE_BUFFER_DAYS, 10);
++  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 4;
++}
++
++function canSeeRealDate(auth) {
++  return policy.delivery.canSeeRealDate(auth);
++}
++
++// تاريخ فقط (منتصف ليل UTC) من أي قيمة تاريخ — بنفس اتفاق الكود القائم
++// (toISOString().slice(0,10)) حتى لا تنحرف الحسابات عن باقي الوحدة.
++function dateOnly(value) {
++  if (value == null || value === '') return null;
++  const date = value instanceof Date ? value : new Date(value);
++  if (Number.isNaN(date.getTime())) return null;
++  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
++}
++
++function addDays(date, days) {
++  if (!date) return null;
++  return new Date(date.getTime() + days * DAY_MS);
++}
++
++function diffDays(from, to) {
++  if (!from || !to) return null;
++  return Math.round((dateOnly(from).getTime() - dateOnly(to).getTime()) / DAY_MS);
++}
++
++function todayOnly() {
++  return dateOnly(new Date());
++}
++
++// DeliveryScheduleResolver.EffectiveDate: تاريخ البند الخاص إن كان مفصولًا
++// وله تاريخ، وإلا تاريخ استحقاق الفاتورة.
++function effectiveLineDate(lineDate, isCustom, invoiceDueDate) {
++  if (isCustom && lineDate) return dateOnly(lineDate);
++  return dateOnly(invoiceDueDate);
++}
++
++// DeliveryScheduleResolver.DisplayDate: المعروض للمستخدم — الحقيقي
++// للمستثنين، ومن عداهم منقوص الهامش وبأرضية تاريخ الفاتورة.
++function displayDate(effectiveDate, transactionDate, seesReal, buffer = dateBufferDays()) {
++  const effective = dateOnly(effectiveDate);
++  if (!effective) return null;
++  if (seesReal) return effective;
++  let shown = addDays(effective, -buffer);
++  const floor = dateOnly(transactionDate);
++  if (floor && shown < floor) shown = floor;
++  return shown;
++}
++
++// SalesDeliveryStatusService.MaskValues على مفاتيح حالات الـ API:
++// التاريخ المعروض + الأيام المتبقية منه + تحويل عائلة «جارى»
++// (today/soon/upcoming) إلى overdue إن فات المعروض — المسَلَّمة والمرتجعة
++// نتائج نهائية تحتفظ بحالتها كما في بلازور.
++const PENDING_FAMILY = new Set(['today', 'soon', 'upcoming', 'pending']);
++function maskDueValues({ dueDate, transactionDate, status }, seesReal, buffer = dateBufferDays()) {
++  const real = dateOnly(dueDate);
++  if (!real) return { dueDate: dueDate ?? null, daysRemaining: null, status };
++  if (seesReal) {
++    return { dueDate: real, daysRemaining: diffDays(real, todayOnly()), status };
++  }
++  const shown = displayDate(real, transactionDate, false, buffer);
++  const days = diffDays(shown, todayOnly());
++  let maskedStatus = status;
++  if (PENDING_FAMILY.has(status) && shown < todayOnly()) maskedStatus = 'overdue';
++  return { dueDate: shown, daysRemaining: days, status: maskedStatus };
++}
++
++// يخفي DueDate في صف قائمة/تفاصيل (ويعيد حساب DaysRemaining/DeliveryStatus
++// إن وُجدا). لا يمس DeliveredAt أو أي تاريخ حدث فعلي.
++function maskRowDueDate(row, auth) {
++  if (!row || row.DueDate == null) return row;
++  const masked = maskDueValues(
++    { dueDate: row.DueDate, transactionDate: row.TransactionDate, status: row.DeliveryStatus },
++    canSeeRealDate(auth),
++  );
++  row.DueDate = masked.dueDate;
++  if ('DaysRemaining' in row) row.DaysRemaining = masked.daysRemaining;
++  if ('DeliveryStatus' in row && row.DeliveryStatus != null) row.DeliveryStatus = masked.status;
++  return row;
++}
++
++// SalesDeliveryStatusService.ShiftDueDateRange: فلاتر مدى الاستحقاق
++// للمخفيين تُزاح +الهامش قبل الاستعلام فتطابق النتائج ما يرونه معروضًا.
++function shiftDueRange(dateFrom, dateTo, auth) {
++  if (canSeeRealDate(auth)) return { dateFrom, dateTo };
++  const buffer = dateBufferDays();
++  const shift = (value) => {
++    const d = dateOnly(value);
++    return d ? addDays(d, buffer).toISOString().slice(0, 10) : value;
++  };
++  return { dateFrom: shift(dateFrom), dateTo: shift(dateTo) };
++}
++
++// DeliveryScheduleResolver.Normalize قبل الكتابة: لا يُخزَّن تاريخ إلا مع
++// الفصل اليدوي، والفصل بلا تاريخ يعود وارثًا.
++function normalizeLineDate(lineDate, isCustom) {
++  const d = dateOnly(lineDate);
++  if (isCustom && d) return { date: d, isCustom: true };
++  return { date: null, isCustom: false };
++}
++
++// DeliveryScheduleResolver.IsLineOverdue: الموعد المعروض فات وما زال مفتوحًا.
++function isLineOverdue(display, remainingQty) {
++  const shown = dateOnly(display);
++  return Number(remainingQty || 0) > 0.0005 && shown != null && shown < todayOnly();
++}
++
++module.exports = {
++  dateBufferDays,
++  canSeeRealDate,
++  dateOnly,
++  addDays,
++  diffDays,
++  todayOnly,
++  effectiveLineDate,
++  displayDate,
++  maskDueValues,
++  maskRowDueDate,
++  shiftDueRange,
++  normalizeLineDate,
++  isLineOverdue,
++};

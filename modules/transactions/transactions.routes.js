@@ -66,6 +66,13 @@ router.post(
   transactionsController.addPayment,
 );
 
+// إلغاء فاتورة — صلاحية بلازور نفسها: frm_PartiesInvoices:Delete
+router.post(
+  '/:id/cancel',
+  requirePolicy(invoicePolicy.canCancel, 'إلغاء الفواتير متاح لصاحب صلاحية حذف الفواتير أو المدير فقط'),
+  transactionsController.cancel,
+);
+
 // طلب تعديل فاتورة
 router.post('/:id/request-edit', transactionsController.requestEdit);
 

@@ -144,7 +144,28 @@ async function create(req, res) {
     });
   } catch (err) {
     console.error('خطأ في إنشاء الفاتورة:', err);
-    return errorResponse(res, 'فشل إنشاء الفاتورة', 500, err.message);
+    const status = err.statusCode || 500;
+    return errorResponse(res, status === 500 ? 'فشل إنشاء الفاتورة' : err.message, status, err.message);
+  }
+}
+
+// إلغاء فاتورة (مطابق لبلازور CancelInvoiceAsync)
+// POST /api/transactions/:id/cancel — Body: { reason? }
+async function cancel(req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!id) return errorResponse(res, 'معرّف فاتورة غير صالح', 400);
+
+    const result = await transactionsQueries.cancelTransaction(
+      id,
+      (req.body && req.body.reason) || '',
+      req.auth.username,
+    );
+    return successResponse(res, null, result.message);
+  } catch (err) {
+    console.error('❌ cancel:', err.message);
+    const status = err.statusCode || 500;
+    return errorResponse(res, status === 500 ? 'فشل إلغاء الفاتورة' : err.message, status, err.message);
   }
 }
 
@@ -171,7 +192,8 @@ async function addPayment(req, res) {
     });
   } catch (err) {
     console.error('خطأ في إضافة الدفعة:', err);
-    return errorResponse(res, 'فشل إضافة الدفعة', 500, err.message);
+    const status = err.statusCode || 500;
+    return errorResponse(res, status === 500 ? 'فشل إضافة الدفعة' : err.message, status, err.message);
   }
 }
 
@@ -436,6 +458,7 @@ module.exports = {
   create,
   update,
   addPayment,
+  cancel,
   getPayments,
   requestEdit,
   getPendingEditRequests,

@@ -283,130 +283,564 @@ async function getPayments(transactionId) {
   return result.recordset;
 }
 
-// إنشاء فاتورة جديدة
+// ═══════════════════════════════════════════════════════════════════
+// 🧮 قواعد مالية مطابقة لبلازور (مرحلة 1 — الحزمة A)
+// - مجموع السطر: Round(Quantity × UnitPrice, 2) — DTOS/InvoiceDto.cs:128
+// - الإجماليات: InvoiceService.CalculateTotals — Services/InvoiceService.cs:3245
+// - تقريب الخصم لأقرب 100: QuotationService.CalculateTotals — Services/QuotationService.cs:2246
+//   بصيغة .NET Math.Round الافتراضية (النصف إلى الزوجي)
+// - الحالة: InvoiceService.ComputeStatus — Services/InvoiceService.cs:3281
+// ═══════════════════════════════════════════════════════════════════
+const num = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+const money = (value) => Math.round((num(value) + Number.EPSILON) * 100) / 100;
+const VALID_TIERS = new Set(['CClass', 'Premium', 'Elite']);
+
+function badRequest(message) {
+  return Object.assign(new Error(message), { statusCode: 400 });
+}
+function notFoundError(message) {
+  return Object.assign(new Error(message), { statusCode: 404 });
+}
+
+// .NET Math.Round(amount / 100, 0) * 100 — النصف إلى الزوجي، بحساب سنتات صحيح
+function roundDiscountToNearest100(amount) {
+  const cents = Math.round((Math.max(0, num(amount)) + Number.EPSILON) * 100);
+  const wholeHundreds = Math.floor(cents / 10000);
+  const remainder = cents - wholeHundreds * 10000;
+  let units = wholeHundreds;
+  if (remainder * 2 > 10000 || (remainder * 2 === 10000 && wholeHundreds % 2 === 1)) {
+    units = wholeHundreds + 1;
+  }
+  return units * 100;
+}
+
+function computeInvoiceStatus(grandTotal, paidAmount) {
+  if (grandTotal > 0 && paidAmount >= grandTotal) return 'Paid';
+  if (paidAmount > 0) return 'PartiallyPaid';
+  return 'Open';
+}
+
+function formatN2(value) {
+  return num(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// توليد رقم الفاتورة التالي — InvoiceService.GenerateNextInvoiceNumberAsync:731
+async function generateNextInvoiceNumber(transaction, transactionType) {
+  const prefix = transactionType === 'Purchase' ? 'PRC' : 'INV';
+  const fullPrefix = `${prefix}-${new Date().getFullYear()}-`;
+  const result = await transaction.request()
+    .input('type', sql.VarChar(20), transactionType)
+    .input('prefix', sql.VarChar(20), fullPrefix)
+    .query(`
+      SELECT TOP 1 ReferenceNumber FROM Transactions
+      WHERE TransactionType = @type AND ReferenceNumber LIKE @prefix + '%'
+      ORDER BY TransactionID DESC
+    `);
+  let next = 1;
+  const last = result.recordset[0] && result.recordset[0].ReferenceNumber;
+  if (last) {
+    const parsed = parseInt(String(last).split('-')[2], 10);
+    if (Number.isFinite(parsed)) next = parsed + 1;
+  }
+  return `${fullPrefix}${String(next).padStart(5, '0')}`;
+}
+
+// حركة مخزون داخل معاملة — InvoiceService.UpdateStockAsync:3288
+async function adjustStockTx(transaction, { productId, warehouseId, quantityChange, referenceId, unitPrice, username, referenceType }) {
+  if (!quantityChange) return;
+  await transaction.request()
+    .input('productId', sql.Int, productId)
+    .input('warehouseId', sql.Int, warehouseId)
+    .input('change', sql.Int, quantityChange)
+    .input('username', sql.NVarChar(100), username)
+    .query(`
+      IF EXISTS (SELECT 1 FROM StockLevels WITH (UPDLOCK, HOLDLOCK)
+                 WHERE ProductID = @productId AND WarehouseID = @warehouseId)
+        UPDATE StockLevels SET Quantity = Quantity + @change, LastUpdatedAt = GETDATE()
+        WHERE ProductID = @productId AND WarehouseID = @warehouseId;
+      ELSE
+        INSERT INTO StockLevels (ProductID, WarehouseID, Quantity, LastUpdatedAt, CreatedBy, CreatedAt)
+        VALUES (@productId, @warehouseId, @change, GETDATE(), @username, GETDATE());
+    `);
+  await transaction.request()
+    .input('productId', sql.Int, productId)
+    .input('warehouseId', sql.Int, warehouseId)
+    .input('type', sql.NVarChar(20), quantityChange < 0 ? 'Out' : 'In')
+    .input('quantity', sql.Int, Math.abs(quantityChange))
+    .input('referenceId', sql.Int, referenceId)
+    .input('referenceType', sql.NVarChar(80), referenceType)
+    .input('unitPrice', sql.Decimal(18, 2), money(unitPrice))
+    .input('totalAmount', sql.Decimal(18, 2), money(Math.abs(quantityChange) * num(unitPrice)))
+    .input('username', sql.NVarChar(100), username)
+    .query(`
+      INSERT INTO StockTransactions
+        (ProductID, WarehouseID, TransactionType, Quantity, TransactionDate,
+         ReferenceID, ReferenceType, UnitPrice, TotalAmount, CreatedBy, CreatedAt)
+      VALUES (@productId, @warehouseId, @type, @quantity, GETDATE(),
+              @referenceId, @referenceType, @unitPrice, @totalAmount, @username, GETDATE())
+    `);
+}
+
+// سجل تدقيق داخل معاملة (نفس نمط سجل طلبات التعديل في هذا الملف)
+async function auditTx(transaction, { actionType, primaryKey, oldData, newData, username }) {
+  await transaction.request()
+    .input('actionType', sql.NVarChar(50), actionType)
+    .input('primaryKey', sql.NVarChar(100), String(primaryKey))
+    .input('oldData', sql.NVarChar(sql.MAX), oldData == null ? null : JSON.stringify(oldData))
+    .input('newData', sql.NVarChar(sql.MAX), newData == null ? null : JSON.stringify(newData))
+    .input('username', sql.NVarChar(100), username)
+    .query(`
+      INSERT INTO [dbo].[Audit_Log]
+        (TableName, ActionType, PrimaryKeyValue, OldData, NewData,
+         ActionDate, LoginName, AppName, AccessUserName)
+      VALUES ('Transactions', @actionType, @primaryKey, @oldData, @newData,
+              GETDATE(), @username, N'COCOBOLO Flutter', @username)
+    `);
+}
+
+// إنشاء فاتورة جديدة — الإجماليات تُحسب على الخادم ولا تُعتمد أرقام العميل:
+// التحقق ValidateInvoice (InvoiceService.cs:3225) ثم إعادة الحساب من السطور.
 async function createTransaction(data) {
+  const detailsIn = Array.isArray(data.details) ? data.details : [];
+  if (!data.partyId) throw badRequest('يرجى اختيار العميل.');
+  if (!data.warehouseId) throw badRequest('يرجى اختيار المخزن.');
+  if (!detailsIn.length) throw badRequest('يجب إضافة صنف واحد على الأقل.');
+  if (detailsIn.some((d) => !Number(d.productId))) throw badRequest('هناك صنف بدون منتج محدد.');
+  if (detailsIn.some((d) => num(d.quantity) <= 0)) throw badRequest('يجب أن تكون الكمية أكبر من صفر لكل صنف.');
+  if (detailsIn.some((d) => num(d.unitPrice) < 0)) throw badRequest('السعر لا يمكن أن يكون سالباً.');
+
+  const lines = detailsIn.map((d) => ({
+    productId: Number(d.productId),
+    quantity: num(d.quantity),
+    unitPrice: num(d.unitPrice),
+    totalAmount: money(num(d.quantity) * num(d.unitPrice)),
+    pricingTier: VALID_TIERS.has(String(d.pricingTier || '')) ? String(d.pricingTier) : 'Premium',
+    selectedAlternativeId: d.selectedAlternativeId == null || d.selectedAlternativeId === ''
+      ? null : Number(d.selectedAlternativeId),
+    notes: d.notes || null,
+  }));
+  const totalAmount = money(lines.reduce((sum, l) => sum + l.totalAmount, 0));
+
+  // الخصم: صيغة الإدخال كما في بلازور (مبلغ/نسبة) ثم تقريب أقرب 100 على المبلغ النهائي
+  const entryMode = String(data.discountEntryMode || '').toLowerCase();
+  const discountAmountIn = num(data.discountAmount, 0);
+  const discountPercentageIn = (data.discountPercentage == null || data.discountPercentage === '')
+    ? null : num(data.discountPercentage, 0);
+  const amountEntered = entryMode === 'amount'
+    || (!entryMode && discountAmountIn > 0 && !(discountPercentageIn > 0));
+  let rawDiscount = 0;
+  if (amountEntered && discountAmountIn > 0) {
+    rawDiscount = Math.min(Math.max(discountAmountIn, 0), totalAmount);
+  } else if (discountPercentageIn != null && discountPercentageIn > 0) {
+    const pct = Math.min(Math.max(discountPercentageIn, 0), 100);
+    rawDiscount = Math.min(money(totalAmount * pct / 100), totalAmount);
+  }
+  let discountAmount = roundDiscountToNearest100(rawDiscount);
+  if (discountAmount > totalAmount) discountAmount = totalAmount;
+  const discountPercentage = discountAmount > 0 && totalAmount > 0
+    ? money(discountAmount / totalAmount * 100) : 0;
+  const netTotalAmount = money(totalAmount - discountAmount);
+
+  const chargesIn = Array.isArray(data.charges) ? data.charges : [];
+  const totalChargesAmount = money(chargesIn.reduce(
+    (sum, c) => sum + num(c.amount != null ? c.amount : c.chargeAmount), 0));
+  const grandTotal = money(netTotalAmount + totalChargesAmount);
+
   const pool = await connectDB();
   const transaction = new sql.Transaction(pool);
 
   try {
     await transaction.begin();
 
-    // إنشاء الفاتورة
+    // رقم الفاتورة: يُولَّد عند غيابه ويُفحص تكراره عند إرساله (InvoiceService.cs:731, 902)
+    let referenceNumber = data.referenceNumber || null;
+    if (referenceNumber) {
+      const dup = await transaction.request()
+        .input('ref', sql.NVarChar(50), referenceNumber)
+        .input('type', sql.VarChar(20), data.transactionType)
+        .query(`SELECT 1 AS X FROM Transactions WHERE ReferenceNumber = @ref AND TransactionType = @type`);
+      if (dup.recordset.length) throw badRequest(`رقم الفاتورة '${referenceNumber}' مستخدم.`);
+    } else {
+      referenceNumber = await generateNextInvoiceNumber(transaction, data.transactionType);
+    }
+
+    // موظف البيع من اسم المستخدم عند غيابه (InvoiceService.cs:782)
+    let empId = data.empId || null;
+    if (!empId && data.createdBy) {
+      const empRes = await transaction.request()
+        .input('username', sql.NVarChar(50), data.createdBy)
+        .query(`SELECT employeeID FROM Users WHERE Username = @username`);
+      empId = (empRes.recordset[0] && empRes.recordset[0].employeeID) || null;
+    }
+
     const result = await transaction.request()
       .input('transactionDate', sql.DateTime, data.transactionDate || new Date())
       .input('partyId', sql.Int, data.partyId)
       .input('transactionType', sql.VarChar(20), data.transactionType)
       .input('warehouseId', sql.Int, data.warehouseId)
-      .input('empId', sql.Int, data.empId || null)
-      .input('totalAmount', sql.Decimal(18, 2), data.totalAmount || 0)
-      .input('discountPercentage', sql.Decimal(5, 2), data.discountPercentage || 0)
-      .input('discountAmount', sql.Decimal(18, 2), data.discountAmount || 0)
-      .input('netTotalAmount', sql.Decimal(18, 2), data.netTotalAmount || 0)
-      .input('paidAmount', sql.Decimal(18, 2), data.paidAmount || 0)
-      .input('totalChargesAmount', sql.Decimal(18, 2), data.totalChargesAmount || 0)
-      .input('grandTotal', sql.Decimal(18, 2), data.grandTotal || 0)
+      .input('empId', sql.Int, empId)
+      .input('referenceNumber', sql.NVarChar(50), referenceNumber)
+      .input('totalAmount', sql.Decimal(18, 2), totalAmount)
+      .input('discountPercentage', sql.Decimal(5, 2), discountPercentage)
+      .input('discountAmount', sql.Decimal(18, 2), discountAmount)
+      .input('netTotalAmount', sql.Decimal(18, 2), netTotalAmount)
+      .input('totalChargesAmount', sql.Decimal(18, 2), totalChargesAmount)
+      .input('grandTotal', sql.Decimal(18, 2), grandTotal)
       .input('paymentMethod', sql.NVarChar(20), data.paymentMethod || null)
+      .input('dueDate', sql.DateTime, data.dueDate || null)
+      .input('opportunityId', sql.Int, data.opportunityId || null)
       .input('notes', sql.NVarChar(255), data.notes || null)
       .input('createdBy', sql.NVarChar(50), data.createdBy)
       .query(`
         INSERT INTO Transactions (
-          TransactionDate, PartyID, TransactionType, WarehouseID, EmpId,
+          TransactionDate, PartyID, TransactionType, WarehouseID, EmpId, ReferenceNumber,
           TotalAmount, DiscountPercentage, DiscountAmount, NetTotalAmount,
-          PaidAmount, TotalChargesAmount, GrandTotal, PaymentMethod,
-          Notes, CreatedBy, CreatedAt
+          PaidAmount, TotalChargesAmount, GrandTotal, PaymentMethod, InvoiceStatus,
+          DueDate, OpportunityId, Notes, CreatedBy, CreatedAt
         )
         OUTPUT INSERTED.TransactionID
         VALUES (
-          @transactionDate, @partyId, @transactionType, @warehouseId, @empId,
+          @transactionDate, @partyId, @transactionType, @warehouseId, @empId, @referenceNumber,
           @totalAmount, @discountPercentage, @discountAmount, @netTotalAmount,
-          @paidAmount, @totalChargesAmount, @grandTotal, @paymentMethod,
-          @notes, @createdBy, GETDATE()
+          0, @totalChargesAmount, @grandTotal, @paymentMethod, 'Open',
+          @dueDate, @opportunityId, @notes, @createdBy, GETDATE()
         )
       `);
 
     const transactionId = result.recordset[0].TransactionID;
 
-    // إضافة التفاصيل
-    if (data.details && data.details.length > 0) {
-      for (const detail of data.details) {
-        await transaction.request()
-          .input('transactionId', sql.Int, transactionId)
-          .input('productId', sql.Int, detail.productId)
-          .input('quantity', sql.Decimal(18, 3), detail.quantity)
-          .input('unitPrice', sql.Decimal(18, 2), detail.unitPrice)
-          .input('notes', sql.NVarChar(255), detail.notes || null)
-          .query(`
-            INSERT INTO TransactionDetails (TransactionID, ProductID, Quantity, UnitPrice, Notes)
-            VALUES (@transactionId, @productId, @quantity, @unitPrice, @notes)
-          `);
-      }
+    for (const line of lines) {
+      await transaction.request()
+        .input('transactionId', sql.Int, transactionId)
+        .input('productId', sql.Int, line.productId)
+        .input('quantity', sql.Decimal(18, 3), line.quantity)
+        .input('unitPrice', sql.Decimal(18, 2), line.unitPrice)
+        .input('totalAmount', sql.Decimal(18, 2), line.totalAmount)
+        .input('pricingTier', sql.NVarChar(20), line.pricingTier)
+        .input('selectedAlternativeId', sql.Int, line.selectedAlternativeId)
+        .input('notes', sql.NVarChar(255), line.notes)
+        .query(`
+          INSERT INTO TransactionDetails (TransactionID, ProductID, Quantity, UnitPrice, TotalAmount, PricingTier, SelectedAlternativeID, Notes)
+          VALUES (@transactionId, @productId, @quantity, @unitPrice, @totalAmount, @pricingTier, @selectedAlternativeId, @notes)
+        `);
     }
 
-    // إضافة الرسوم
-    if (data.charges && data.charges.length > 0) {
-      for (const charge of data.charges) {
-        await transaction.request()
-          .input('transactionId', sql.Int, transactionId)
-          .input('chargeDescription', sql.NVarChar(255), charge.description)
-          .input('chargeAmount', sql.Decimal(18, 2), charge.amount)
-          .input('createdBy', sql.NVarChar(50), data.createdBy)
-          .query(`
-            INSERT INTO AdditionalCharges (TransactionID, ChargeDescription, ChargeAmount, CreatedBy, CreatedAt)
-            VALUES (@transactionId, @chargeDescription, @chargeAmount, @createdBy, GETDATE())
-          `);
-      }
+    for (const charge of chargesIn) {
+      await transaction.request()
+        .input('transactionId', sql.Int, transactionId)
+        .input('partyId', sql.Int, data.partyId)
+        .input('chargeDescription', sql.NVarChar(255),
+          charge.description != null ? charge.description : (charge.chargeDescription || null))
+        .input('chargeAmount', sql.Decimal(18, 2),
+          money(charge.amount != null ? charge.amount : charge.chargeAmount))
+        .input('notes', sql.NVarChar(sql.MAX), charge.notes || null)
+        .input('createdBy', sql.NVarChar(50), data.createdBy)
+        .query(`
+          INSERT INTO AdditionalCharges (TransactionID, PartyID, ChargeDescription, ChargeAmount, Notes, CreatedBy, CreatedAt)
+          VALUES (@transactionId, @partyId, @chargeDescription, @chargeAmount, @notes, @createdBy, GETDATE())
+        `);
+    }
+
+    // تطبيق الدفعات المقدمة المختارة (InvoiceService.cs:1000)
+    let paidTotal = 0;
+    const advanceIds = [...new Set((Array.isArray(data.selectedAdvanceChargeIds)
+      ? data.selectedAdvanceChargeIds : []).map((id) => Number(id)).filter((id) => id > 0))];
+    for (const chargeId of advanceIds) {
+      const advRes = await transaction.request()
+        .input('chargeId', sql.Int, chargeId)
+        .input('partyId', sql.Int, data.partyId)
+        .query(`SELECT ChargeID, ChargeDescription, ChargeAmount FROM AdditionalCharges
+                WHERE ChargeID = @chargeId AND PartyID = @partyId AND TransactionID IS NULL`);
+      const adv = advRes.recordset[0];
+      if (!adv) continue;
+      await transaction.request()
+        .input('chargeId', sql.Int, chargeId)
+        .input('transactionId', sql.Int, transactionId)
+        .query(`UPDATE AdditionalCharges SET TransactionID = @transactionId WHERE ChargeID = @chargeId`);
+      await transaction.request()
+        .input('transactionId', sql.Int, transactionId)
+        .input('amount', sql.Decimal(18, 2), money(adv.ChargeAmount))
+        .input('notes', sql.NVarChar(sql.MAX), `تطبيق دفعة مقدمة: ${adv.ChargeDescription || ''}`)
+        .input('createdBy', sql.NVarChar(50), data.createdBy)
+        .query(`
+          INSERT INTO Payments (TransactionID, PaymentDate, Amount, PaymentMethod, Notes, CreatedBy, CreatedAt)
+          VALUES (@transactionId, GETDATE(), @amount, 'Advance', @notes, @createdBy, GETDATE())
+        `);
+      paidTotal = money(paidTotal + num(adv.ChargeAmount));
+    }
+
+    // الدفعة الفورية عند الإنشاء (InvoiceService.cs:1046): بحضور الخزينة تُسجَّل
+    // دفعة + سند قبض في نفس المعاملة؛ وبدونها يُحفظ المبلغ كما كان سلوك الـ API
+    // (تطبيق فلاتر الحالي لا يرسل الخزينة مع الإنشاء — إرسالها يفعّل السند).
+    const paidIn = money(data.paidAmount);
+    if (paidIn > 0 && data.cashBoxId) {
+      const payRes = await transaction.request()
+        .input('transactionId', sql.Int, transactionId)
+        .input('amount', sql.Decimal(18, 2), paidIn)
+        .input('paymentMethod', sql.NVarChar(50), data.paymentMethod || 'Cash')
+        .input('createdBy', sql.NVarChar(50), data.createdBy)
+        .query(`
+          INSERT INTO Payments (TransactionID, PaymentDate, Amount, PaymentMethod, Notes, CreatedBy, CreatedAt)
+          OUTPUT INSERTED.PaymentID
+          VALUES (@transactionId, GETDATE(), @amount, @paymentMethod, N'دفعة عند إنشاء الفاتورة', @createdBy, GETDATE())
+        `);
+      const paymentId = payRes.recordset[0].PaymentID;
+      await transaction.request()
+        .input('cashBoxId', sql.Int, data.cashBoxId)
+        .input('paymentId', sql.Int, paymentId)
+        .input('referenceId', sql.Int, transactionId)
+        .input('amount', sql.Decimal(18, 2), paidIn)
+        .input('notes', sql.NVarChar(500), `تحصيل فاتورة ${referenceNumber}`)
+        .input('createdBy', sql.NVarChar(50), data.createdBy)
+        .query(`
+          INSERT INTO CashboxTransactions
+            (CashBoxID, PaymentID, ReferenceID, ReferenceType, TransactionType, Amount, TransactionDate, Notes, CreatedBy, CreatedAt)
+          VALUES (@cashBoxId, @paymentId, @referenceId, 'SaleInvoice', N'قبض', @amount, GETDATE(), @notes, @createdBy, GETDATE())
+        `);
+    }
+    if (paidIn > 0) paidTotal = money(paidTotal + paidIn);
+
+    if (paidTotal > 0) {
+      await transaction.request()
+        .input('transactionId', sql.Int, transactionId)
+        .input('paidAmount', sql.Decimal(18, 2), paidTotal)
+        .input('status', sql.NVarChar(20), computeInvoiceStatus(grandTotal, paidTotal))
+        .query(`UPDATE Transactions SET PaidAmount = @paidAmount, InvoiceStatus = @status WHERE TransactionID = @transactionId`);
     }
 
     await transaction.commit();
     return transactionId;
   } catch (err) {
-    await transaction.rollback();
+    try { await transaction.rollback(); } catch (_) { /* تجاهل */ }
     throw err;
   }
 }
 
-// إضافة دفعة
+// إضافة دفعة — AddPaymentAsync (InvoiceService.cs:2276): حد بالمتبقي،
+// رفض على الملغاة، وسند قبض بالخزينة في نفس المعاملة.
 async function addPayment(data) {
+  const amount = money(data.amount);
+  if (!(amount > 0)) throw badRequest('المبلغ يجب أن يكون أكبر من صفر.');
+  if (!data.cashBoxId) throw badRequest('يرجى اختيار الخزينة.');
+
   const pool = await connectDB();
   const transaction = new sql.Transaction(pool);
 
   try {
     await transaction.begin();
 
-    // إضافة الدفعة
-    const result = await transaction.request()
+    const cur = await transaction.request()
+      .input('id', sql.Int, data.transactionId)
+      .query(`SELECT TransactionID, ReferenceNumber, GrandTotal, PaidAmount, InvoiceStatus
+              FROM Transactions WITH (UPDLOCK, HOLDLOCK) WHERE TransactionID = @id`);
+    const invoice = cur.recordset[0];
+    if (!invoice) throw notFoundError('الفاتورة غير موجودة.');
+    if (invoice.InvoiceStatus === 'Cancelled') throw badRequest('لا يمكن إضافة دفعة لفاتورة ملغية.');
+
+    const remaining = money(num(invoice.GrandTotal) - num(invoice.PaidAmount));
+    if (amount > remaining) throw badRequest(`المبلغ أكبر من المتبقي (${formatN2(remaining)}).`);
+
+    const payRes = await transaction.request()
       .input('transactionId', sql.Int, data.transactionId)
       .input('paymentDate', sql.DateTime, data.paymentDate || new Date())
-      .input('amount', sql.Decimal(18, 2), data.amount)
-      .input('paymentMethod', sql.NVarChar(50), data.paymentMethod || null)
+      .input('amount', sql.Decimal(18, 2), amount)
+      .input('paymentMethod', sql.NVarChar(50), data.paymentMethod || 'Cash')
       .input('notes', sql.NVarChar(sql.MAX), data.notes || null)
       .input('createdBy', sql.NVarChar(50), data.createdBy)
       .query(`
-        INSERT INTO Payments (
-          TransactionID, PaymentDate, Amount, PaymentMethod, Notes, CreatedBy, CreatedAt
-        )
+        INSERT INTO Payments (TransactionID, PaymentDate, Amount, PaymentMethod, Notes, CreatedBy, CreatedAt)
         OUTPUT INSERTED.PaymentID
-        VALUES (
-          @transactionId, @paymentDate, @amount, @paymentMethod, @notes, @createdBy, GETDATE()
-        )
+        VALUES (@transactionId, @paymentDate, @amount, @paymentMethod, @notes, @createdBy, GETDATE())
+      `);
+    const paymentId = payRes.recordset[0].PaymentID;
+
+    await transaction.request()
+      .input('cashBoxId', sql.Int, data.cashBoxId)
+      .input('paymentId', sql.Int, paymentId)
+      .input('transactionId', sql.Int, data.transactionId)
+      .input('amount', sql.Decimal(18, 2), amount)
+      .input('notes', sql.NVarChar(500), `تحصيل فاتورة ${invoice.ReferenceNumber || ''}`)
+      .input('createdBy', sql.NVarChar(50), data.createdBy)
+      .query(`
+        INSERT INTO CashboxTransactions
+          (CashBoxID, PaymentID, ReferenceID, ReferenceType, TransactionType, Amount, TransactionDate, Notes, CreatedBy, CreatedAt)
+        VALUES (@cashBoxId, @paymentId, @transactionId, 'SaleInvoice', N'قبض', @amount, GETDATE(), @notes, @createdBy, GETDATE())
       `);
 
-    const paymentId = result.recordset[0].PaymentID;
-
-    // تحديث المبلغ المدفوع في الفاتورة
+    const newPaid = money(num(invoice.PaidAmount) + amount);
     await transaction.request()
       .input('transactionId', sql.Int, data.transactionId)
-      .input('amount', sql.Decimal(18, 2), data.amount)
-      .query(`
-        UPDATE Transactions
-        SET PaidAmount = PaidAmount + @amount
-        WHERE TransactionID = @transactionId
-      `);
+      .input('paidAmount', sql.Decimal(18, 2), newPaid)
+      .input('status', sql.NVarChar(20), computeInvoiceStatus(num(invoice.GrandTotal), newPaid))
+      .query(`UPDATE Transactions SET PaidAmount = @paidAmount, InvoiceStatus = @status WHERE TransactionID = @transactionId`);
 
     await transaction.commit();
     return paymentId;
   } catch (err) {
-    await transaction.rollback();
+    try { await transaction.rollback(); } catch (_) { /* تجاهل */ }
+    throw err;
+  }
+}
+
+// إلغاء فاتورة — CancelInvoiceAsync (InvoiceService.cs:2024): ممنوع على المسددة
+// بالكامل؛ إعادة مخزون البيع، إلغاء فاتورة الشراء المرآة، فكّ الدفعات المقدمة
+// وعروض الأسعار — وسندات قبض الخزينة لا تُعكَس (كبلازور تمامًا).
+async function cancelTransaction(transactionId, reason, username) {
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  const usernameVal = username || 'System';
+
+  try {
+    await transaction.begin();
+
+    const headRes = await transaction.request()
+      .input('id', sql.Int, transactionId)
+      .query(`SELECT * FROM Transactions WITH (UPDLOCK, HOLDLOCK) WHERE TransactionID = @id`);
+    const invoice = headRes.recordset[0];
+    if (!invoice) throw notFoundError('الفاتورة غير موجودة.');
+    if (invoice.InvoiceStatus === 'Cancelled') throw badRequest('الفاتورة ملغية بالفعل.');
+    if (num(invoice.GrandTotal) > 0 && num(invoice.PaidAmount) >= num(invoice.GrandTotal)) {
+      throw badRequest('لا يمكن إلغاء فاتورة مسددة بالكامل.');
+    }
+
+    const detailsRes = await transaction.request()
+      .input('id', sql.Int, transactionId)
+      .query(`SELECT ProductID, Quantity, UnitPrice FROM TransactionDetails WHERE TransactionID = @id`);
+    const details = detailsRes.recordset;
+    let mirrorCancelled = false;
+
+    if (invoice.TransactionType === 'Sale') {
+      for (const d of details) {
+        await adjustStockTx(transaction, {
+          productId: d.ProductID,
+          warehouseId: invoice.WarehouseID,
+          quantityChange: Math.round(num(d.Quantity)),
+          referenceId: transactionId,
+          unitPrice: d.UnitPrice,
+          username: usernameVal,
+          referenceType: 'SaleInvoiceCancel',
+        });
+      }
+      const productIds = [...new Set(details.map((d) => Number(d.ProductID)).filter((x) => x > 0))];
+      if (productIds.length) {
+        await transaction.request().query(
+          `UPDATE Products SET IsSelected = 0 WHERE ProductID IN (${productIds.join(',')}) AND Customer IS NOT NULL`);
+      }
+
+      const mirrorRes = await transaction.request()
+        .input('refType', sql.NVarChar(80), `MirrorOf:${transactionId}`)
+        .query(`SELECT TOP 1 * FROM Transactions WHERE ReferenceType = @refType`);
+      const mirror = mirrorRes.recordset[0];
+      if (mirror && mirror.InvoiceStatus !== 'Cancelled') {
+        const mDetailsRes = await transaction.request()
+          .input('id', sql.Int, mirror.TransactionID)
+          .query(`SELECT ProductID, Quantity, UnitPrice FROM TransactionDetails WHERE TransactionID = @id`);
+        for (const d of mDetailsRes.recordset) {
+          await adjustStockTx(transaction, {
+            productId: d.ProductID,
+            warehouseId: mirror.WarehouseID,
+            quantityChange: -Math.round(num(d.Quantity)),
+            referenceId: mirror.TransactionID,
+            unitPrice: d.UnitPrice,
+            username: usernameVal,
+            referenceType: 'PurchaseInvoiceCancel',
+          });
+        }
+        await transaction.request()
+          .input('id', sql.Int, mirror.TransactionID)
+          .input('username', sql.NVarChar(50), usernameVal)
+          .query(`UPDATE Transactions SET InvoiceStatus = 'Cancelled',
+                    EditReason = N'إلغاء تلقائي مع فاتورة البيع', EditBy = @username, EditAt = GETDATE()
+                  WHERE TransactionID = @id`);
+        await auditTx(transaction, {
+          actionType: 'Cancel',
+          primaryKey: mirror.TransactionID,
+          oldData: { InvoiceStatus: mirror.InvoiceStatus },
+          newData: { InvoiceStatus: 'Cancelled', Reason: 'إلغاء تلقائي مع فاتورة البيع' },
+          username: usernameVal,
+        });
+        mirrorCancelled = true;
+      }
+    }
+
+    if (invoice.TransactionType === 'Purchase' && invoice.IsDelivered
+      && (invoice.ReferenceType === 'PurchaseInvoice' || !invoice.ReferenceType)) {
+      for (const d of details) {
+        await adjustStockTx(transaction, {
+          productId: d.ProductID,
+          warehouseId: invoice.WarehouseID,
+          quantityChange: -Math.round(num(d.Quantity)),
+          referenceId: transactionId,
+          unitPrice: d.UnitPrice,
+          username: usernameVal,
+          referenceType: 'PurchaseInvoiceCancel',
+        });
+      }
+    }
+
+    // فكّ الدفعات المقدمة: فكّ ربط الرسم وحذف صف الدفعة (InvoiceService.cs:2111)
+    const advRes = await transaction.request()
+      .input('id', sql.Int, transactionId)
+      .query(`SELECT PaymentID, Amount FROM Payments WHERE TransactionID = @id AND PaymentMethod = 'Advance'`);
+    for (const adv of advRes.recordset) {
+      await transaction.request()
+        .input('id', sql.Int, transactionId)
+        .input('partyId', sql.Int, invoice.PartyID)
+        .input('amount', sql.Decimal(18, 2), money(adv.Amount))
+        .query(`UPDATE TOP (1) AdditionalCharges SET TransactionID = NULL
+                WHERE TransactionID = @id AND PartyID = @partyId AND ChargeAmount = @amount`);
+      await transaction.request()
+        .input('paymentId', sql.Int, adv.PaymentID)
+        .query(`DELETE FROM Payments WHERE PaymentID = @paymentId`);
+    }
+
+    // فكّ عروض الأسعار المرتبطة وإعادتها «مقبول» (InvoiceService.cs:2131)
+    let quotationNote = '';
+    if (invoice.TransactionType === 'Sale') {
+      const qRes = await transaction.request()
+        .input('id', sql.Int, transactionId)
+        .query(`SELECT QuotationId, ReferenceNumber FROM Quotations WHERE InvoiceId = @id`);
+      for (const q of qRes.recordset) {
+        quotationNote += `، وفُك ارتباط عرض السعر ${q.ReferenceNumber} وأُعيد لحالة «مقبول»`;
+      }
+      if (qRes.recordset.length) {
+        await transaction.request()
+          .input('id', sql.Int, transactionId)
+          .query(`UPDATE Quotations SET InvoiceId = NULL, Status = 'Accepted' WHERE InvoiceId = @id`);
+      }
+    }
+
+    await transaction.request()
+      .input('id', sql.Int, transactionId)
+      .input('reason', sql.NVarChar(500), reason || null)
+      .input('username', sql.NVarChar(50), usernameVal)
+      .query(`UPDATE Transactions SET InvoiceStatus = 'Cancelled', EditReason = @reason,
+                EditBy = @username, EditAt = GETDATE() WHERE TransactionID = @id`);
+    await auditTx(transaction, {
+      actionType: 'Cancel',
+      primaryKey: transactionId,
+      oldData: { InvoiceStatus: invoice.InvoiceStatus },
+      newData: { InvoiceStatus: 'Cancelled', Reason: reason || '' },
+      username: usernameVal,
+    });
+
+    await transaction.commit();
+
+    let message;
+    if (invoice.TransactionType === 'Sale') {
+      message = mirrorCancelled
+        ? 'تم إلغاء الفاتورة وفاتورة الشراء المرآة وإعادة المخزون.'
+        : 'تم إلغاء الفاتورة وإعادة المخزون بدون وجود فاتورة شراء مرآة مرتبطة.';
+      if (quotationNote) message += `${quotationNote}.`;
+    } else {
+      message = 'تم إلغاء فاتورة الشراء ومعالجة المخزون حسب حالة الاستلام.';
+    }
+    return { message };
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) { /* تجاهل */ }
     throw err;
   }
 }
@@ -849,6 +1283,7 @@ module.exports = {
   getPayments,
   createTransaction,
   addPayment,
+  cancelTransaction,
   getTransactionsSummary,
   requestEdit,
   getPendingEditRequests,

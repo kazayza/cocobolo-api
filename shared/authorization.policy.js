@@ -48,6 +48,9 @@ const invoices = {
     || roles.factory(a)
     || hasClaim(a, 'frm_SalesInvoiveNew:Edit')
     || hasClaim(a, 'frm_SupplierInvoices:View'),
+  // الإلغاء في بلازور على صلاحية الحذف نفسها frm_PartiesInvoices:Delete
+  // (InvoiceService.CancelInvoiceAsync + حارس صفحة المبيعات btn_CancelInvoice)
+  canCancel: (a) => roles.admin(a) || hasClaim(a, 'frm_PartiesInvoices:Delete'),
   canFullEdit: (a) => roles.admin(a) || roles.accountManager(a),
   canApproveEdit: (a) => roles.admin(a) || roles.accountManager(a),
   canViewProfit: (a) => roles.admin(a) || roles.accountManager(a),

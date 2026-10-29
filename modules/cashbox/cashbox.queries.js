@@ -9,8 +9,9 @@ async function getAllCashboxes() {
         c.CashBoxID, c.CashBoxName, c.Description,
         c.CashBoxKind, c.Icon, c.Color, c.IsActive, c.IsDefault,
         c.CreatedBy, c.CreatedAt,
-        ISNULL((
-          SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE -Amount END)
+        ISNULL(c.OpeningBalance, 0) + ISNULL((
+          SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount
+                          WHEN TransactionType = N'صرف' THEN -Amount ELSE 0 END)
           FROM CashboxTransactions WHERE CashBoxID = c.CashBoxID
         ), 0) AS CurrentBalance
       FROM CashBoxes c
@@ -29,8 +30,9 @@ async function getActiveCashboxes() {
         c.CashBoxID, c.CashBoxName, c.Description,
         c.CashBoxKind, c.Icon, c.Color, c.IsActive, c.IsDefault,
         c.CreatedBy, c.CreatedAt,
-        ISNULL((
-          SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE -Amount END)
+        ISNULL(c.OpeningBalance, 0) + ISNULL((
+          SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount
+                          WHEN TransactionType = N'صرف' THEN -Amount ELSE 0 END)
           FROM CashboxTransactions WHERE CashBoxID = c.CashBoxID
         ), 0) AS CurrentBalance
       FROM CashBoxes c
@@ -50,8 +52,9 @@ async function getCashboxById(id) {
     .query(`
       SELECT 
         c.*,
-        ISNULL((
-          SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE -Amount END)
+        ISNULL(c.OpeningBalance, 0) + ISNULL((
+          SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount
+                          WHEN TransactionType = N'صرف' THEN -Amount ELSE 0 END)
           FROM CashboxTransactions WHERE CashBoxID = c.CashBoxID
         ), 0) AS CurrentBalance
       FROM CashBoxes c
@@ -382,9 +385,11 @@ async function getCashboxSummary(cashboxId = null) {
   const request = pool.request();
 
   let whereClause = '';
+  let openingWhere = '';
   const parsedId = Number(cashboxId);
   if (cashboxId != null && cashboxId !== '' && Number.isInteger(parsedId) && parsedId > 0) {
     whereClause = 'WHERE CashBoxID = @cashboxId';
+    openingWhere = 'WHERE CashBoxID = @cashboxId';
     request.input('cashboxId', sql.Int, parsedId);
   }
 
@@ -392,7 +397,8 @@ async function getCashboxSummary(cashboxId = null) {
     SELECT 
       ISNULL(SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE 0 END), 0) AS TotalIn,
       ISNULL(SUM(CASE WHEN TransactionType = N'صرف' THEN Amount ELSE 0 END), 0) AS TotalOut,
-      ISNULL(SUM(CASE WHEN TransactionType = N'قبض' THEN Amount WHEN TransactionType = N'صرف' THEN -Amount ELSE 0 END), 0) AS Balance
+      ISNULL((SELECT SUM(ISNULL(OpeningBalance, 0)) FROM CashBoxes ${openingWhere}), 0)
+        + ISNULL(SUM(CASE WHEN TransactionType = N'قبض' THEN Amount WHEN TransactionType = N'صرف' THEN -Amount ELSE 0 END), 0) AS Balance
     FROM CashboxTransactions
     ${whereClause}
   `);
@@ -549,8 +555,10 @@ async function getDashboardStats(period = 'month') {
   const result = await pool.request().query(`
     SELECT 
       -- إجمالي الرصيد الحالي (كل الخزائن)
-      (SELECT ISNULL(SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE -Amount END), 0) 
-       FROM CashboxTransactions) AS TotalBalance,
+      (SELECT ISNULL(SUM(ISNULL(OpeningBalance, 0)), 0) FROM CashBoxes)
+        + (SELECT ISNULL(SUM(CASE WHEN TransactionType = N'قبض' THEN Amount
+                                   WHEN TransactionType = N'صرف' THEN -Amount ELSE 0 END), 0)
+           FROM CashboxTransactions) AS TotalBalance,
       
       -- إجمالي القبض للفترة
       (SELECT ISNULL(SUM(Amount), 0) 
@@ -654,7 +662,8 @@ async function getCashboxBalances() {
     SELECT 
       c.CashBoxID,
       c.CashBoxName,
-      ISNULL((SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE -Amount END)
+      ISNULL(c.OpeningBalance, 0) + ISNULL((SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount
+              WHEN TransactionType = N'صرف' THEN -Amount ELSE 0 END)
               FROM CashboxTransactions 
               WHERE CashBoxID = c.CashBoxID), 0) AS Balance
     FROM CashBoxes c
@@ -727,7 +736,8 @@ async function getFullDashboard() {
   // 1. الإحصائيات الرئيسية
   const statsRes = await pool.request().query(`
     SELECT
-      ISNULL(SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE -Amount END), 0) AS TotalBalance,
+      ISNULL((SELECT SUM(ISNULL(OpeningBalance, 0)) FROM CashBoxes), 0)
+        + ISNULL(SUM(CASE WHEN TransactionType = N'قبض' THEN Amount WHEN TransactionType = N'صرف' THEN -Amount ELSE 0 END), 0) AS TotalBalance,
       ISNULL(SUM(CASE WHEN TransactionType = N'قبض' AND CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) THEN Amount ELSE 0 END), 0) AS TodayIn,
       ISNULL(SUM(CASE WHEN TransactionType = N'صرف' AND CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) THEN Amount ELSE 0 END), 0) AS TodayOut,
       ISNULL(SUM(CASE WHEN TransactionType = N'قبض' AND YEAR(TransactionDate) = YEAR(GETDATE()) AND MONTH(TransactionDate) = MONTH(GETDATE()) THEN Amount ELSE 0 END), 0) AS MonthIn,
@@ -749,7 +759,8 @@ async function getFullDashboard() {
       c.CashBoxID, c.CashBoxName, c.Description,
       c.CashBoxKind, c.Icon, c.Color, c.OpeningBalance,
       c.IsActive, c.IsDefault,
-      ISNULL((SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE -Amount END)
+      ISNULL(c.OpeningBalance, 0) + ISNULL((SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount
+              WHEN TransactionType = N'صرف' THEN -Amount ELSE 0 END)
               FROM CashboxTransactions WHERE CashBoxID = c.CashBoxID), 0) AS CurrentBalance,
       ISNULL((SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE 0 END)
               FROM CashboxTransactions WHERE CashBoxID = c.CashBoxID), 0) AS TotalIn,
