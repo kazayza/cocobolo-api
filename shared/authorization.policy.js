@@ -121,6 +121,20 @@ const priceList = {
   canExport: (a) => roles.admin(a) || roles.accountManager(a),
 };
 
+const generalTasks = {
+  // إنشاء التكليفات العامة — بلازور GeneralTaskPermissions.CanCreate
+  // (Services/GeneralTaskPermissions.cs:24): الأدوار الثلاثة
+  // (GeneralManager/AccountManager/Admin) أو حامل Claim الإنشاء.
+  // ملحوظة: Claim بلازور الحرفي هو frm_GeneralTasks:Create، بينما مجموعة
+  // Claims الـ API تُبنى من UserPermissions بصيغ View/Add/Edit/Delete —
+  // فمنح نفس صف الصلاحية يظهر هنا frm_GeneralTasks:Add؛ تُقبل الصيغتان.
+  canCreate: (a) => roles.admin(a) || roles.generalManager(a) || roles.accountManager(a)
+    || hasAnyClaim(a, 'frm_GeneralTasks:Create', 'frm_GeneralTasks:Add'),
+  // إدارة الكل (رؤية كل التكليفات) — GeneralTaskPermissions.CanManageAll
+  // (Services/GeneralTaskPermissions.cs:28): الأدوار الثلاثة فقط.
+  canManageAll: (a) => roles.admin(a) || roles.generalManager(a) || roles.accountManager(a),
+};
+
 const quotations = {
   isCostOnlyViewer: (a) => roles.productionManager(a) || roles.factory(a),
   canView: (a) => roles.admin(a)
@@ -396,6 +410,7 @@ module.exports = {
   hasClaim,
   hasAnyClaim,
   roles,
+  generalTasks,
   invoices,
   recovery,
   complaints,

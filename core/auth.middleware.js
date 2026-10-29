@@ -170,6 +170,42 @@ async function optionalAuthenticate(req, _res, next) {
   return next();
 }
 
+// ═══════════════════════════════════════════════════════════
+// توكن خدمة خادم-لخادم (مرحلة 1 — الحزمة C): بلازور يرسل إشعاراته عبر
+// هذا الـ API لدفع FCM (Services/NotificationService.cs:229 — يحفظ بلازور
+// الصف بنفسه ويرسل skipSave=true للدفع فقط)، وبلا أي ترويسة مصادقة —
+// فمنذ إغلاق المرحلة 0 (عالٍ-18) صارت تلك النداءات تُرفض 401 بصمت
+// وتوقفت دفعة إشعارات بلازور إلى الموبايل.
+// القاعدة: ترويسة x-service-token تُقارن بـ API_SERVICE_TOKEN من البيئة
+// بمقارنة ثابتة الزمن؛ غياب المتغير أو قصره (< 32) يعطّل المسار تمامًا.
+// يُستخدم فقط على POST /api/notifications، وإذا حُملت الترويسة فهي
+// الحاسمة (صحيحة → مرور بهوية خدمة، خاطئة → 401) ولا يُلتفت للجلسة.
+// ═══════════════════════════════════════════════════════════
+const crypto = require('crypto');
+const MIN_SERVICE_TOKEN_LENGTH = 32;
+const SERVICE_TOKEN_HEADER = 'x-service-token';
+
+function serviceTokenMatches(provided) {
+  const expected = process.env.API_SERVICE_TOKEN || '';
+  if (!provided || expected.length < MIN_SERVICE_TOKEN_LENGTH) return false;
+  const providedBuf = Buffer.from(String(provided));
+  const expectedBuf = Buffer.from(expected);
+  if (providedBuf.length !== expectedBuf.length) return false;
+  return crypto.timingSafeEqual(providedBuf, expectedBuf);
+}
+
+function serviceTokenOrAuthenticate(req, res, next) {
+  const provided = req.headers[SERVICE_TOKEN_HEADER];
+  if (provided !== undefined) {
+    if (serviceTokenMatches(provided)) {
+      req.serviceAuth = { service: 'blazor-notification-service' };
+      return next();
+    }
+    return res.status(401).json({ success: false, message: 'توكن الخدمة غير صالح.' });
+  }
+  return authenticate(req, res, next);
+}
+
 function requirePolicy(policy, message = 'غير مصرح لك بهذا الإجراء') {
   return (req, res, next) => {
     try {
@@ -185,6 +221,7 @@ function requirePolicy(policy, message = 'غير مصرح لك بهذا الإج
 module.exports = {
   authenticate,
   optionalAuthenticate,
+  serviceTokenOrAuthenticate,
   requirePolicy,
   issueAccessToken,
   loadAuthenticatedUser,

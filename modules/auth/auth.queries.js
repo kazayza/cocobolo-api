@@ -109,20 +109,16 @@ async function getUserById(userId) {
   return result.recordset[0];
 }
 
-async function updateUserPassword(userId, newPassword, hashedPassword = null) {
+// تغيير كلمة المرور — مرآة Blazor PasswordService (Services/PasswordService.cs:56-57):
+// تُحفظ المهشّمة فقط ويُمسح النص الصريح بالقيمة "***".
+// قبل الإصلاح (عالٍ-10) كان الـ API يكتب كلمة المرور نصيًا في كل تغيير،
+// فيعيد فتح سطح F-03 في قاعدة الإنتاج مهما أُصلح في بلازور وحده.
+async function updateUserPassword(userId, hashedPassword) {
   const pool = await connectDB();
-  const request = pool.request()
+  await pool.request()
     .input('uid', sql.Int, userId)
-    .input('pass', sql.NVarChar, newPassword);
-
-  let query = 'UPDATE Users SET Password = @pass';
-  if (hashedPassword) {
-    request.input('hash', sql.NVarChar(255), hashedPassword);
-    query += ', HashedPassword = @hash';
-  }
-  query += ' WHERE UserID = @uid';
-
-  await request.query(query);
+    .input('hash', sql.NVarChar(255), hashedPassword)
+    .query("UPDATE Users SET HashedPassword = @hash, Password = '***' WHERE UserID = @uid");
 }
 
 // تصدير الدوال

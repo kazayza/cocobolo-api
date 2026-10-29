@@ -121,8 +121,7 @@ async function createUser(req, res) {
 
     const newUserId = await adminUsersQueries.createUser({
       username: username.trim(),
-      hashedPassword,
-      plainPassword: password, // مؤقت — للتوافق مع login القديم (يُحذف بعد ترحيل التشفير)
+      hashedPassword, // الهاش فقط — النص الصريح لا يُحفظ (عالٍ-10)
       fullName: fullName.trim(),
       email: email ? email.trim() : null,
       role: role || 'User',
@@ -158,10 +157,8 @@ async function updateUser(req, res) {
     const { fullName, password, email, role, isActive, employeeId } = req.body;
 
     let hashedPassword = null;
-    let plainPassword = null;
     if (password && password.trim()) {
-      hashedPassword = await bcrypt.hash(password, 10);
-      plainPassword = password; // مؤقت — للتوافق مع login القديم
+      hashedPassword = await bcrypt.hash(password, 10); // الهاش فقط (عالٍ-10)
     }
 
     await adminUsersQueries.updateUser(userId, {
@@ -171,7 +168,6 @@ async function updateUser(req, res) {
       isActive: isActive !== undefined ? isActive : existing.IsActive,
       employeeId: employeeId !== undefined ? employeeId : existing.employeeID,
       hashedPassword,
-      plainPassword,
     });
 
     return successResponse(res, null, 'تم تحديث المستخدم بنجاح');

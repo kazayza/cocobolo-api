@@ -172,9 +172,9 @@ async function changePassword(req, res) {
       return res.status(400).json({ success: false, message: 'كلمة المرور الحالية غير صحيحة' });
     }
 
-    // 2. تشفير الجديدة وحفظها (hash + plain مؤقت للتوافق)
+    // 2. تشفير الجديدة وحفظ الهاش فقط (النص الصريح يُمسح — عالٍ-10)
     const hashedNew = await bcrypt.hash(newPassword, 10);
-    await authQueries.updateUserPassword(userId, newPassword, hashedNew);
+    await authQueries.updateUserPassword(userId, hashedNew);
 
     return res.json({ success: true, message: 'تم تغيير كلمة المرور بنجاح' });
 

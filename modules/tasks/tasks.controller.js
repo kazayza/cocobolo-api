@@ -1,5 +1,20 @@
 const tasksQueries = require('./tasks.queries');
+const policy = require('../../shared/authorization.policy');
 const { successResponse, errorResponse, notFoundResponse } = require('../../shared/response.helper');
+
+// ═══════════════════════════════════════════════════════════
+// الهوية (مرحلة 1 — الحزمة C): الفاعل هو مستخدم التوكن دائمًا (req.auth).
+// لا يُقرأ اسم المستخدم/الدور/المنشئ من query أو الترويسات أو الجسم إطلاقًا —
+// كانت تلك ثغرة انتحال (عالٍ-16): أي مرسِل يعلن نفسه أي موظف.
+// مصدر الإسناد يُحسم خادميًا من الدور كما في بلازور
+// (TaskService.ResolveGeneralTaskAssignmentSource).
+// ═══════════════════════════════════════════════════════════
+function resolveGeneralTaskAssignmentSource(auth) {
+  if (policy.roles.generalManager(auth)) return 'GeneralManager';
+  if (policy.roles.accountManager(auth)) return 'AccountManager';
+  if (policy.roles.admin(auth)) return 'Admin';
+  return 'GeneralTask';
+}
 
 const SQL_INT_MAX = 2147483647;
 
@@ -89,13 +104,14 @@ async function getById(req, res) {
 // إنشاء مهمة
 async function create(req, res) {
   try {
-    const { assignedTo, dueDate, createdBy } = req.body;
+    const { assignedTo, dueDate } = req.body;
 
     if (!assignedTo || !dueDate) {
       return errorResponse(res, 'الموظف المسؤول وتاريخ الاستحقاق مطلوبين', 400);
     }
 
-    const taskId = await tasksQueries.createTask(req.body);
+    // المنشئ هو مستخدم التوكن — أي createdBy في الجسم يُتجاهل.
+    const taskId = await tasksQueries.createTask({ ...req.body, createdBy: req.auth.username });
 
     return res.json({
       success: true,
@@ -142,13 +158,14 @@ async function updateStatus(req, res) {
     const id = parseTaskId(req.params.id);
     if (id === null) return invalidTaskIdResponse(res);
 
-    const { status, completedBy, completionNotes } = req.body;
+    const { status, completionNotes } = req.body;
 
     if (!status) {
       return errorResponse(res, 'الحالة مطلوبة', 400);
     }
 
-    await tasksQueries.updateTaskStatus(id, status, completedBy, completionNotes);
+    // المُتمّ هو مستخدم التوكن — أي completedBy في الجسم يُتجاهل.
+    await tasksQueries.updateTaskStatus(id, status, req.auth.username, completionNotes);
 
     return res.json({
       success: true,
@@ -184,8 +201,9 @@ async function remove(req, res) {
 
 async function getGeneral(req, res) {
   try {
-    const userName = req.query.userName || req.headers['x-username'] || req.body?.userName || 'System';
-    const tasks = await tasksQueries.getGeneralTasks(userName, req.query);
+    // الهوية من التوكن فقط؛ نطاق القراءة (مدير يرى الكل / غيره يرى ما يخصه)
+    // يُطبق داخل الاستعلام كما في بلازور GetGeneralTasksAsync.
+    const tasks = await tasksQueries.getGeneralTasks(req.auth);
     return res.json(tasks);
   } catch (err) {
     console.error('getGeneral:', err);
@@ -199,7 +217,12 @@ async function createGeneral(req, res) {
     if (!assignedTo || !taskDescription || !dueDate) {
       return errorResponse(res, 'الموظف ووصف المهمة وتاريخ التنفيذ مطلوبين', 400);
     }
-    const userName = req.body.userName || req.headers['x-username'] || 'System';
+    // حارس الإنشاء — بلازور AddGeneralEmployeeTaskAsync: الأدوار الثلاثة
+    // أو Claim الإنشاء (GeneralTaskPermissions.CanCreate)؛ قبله كان الإنشاء
+    // متاحًا لأي جلسة وبهوية معلنة من العميل.
+    if (!policy.generalTasks.canCreate(req.auth)) {
+      return errorResponse(res, 'ليست لديك صلاحية إنشاء مهام عامة للموظفين.', 403);
+    }
     const taskId = await tasksQueries.createGeneralTask({
       assignedTo: req.body.assignedTo,
       taskTypeId: req.body.taskTypeId,
@@ -207,8 +230,9 @@ async function createGeneral(req, res) {
       dueDate: req.body.dueDate,
       dueTime: req.body.dueTime,
       priority: req.body.priority,
-      assignmentSource: req.body.assignmentSource || req.body.actorRole || 'Admin',
-    }, userName);
+      // مصدر الإسناد يُحسم من دور المنشئ خادميًا — لا من الجسم.
+      assignmentSource: resolveGeneralTaskAssignmentSource(req.auth),
+    }, req.auth);
     return res.json({ success: true, taskId, message: 'تم إرسال التكليف بنجاح' });
   } catch (err) {
     console.error('createGeneral:', err);
@@ -226,13 +250,18 @@ async function startTask(req, res) {
     const id = parseTaskId(req.params.id);
     if (id === null) return invalidTaskIdResponse(res);
 
-    const { notes, userName } = req.body;
-    if (!notes) return errorResponse(res, 'اكتب ماذا ستبدأ', 400);
-    await tasksQueries.startGeneralTask(id, notes, userName || 'System');
-    return res.json({ success: true, message: 'تم بدء التنفيذ' });
+    // الفاعل هو مستخدم التوكن؛ فحوص الحالة والملكية والملاحظة تتم داخل
+    // الاستعلام بنفس ترتيب بلازور StartAsync (الحالة قبل الملاحظة).
+    const result = await tasksQueries.startGeneralTask(id, req.body?.notes, req.auth);
+    return res.json({ success: true, message: result?.message || 'تم بدء التنفيذ' });
   } catch (err) {
     console.error('startTask:', err);
-    return errorResponse(res, 'فشل بدء التنفيذ', 500, err.message);
+    return errorResponse(
+      res,
+      err.statusCode ? err.message : 'فشل بدء التنفيذ',
+      err.statusCode || 500,
+      err.code || err.message,
+    );
   }
 }
 
@@ -241,13 +270,18 @@ async function completeTask(req, res) {
     const id = parseTaskId(req.params.id);
     if (id === null) return invalidTaskIdResponse(res);
 
-    const { notes, userName } = req.body;
-    if (!notes) return errorResponse(res, 'اكتب ما تم تنفيذه', 400);
-    await tasksQueries.completeGeneralTask(id, notes, userName || 'System');
-    return res.json({ success: true, message: 'تم إتمام التنفيذ' });
+    // الفاعل هو مستخدم التوكن؛ فحوص الملاحظة والحالة والملكية داخل
+    // الاستعلام بنفس ترتيب بلازور CompleteAsync (الملاحظة قبل الحالة).
+    const result = await tasksQueries.completeGeneralTask(id, req.body?.notes, req.auth);
+    return res.json({ success: true, message: result?.message || 'تم إتمام التنفيذ' });
   } catch (err) {
     console.error('completeTask:', err);
-    return errorResponse(res, 'فشل إتمام التنفيذ', 500, err.message);
+    return errorResponse(
+      res,
+      err.statusCode ? err.message : 'فشل إتمام التنفيذ',
+      err.statusCode || 500,
+      err.code || err.message,
+    );
   }
 }
 

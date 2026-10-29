@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const notificationsController = require('./notifications.controller');
-const { authenticate, requirePolicy } = require('../../core/auth.middleware');
+const { authenticate, serviceTokenOrAuthenticate, requirePolicy } = require('../../core/auth.middleware');
 const { notifications: notificationPolicy } = require('../../shared/authorization.policy');
 
 // ===================================
@@ -24,7 +24,9 @@ router.put('/:id/read', authenticate, notificationsController.markAsRead);
 // إنشاء إشعار جديد
 // POST /api/notifications
 // Phase 0: كان بلا مصادقة (عالٍ-18) — الآن بجلسة؛ سياسات البث على مساراتها كما هي.
-router.post('/', authenticate, notificationsController.create);
+// Phase 1-C: أو بتوكن خدمة x-service-token لجسر بلازور الخادمي
+// (NotificationService.cs) — انظر serviceTokenOrAuthenticate.
+router.post('/', serviceTokenOrAuthenticate, notificationsController.create);
 
 // إرسال إشعار ذكي
 router.post('/smart', authenticate, requirePolicy(notificationPolicy.canBroadcast), notificationsController.createSmart);

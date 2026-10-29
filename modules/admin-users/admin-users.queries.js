@@ -63,19 +63,18 @@ async function usernameExists(username, excludeUserId) {
 
 // ═══════════════════════════════════════════════════════════
 // إضافة مستخدم جديد
-// - HashedPassword: bcrypt hash (للـ login الجديد)
-// - Password: نحفظه مؤقتاً للتوافق مع الـ login الحالي
-//   (حتى يتم ترحيل الـ login للتشفير — المرحلة القادمة)
+// - HashedPassword: bcrypt hash فقط — وكلمة المرور النصية لا تُكتب أبدًا
+//   (عالٍ-10): عمود Password يأخذ "***" كما في Blazor PasswordService،
+//   فلا تعود كلمة مرور حية نصيًا إلى قاعدة الإنتاج من أي مسار إدارة.
 // ═══════════════════════════════════════════════════════════
 async function createUser({
-  username, hashedPassword, plainPassword,
+  username, hashedPassword,
   fullName, email, role, isActive, employeeId, createdBy,
 }) {
   const pool = await connectDB();
   const result = await pool.request()
     .input('username', sql.NVarChar(100), username)
     .input('hashedPassword', sql.NVarChar(255), hashedPassword)
-    .input('plainPassword', sql.NVarChar(255), plainPassword)
     .input('fullName', sql.NVarChar(255), fullName)
     .input('email', sql.NVarChar(255), email || null)
     .input('role', sql.NVarChar(50), role || 'User')
@@ -89,7 +88,7 @@ async function createUser({
       )
       OUTPUT INSERTED.UserID
       VALUES (
-        @username, @plainPassword, @hashedPassword, @fullName, @email,
+        @username, '***', @hashedPassword, @fullName, @email,
         @role, @isActive, @createdBy, GETDATE(), @employeeId
       )
     `);
@@ -101,7 +100,7 @@ async function createUser({
 // ═══════════════════════════════════════════════════════════
 async function updateUser(userId, {
   fullName, email, role, isActive, employeeId,
-  hashedPassword, plainPassword,
+  hashedPassword,
 }) {
   const pool = await connectDB();
   const request = pool.request()
@@ -122,9 +121,9 @@ async function updateUser(userId, {
   `;
 
   if (hashedPassword) {
+    // كلمة مرور جديدة من الإدارة = هاش فقط + مسح النص (عالٍ-10)
     request.input('hashedPassword', sql.NVarChar(255), hashedPassword);
-    request.input('plainPassword', sql.NVarChar(255), plainPassword || '');
-    query += `, HashedPassword = @hashedPassword, Password = @plainPassword`;
+    query += `, HashedPassword = @hashedPassword, Password = '***'`;
   }
 
   query += ' WHERE UserID = @userId';

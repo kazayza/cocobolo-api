@@ -1,4 +1,18 @@
 const { sql, connectDB } = require('../../core/database');
+const policy = require('../../shared/authorization.policy');
+
+function guardError(message, statusCode) {
+  return Object.assign(new Error(message), { statusCode });
+}
+
+// حارس الملكية للتكليفات العامة — مرآة Blazor CanActOnGeneralTaskAsync
+// (Services/TaskService.cs): مدير (الأدوار الثلاثة) أو المكلَّف نفسه
+// (حسابه مربوط بموظف التكليف).
+function canActOnGeneralTask(auth, task) {
+  if (policy.generalTasks.canManageAll(auth)) return true;
+  return Number(auth?.employeeId || 0) > 0
+    && Number(auth.employeeId) === Number(task.AssignedTo);
+}
 
 // tedious/mssql requires a JavaScript Date for sql.Time; Flutter sends HH:mm.
 // Normalize every supported representation before binding so invalid input returns
@@ -316,14 +330,9 @@ async function getTasksSummary(assignedTo = null) {
 // TaskScope = General - مهام عامة بعيد عن الفرص البيعية
 // ═══════════════════════════════════════════════════════════
 
-async function getGeneralTasks(userName, filters = {}) {
+async function getGeneralTasks(auth) {
   const pool = await connectDB();
   const req = pool.request();
-  req.input('userName', sql.NVarChar(100), userName);
-
-  // Get current employee id
-  const userRes = await req.query(`SELECT employeeID FROM Users WHERE Username = @userName`);
-  const currentEmpId = userRes.recordset[0]?.employeeID || null;
 
   let query = `
     SELECT
@@ -342,15 +351,49 @@ async function getGeneralTasks(userName, filters = {}) {
     WHERE t.IsActive = 1 AND ISNULL(t.TaskScope, N'') = N'General'
   `;
 
-  // Non-admin sees only own tasks (assigned or created)
-  // For simplicity, filter handled in controller via role check, here just return all and let controller filter
+  // نطاق القراءة — مرآة Blazor GetGeneralTasksAsync (Services/TaskService.cs):
+  // مدير (الأدوار الثلاثة) يرى الكل؛ غيره يرى ما أُسند إليه أو أنشأه فقط.
+  // قبل الإصلاح كانت القائمة تُرجع كل التكليفات لكل جلسة.
+  if (!policy.generalTasks.canManageAll(auth)) {
+    req.input('userName', sql.NVarChar(100), auth.username);
+    if (auth.employeeId) {
+      req.input('empId', sql.Int, auth.employeeId);
+      query += ` AND (t.AssignedTo = @empId OR t.CreatedBy = @userName)`;
+    } else {
+      query += ` AND t.CreatedBy = @userName`;
+    }
+  }
+
   const result = await req.query(query + ` ORDER BY CASE WHEN t.Status = N'Completed' THEN 1 ELSE 0 END, t.DueDate ASC, t.DueTime ASC`);
   return result.recordset;
 }
 
-async function createGeneralTask(data, userName) {
+async function createGeneralTask(data, auth) {
+  const userName = auth.username;
   const dueTime = normalizeSqlTime(data.dueTime);
   const pool = await connectDB();
+
+  // فحوص بلازور AddGeneralEmployeeTaskAsync بنفس الترتيب: تاريخ التنفيذ
+  // لا يكون في الماضي، والمكلَّف موظف موجود ونشط.
+  const due = new Date(data.dueDate);
+  if (!Number.isNaN(due.getTime())) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const dueDay = new Date(due.getFullYear(), due.getMonth(), due.getDate());
+    if (dueDay < today) {
+      throw guardError('تاريخ التنفيذ لا يمكن أن يكون في الماضي.', 400);
+    }
+  }
+  const assigneeRes = await pool.request()
+    .input('assignedTo', sql.Int, data.assignedTo)
+    .query(`
+      SELECT EmployeeID FROM Employees
+      WHERE EmployeeID = @assignedTo AND (Status = N'نشط' OR Status = N'Active')
+    `);
+  if (!assigneeRes.recordset.length) {
+    throw guardError('الموظف غير موجود أو غير نشط.', 400);
+  }
+
   const result = await pool.request()
     .input('assignedTo', sql.Int, data.assignedTo)
     .input('taskTypeId', sql.Int, data.taskTypeId || null)
@@ -402,12 +445,39 @@ async function createGeneralTask(data, userName) {
   return taskId;
 }
 
-async function startGeneralTask(taskId, notes, userName) {
+async function loadTaskForAction(pool, taskId) {
+  const result = await pool.request()
+    .input('id', sql.Int, taskId)
+    .query(`
+      SELECT TaskID, Status, TaskScope, AssignedTo
+      FROM CRM_Tasks
+      WHERE TaskID = @id AND IsActive = 1
+    `);
+  return result.recordset[0] || null;
+}
+
+// بدء التنفيذ — حرّاس بلازور StartAsync (Services/TaskService.cs) بنفس
+// الترتيب: وجود/نشاط → مكتملة → ملغية → قيد التنفيذ (نجاح تكراري) →
+// الملاحظة إلزامية → ملكية التكليفات العامة.
+// قبل الإصلاح: أي جلسة تبدأ أي تكليف وبهوية معلنة من العميل.
+async function startGeneralTask(taskId, notes, auth) {
   const pool = await connectDB();
+  const task = await loadTaskForAction(pool, taskId);
+  if (!task) throw guardError('المهمة غير موجودة', 404);
+  if (task.Status === 'Completed') throw guardError('تم إكمال المهمة بالفعل', 400);
+  if (task.Status === 'Cancelled') throw guardError('المهمة ملغية ولا يمكن بدء تنفيذها', 400);
+  if (task.Status === 'In Progress') return { message: 'المهمة بالفعل قيد التنفيذ' };
+  if (!notes || !String(notes).trim()) {
+    throw guardError('برجاء كتابة ماذا ستبدأ تنفيذه قبل بدء المهمة.', 400);
+  }
+  if (String(task.TaskScope || '').toLowerCase() === 'general' && !canActOnGeneralTask(auth, task)) {
+    throw guardError('لا يمكنك بدء تنفيذ تكليف غير مُسند إليك.', 403);
+  }
+
   await pool.request()
     .input('id', sql.Int, taskId)
-    .input('notes', sql.NVarChar(500), notes)
-    .input('userName', sql.NVarChar(100), userName)
+    .input('notes', sql.NVarChar(500), String(notes).trim())
+    .input('userName', sql.NVarChar(100), auth.username)
     .query(`
       UPDATE CRM_Tasks SET
         Status = N'In Progress',
@@ -416,24 +486,42 @@ async function startGeneralTask(taskId, notes, userName) {
         StartNotes = @notes
       WHERE TaskID = @id AND Status = N'Pending'
     `);
-  return true;
+  return { message: 'تم تحويل المهمة إلى جاري التنفيذ' };
 }
 
-async function completeGeneralTask(taskId, notes, userName) {
+// إتمام التنفيذ — حرّاس بلازور CompleteAsync (Services/TaskService.cs)
+// بنفس الترتيب: وجود/نشاط (المحذوفة ناعمًا لا تُستكمل) → الملاحظة إلزامية →
+// مكتملة (لا إعادة كتابة للإتمام) → ملغية (لا تُستكمل أبدًا) → الملكية.
+// قبل الإصلاح كان الشرط الوحيد Status != 'Completed' — فالملغية تُستكمل،
+// والمحذوفة تُستكمل، وأي شخص يُتمّ تكليف غيره.
+async function completeGeneralTask(taskId, notes, auth) {
   const pool = await connectDB();
+  const task = await loadTaskForAction(pool, taskId);
+  if (!task) throw guardError('المهمة غير موجودة', 404);
+  if (!notes || !String(notes).trim()) {
+    throw guardError('برجاء كتابة ما الذي تم تنفيذه قبل إكمال المهمة.', 400);
+  }
+  if (task.Status === 'Completed') {
+    throw guardError('تم إكمال المهمة بالفعل ولا يمكن إعادة إتمامها.', 400);
+  }
+  if (task.Status === 'Cancelled') throw guardError('المهمة ملغية ولا يمكن إتمامها.', 400);
+  if (String(task.TaskScope || '').toLowerCase() === 'general' && !canActOnGeneralTask(auth, task)) {
+    throw guardError('لا يمكنك إتمام تكليف غير مُسند إليك.', 403);
+  }
+
   await pool.request()
     .input('id', sql.Int, taskId)
-    .input('notes', sql.NVarChar(500), notes)
-    .input('userName', sql.NVarChar(100), userName)
+    .input('notes', sql.NVarChar(500), String(notes).trim())
+    .input('userName', sql.NVarChar(100), auth.username)
     .query(`
       UPDATE CRM_Tasks SET
         Status = N'Completed',
         CompletedDate = GETDATE(),
         CompletedBy = @userName,
         CompletionNotes = @notes
-      WHERE TaskID = @id AND Status != N'Completed'
+      WHERE TaskID = @id AND Status IN (N'Pending', N'In Progress')
     `);
-  return true;
+  return { message: 'تم إكمال المهمة' };
 }
 
 // تصدير الدوال

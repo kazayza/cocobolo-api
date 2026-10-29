@@ -22,6 +22,32 @@ const numberValue = (value, fallback = 0) => {
 };
 const money = (value) => Math.round((numberValue(value) + Number.EPSILON) * 100) / 100;
 
+// تقريب الخصم لأقرب 100 — .NET Math.Round(amount / 100, 0) * 100
+// (Services/QuotationService.cs:2249,2257 في CalculateTotals): النصف إلى
+// الزوجي بحساب سنتات صحيح، بنفس تنفيذ الحزمة A في transactions.queries.js
+// حرفيًا. Math.round في JS نصفٌ إلى أعلى — عند خصم 250 مثلًا يعطي 300
+// بينما بلازور يعطي 200، فتختلف أرقام العرض بين التطبيقين.
+function roundDiscountToNearest100(amount) {
+  const cents = Math.round((Math.max(0, numberValue(amount)) + Number.EPSILON) * 100);
+  const wholeHundreds = Math.floor(cents / 10000);
+  const remainder = cents - wholeHundreds * 10000;
+  let units = wholeHundreds;
+  if (remainder * 2 > 10000 || (remainder * 2 === 10000 && wholeHundreds % 2 === 1)) {
+    units = wholeHundreds + 1;
+  }
+  return units * 100;
+}
+
+// أسماء الحالات بالعربية — DTOS/QuotationDto.cs:242 (QuotationStatuses.All)
+const STATUS_TEXT = {
+  Draft: 'مسودة',
+  Sent: 'تم الإرسال',
+  Accepted: 'مقبول',
+  Rejected: 'مرفوض',
+  Converted: 'تحوّل لفاتورة',
+  Expired: 'منتهي الصلاحية',
+};
+
 function normalizeTier(value) {
   const tier = String(value || 'Premium');
   return TIERS.has(tier) ? tier : 'Premium';
@@ -503,7 +529,7 @@ function calculateQuotationTotals(data, items, products, alternatives, auth) {
   let discountAmount = data.discountAmount != null
     ? numberValue(data.discountAmount)
     : totalAmount * numberValue(data.discountPercentage) / 100;
-  discountAmount = money(Math.round(Math.max(discountAmount, 0) / 100) * 100);
+  discountAmount = money(roundDiscountToNearest100(discountAmount));
   const baseTotal = money(items.reduce((sum, item) => {
     const product = products.get(item.productId);
     const alternative = item.selectedAlternativeId
@@ -975,6 +1001,17 @@ async function convertQuotationToInvoice(id, data, auth) {
     if (!quotation) throw Object.assign(new Error('عرض السعر غير موجود'), { statusCode: 404 });
     if (quotation.InvoiceID != null) {
       throw Object.assign(new Error(`تم تحويل العرض من قبل إلى الفاتورة #${quotation.InvoiceID}`), { statusCode: 409 });
+    }
+
+    // بوابة الحالة (عالٍ-13) — بلازور ConvertToInvoiceAsync
+    // (Services/QuotationService.cs، قاعدة الدفعة 2): التحويل من «مقبول»
+    // فقط؛ مسودة/مُرسل/مرفوض/منتهٍ تُرفض صراحة. قبل الإصلاح كان أي عرض
+    // بلا فاتورة يتحول مهما كانت حالته.
+    const currentStatus = String(quotation.Status || '').trim() || 'Draft';
+    if (currentStatus !== 'Accepted') {
+      throw Object.assign(new Error(
+        `لا يمكن تحويل عرض السعر لفاتورة إلا إذا كانت حالته «مقبول». الحالة الحالية: «${STATUS_TEXT[currentStatus] || currentStatus}».`,
+      ), { statusCode: 400 });
     }
 
     const detailsResult = await transaction.request()
