@@ -1,5 +1,6 @@
 const { sql, connectDB } = require('../../core/database');
 const notificationsQueries = require('../notifications/notifications.queries');
+const { normalizeLineDate } = require('../../shared/delivery-dates');
 
 
 async function getInvoiceCostMap(pool, transactionIds) {
@@ -246,6 +247,7 @@ async function getTransactionDetails(transactionId) {
       SELECT
         td.DetailID, td.ProductID, td.Quantity,
         td.UnitPrice, td.TotalAmount, td.Notes,
+        td.DeliveryDate, td.DeliveryDateIsCustom,
         p.ProductName, p.ProductDescription
       FROM TransactionDetails td
       INNER JOIN Products p ON td.ProductID = p.ProductID
@@ -421,6 +423,14 @@ async function createTransaction(data) {
     selectedAlternativeId: d.selectedAlternativeId == null || d.selectedAlternativeId === ''
       ? null : Number(d.selectedAlternativeId),
     notes: d.notes || null,
+    // موعد تسليم البند: يُطبَّع بقاعدة بلازور (لا يُخزَّن تاريخ إلا مفصولًا)
+    ...(() => {
+      const normalized = normalizeLineDate(
+        d.deliveryDate ?? d.DeliveryDate,
+        d.deliveryDateIsCustom ?? d.DeliveryDateIsCustom,
+      );
+      return { deliveryDate: normalized.date, deliveryDateIsCustom: normalized.isCustom };
+    })(),
   }));
   const totalAmount = money(lines.reduce((sum, l) => sum + l.totalAmount, 0));
 
@@ -522,9 +532,11 @@ async function createTransaction(data) {
         .input('pricingTier', sql.NVarChar(20), line.pricingTier)
         .input('selectedAlternativeId', sql.Int, line.selectedAlternativeId)
         .input('notes', sql.NVarChar(255), line.notes)
+        .input('deliveryDate', sql.Date, line.deliveryDate)
+        .input('deliveryDateIsCustom', sql.Bit, line.deliveryDateIsCustom ? 1 : 0)
         .query(`
-          INSERT INTO TransactionDetails (TransactionID, ProductID, Quantity, UnitPrice, TotalAmount, PricingTier, SelectedAlternativeID, Notes)
-          VALUES (@transactionId, @productId, @quantity, @unitPrice, @totalAmount, @pricingTier, @selectedAlternativeId, @notes)
+          INSERT INTO TransactionDetails (TransactionID, ProductID, Quantity, UnitPrice, TotalAmount, PricingTier, SelectedAlternativeID, Notes, DeliveryDate, DeliveryDateIsCustom)
+          VALUES (@transactionId, @productId, @quantity, @unitPrice, @totalAmount, @pricingTier, @selectedAlternativeId, @notes, @deliveryDate, @deliveryDateIsCustom)
         `);
     }
 

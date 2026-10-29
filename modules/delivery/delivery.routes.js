@@ -27,6 +27,28 @@ router.put(
   requirePolicy(delivery.canConfirm, 'غير مصرح لك بتأكيد التسليم'),
   controller.markAsDelivered,
 );
+
+// أحداث التسليم (التسليم على دفعات) — الأحداث مصدر الحقيقة كما في بلازور
+router.get(
+  '/:id/events',
+  requirePolicy(delivery.canView, 'غير مصرح بعرض تسليمات الفاتورة'),
+  controller.getEvents,
+);
+router.post(
+  '/:id/events/coverage',
+  requirePolicy(delivery.canConfirm, 'غير مصرح بتسجيل التسليم'),
+  controller.getCoverage,
+);
+router.post(
+  '/:id/events',
+  requirePolicy(delivery.canConfirm, 'غير مصرح بتسجيل التسليم'),
+  controller.recordEvent,
+);
+router.post(
+  '/:id/events/:deliveryId/void',
+  requirePolicy(delivery.canOverrideRemaining, 'إلغاء التسليمات متاح للمدير ومدير الحسابات فقط'),
+  controller.voidEvent,
+);
 router.put(
   '/:id',
   requirePolicy(delivery.canEditFull, 'غير مصرح لك بتعديل بيانات التسليم'),

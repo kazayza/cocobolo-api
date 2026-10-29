@@ -1,6 +1,7 @@
 const transactionsQueries = require('./transactions.queries');
 const fullEditQueries = require('./invoice-full-edit.queries');
 const invoicePolicy = require('../../shared/authorization.policy').invoices;
+const deliveryDates = require('../../shared/delivery-dates');
 const { successResponse, errorResponse, notFoundResponse } = require('../../shared/response.helper');
 
 function sendOperationResult(res, result) {
@@ -52,6 +53,14 @@ async function getAll(req, res) {
       limit: parseInt(limit, 10) || 20,
       ...security,
     });
+
+    // تاريخ الاستحقاق المتفق عليه لفواتير البيع يُعرض مخفيًا لغير
+    // المستثنين (قاعدة بلازور) — عرض فقط ولا يُكتب في القاعدة أبدًا.
+    // أسطح نموذج التعديل (getById/full) ليست هنا عمدًا: محرروها يرون
+    // الحقيقي، وإخفاؤها سيُحفظ مخفيًا عند الحفظ ويفسد البيانات.
+    for (const row of transactions) {
+      if (row.TransactionType === 'Sale') deliveryDates.maskRowDueDate(row, req.auth);
+    }
 
     const stats = await transactionsQueries.getInvoicesStats({
       type: invoiceType, startDate: effStart, endDate: effEnd,

@@ -1,6 +1,7 @@
 const { sql, connectDB } = require('../../core/database');
 const notificationsQueries = require('../notifications/notifications.queries');
 const policy = require('../../shared/authorization.policy');
+const { normalizeLineDate } = require('../../shared/delivery-dates');
 
 const VALID_TIERS = new Set(['CClass', 'Premium', 'Elite']);
 const VALID_NEW_CHARGES = new Set(['Shipping', 'Installation', 'Other']);
@@ -36,6 +37,17 @@ function normalizeItem(raw) {
       return value == null || value === '' ? null : Number(value);
     })(),
     notes: String(pick(raw, 'notes', 'Notes') || '').trim(),
+    // موعد تسليم البند مطبَّعًا بقاعدة DeliveryScheduleResolver.Normalize
+    // في بلازور. غياب الحقلين من الطلب كليًا = «اترك المخزون كما هو».
+    hasDeliveryDateInput: pick(raw, 'deliveryDate', 'DeliveryDate') !== undefined
+      || pick(raw, 'deliveryDateIsCustom', 'DeliveryDateIsCustom') !== undefined,
+    ...(() => {
+      const normalized = normalizeLineDate(
+        pick(raw, 'deliveryDate', 'DeliveryDate'),
+        pick(raw, 'deliveryDateIsCustom', 'DeliveryDateIsCustom'),
+      );
+      return { deliveryDate: normalized.date, deliveryDateIsCustom: normalized.isCustom };
+    })(),
   };
 }
 
@@ -119,7 +131,7 @@ async function getDetails(poolOrTransaction, transactionId) {
     .query(`
       SELECT td.DetailID, td.TransactionID, td.ProductID, td.Quantity,
              td.UnitPrice, td.TotalAmount, td.Notes, td.PricingTier,
-             td.SelectedAlternativeID,
+             td.SelectedAlternativeID, td.DeliveryDate, td.DeliveryDateIsCustom,
              p.ProductName, p.ProductDescription, p.Customer,
              p.SuggestedSalePriceCClass, p.SuggestedSalePrice,
              p.SuggestedSalePriceElite, p.PurchasePriceCClass,
@@ -503,6 +515,56 @@ async function fullEditInvoice(transactionId, rawData, auth) {
       return { ok: false, status: 400, message: 'يوجد صنف غير موجود أو تم حذفه.' };
     }
 
+    // حارس البنود المسلَّمة — مرآة CheckDeliveredLinesGuardAsync في بلازور
+    // (InvoiceService.cs): المسلَّم فعليًا = مجموع كميات محاولات أحداث
+    // التسليم غير الملغاة لكل سطر. لا حذف ولا استبدال منتج ولا تقليل
+    // كمية دون المسلَّم. غياب جداول الأحداث → يمر الحارس بهدوء كما في بلازور.
+    if (header.TransactionType === 'Sale') {
+      let deliveredByDetail = null;
+      try {
+        const deliveredResult = await dbTransaction.request()
+          .input('txId', sql.Int, transactionId)
+          .query(`
+            SELECT idi.TransactionDetailId, COALESCE(SUM(idi.Quantity), 0) AS DeliveredQty
+            FROM InvoiceDeliveryItems idi
+            JOIN InvoiceDeliveries idl ON idl.DeliveryId = idi.DeliveryId
+            WHERE idl.TransactionId = @txId AND idl.IsVoided = 0
+            GROUP BY idi.TransactionDetailId
+          `);
+        deliveredByDetail = new Map(
+          deliveredResult.recordset.map((r) => [Number(r.TransactionDetailId), num(r.DeliveredQty)]),
+        );
+      } catch (error) {
+        if (!(error && (error.number === 208 || /Invalid object name/i.test(String(error.message || ''))))) {
+          throw error;
+        }
+      }
+      if (deliveredByDetail) {
+        const submittedById = new Map(
+          items.filter((i) => i.detailId > 0).map((i) => [i.detailId, i]),
+        );
+        for (const old of oldDetails) {
+          const delivered = deliveredByDetail.get(Number(old.DetailID)) || 0;
+          if (delivered <= 0.0005) continue;
+          const oldName = productMap.get(Number(old.ProductID))?.ProductName || `صنف ${old.ProductID}`;
+          const deliveredText = parseFloat(delivered.toFixed(3));
+          const submitted = submittedById.get(Number(old.DetailID));
+          if (!submitted) {
+            await dbTransaction.rollback();
+            return { ok: false, status: 400, message: `لا يمكن حذف الصنف «${oldName}» من الفاتورة — تم تسليم ${deliveredText} منه فعليًا. لتصحيح التسليم ألغِ التسليمة أولًا من شاشة متابعة التسليمات، ثم عدّل الفاتورة.` };
+          }
+          if (submitted.productId !== Number(old.ProductID)) {
+            await dbTransaction.rollback();
+            return { ok: false, status: 400, message: `لا يمكن استبدال الصنف «${oldName}» في الفاتورة — تم تسليم ${deliveredText} منه فعليًا. لتصحيح التسليم ألغِ التسليمة أولًا من شاشة متابعة التسليمات، ثم عدّل الفاتورة.` };
+          }
+          if (submitted.quantity < delivered - 0.0005) {
+            await dbTransaction.rollback();
+            return { ok: false, status: 400, message: `لا يمكن تقليل كمية الصنف «${oldName}» إلى ${submitted.quantity} — تم تسليم ${deliveredText} فعليًا، فلا يمكن أن تقل كمية السطر عن الكمية المسلَّمة.` };
+          }
+        }
+      }
+    }
+
     for (const item of items) {
       if (item.selectedAlternativeId == null) continue;
       const alt = await dbTransaction.request()
@@ -649,6 +711,12 @@ async function fullEditInvoice(transactionId, rawData, auth) {
     const keepIds = [];
     for (const item of items) {
       const notes = item.notes ? `[${item.pricingTier}] ${item.notes}` : `[${item.pricingTier}]`;
+      // موعد البند الفعّال للكتابة: المُدخل مطبَّعًا، أو المخزون إن لم
+      // يرسل العميل حقول الموعد أصلًا (حتى لا تُمحى مواعيد قائمة بصمت)
+      const oldForDates = item.detailId > 0 ? oldById.get(item.detailId) : null;
+      const effectiveDelivery = item.hasDeliveryDateInput || !oldForDates
+        ? { date: item.deliveryDate, isCustom: item.deliveryDateIsCustom }
+        : { date: oldForDates.DeliveryDate || null, isCustom: Boolean(oldForDates.DeliveryDateIsCustom) };
       if (item.detailId > 0) {
         keepIds.push(item.detailId);
         await dbTransaction.request()
@@ -660,11 +728,14 @@ async function fullEditInvoice(transactionId, rawData, auth) {
           .input('altId', sql.Int, item.selectedAlternativeId)
           .input('tier', sql.NVarChar(20), item.pricingTier)
           .input('notes', sql.NVarChar(255), notes)
+          .input('deliveryDate', sql.Date, effectiveDelivery.date)
+          .input('deliveryDateIsCustom', sql.Bit, effectiveDelivery.isCustom ? 1 : 0)
           .query(`
             UPDATE TransactionDetails
             SET ProductID = @productId, Quantity = @quantity, UnitPrice = @unitPrice,
                 TotalAmount = @total, SelectedAlternativeID = @altId,
-                PricingTier = @tier, Notes = @notes
+                PricingTier = @tier, Notes = @notes,
+                DeliveryDate = @deliveryDate, DeliveryDateIsCustom = @deliveryDateIsCustom
             WHERE DetailID = @detailId AND TransactionID = ${Number(transactionId)}
           `);
       } else {
@@ -677,14 +748,16 @@ async function fullEditInvoice(transactionId, rawData, auth) {
           .input('altId', sql.Int, item.selectedAlternativeId)
           .input('tier', sql.NVarChar(20), item.pricingTier)
           .input('notes', sql.NVarChar(255), notes)
+          .input('deliveryDate', sql.Date, effectiveDelivery.date)
+          .input('deliveryDateIsCustom', sql.Bit, effectiveDelivery.isCustom ? 1 : 0)
           .query(`
             INSERT INTO TransactionDetails
               (TransactionID, ProductID, Quantity, UnitPrice, TotalAmount,
-               SelectedAlternativeID, PricingTier, Notes)
+               SelectedAlternativeID, PricingTier, Notes, DeliveryDate, DeliveryDateIsCustom)
             OUTPUT INSERTED.DetailID
             VALUES
               (@transactionId, @productId, @quantity, @unitPrice, @total,
-               @altId, @tier, @notes)
+               @altId, @tier, @notes, @deliveryDate, @deliveryDateIsCustom)
           `);
         const newId = Number(inserted.recordset[0].DetailID);
         keepIds.push(newId);

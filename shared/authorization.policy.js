@@ -28,6 +28,7 @@ const roles = {
   factoryManager: (a) => isRole(a, 'FactoryManager'),
   hrManager: (a) => isRole(a, 'HrManager', 'HRManager'),
   user: (a) => isRole(a, 'User'),
+  deliveryOfficer: (a) => isRole(a, 'DeliveryOfficer'),
   b2b: (a) => isRole(a, 'B2B'),
 };
 
@@ -157,8 +158,9 @@ const jobOrders = {
     || roles.factory(a)
     || hasClaim(a, 'frm_JobOrders:View'),
   canSeeAmounts: (a) => roles.admin(a) || roles.accountManager(a) || roles.account(a),
+  // تعديل تاريخ التسليم/الاستلام — مدير الإنتاج أُزيل في بلازور بقرار المالك
+  // (JobOrders.razor:534-536): مدير عام / مدير مصنع / Claim التعديل فقط.
   canEditDueDate: (a) => roles.admin(a)
-    || roles.productionManager(a)
     || roles.factoryManager(a)
     || hasClaim(a, 'frm_JobOrders:Edit'),
   canOpenInvoices: (a) => roles.admin(a)
@@ -179,6 +181,7 @@ const delivery = {
     || roles.account(a)
     || roles.sales(a)
     || roles.user(a)
+    || roles.deliveryOfficer(a)
     || hasClaim(a, 'frmInvoiceDeliveryStatus:View'),
   canSeeAmounts: (a) => roles.admin(a)
     || roles.accountManager(a)
@@ -191,9 +194,17 @@ const delivery = {
   canConfirm: (a) => roles.admin(a)
     || roles.sales(a)
     || roles.user(a)
+    || roles.deliveryOfficer(a)
     || hasClaim(a, 'frmInvoiceDeliveryStatus:Deliver'),
   canOverrideRemaining: (a) => roles.admin(a) || roles.accountManager(a),
   canPrint: (a) => delivery.canView(a),
+  // رؤية تاريخ الاستحقاق الحقيقي المتفق عليه (DeliveryPermissions.cs — CanSeeRealDeliveryDate):
+  // من عداهم يرونه منقوصًا هامش الأيام عند العرض فقط (shared/delivery-dates.js).
+  canSeeRealDate: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || roles.sales(a)
+    || roles.generalManager(a)
+    || roles.deliveryOfficer(a),
 };
 
 // PurchaseReceiptStatus.razor role/claim matrix.

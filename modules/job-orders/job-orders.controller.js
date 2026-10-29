@@ -1,6 +1,7 @@
 const queries = require('./job-orders.queries');
 const notificationsQueries = require('../notifications/notifications.queries');
 const policy = require('../../shared/authorization.policy');
+const dates = require('../../shared/delivery-dates');
 const { errorResponse, notFoundResponse } = require('../../shared/response.helper');
 const { sql, connectDB } = require('../../core/database');
 
@@ -34,6 +35,11 @@ async function getAll(req, res) {
       page: req.query.page,
       limit: req.query.limit,
     };
+    // المستخدم المخفي يختار من التواريخ المعروضة له — تُزاح حدود المدى
+    // +الهامش قبل الاستعلام كما في شاشة أوامر التشغيل في بلازور
+    const shifted = dates.shiftDueRange(filters.dueFrom, filters.dueTo, req.auth);
+    filters.dueFrom = shifted.dateFrom;
+    filters.dueTo = shifted.dateTo;
     const options = {
       excludeProtectedAccountManager:
         !policy.jobOrders.canViewProtectedAccountManager(req.auth),
@@ -48,6 +54,8 @@ async function getAll(req, res) {
       const row = { ...raw };
       delete row.TotalRows;
       if (!canSeeAmounts) delete row.GrandTotal;
+      // تاريخ الاستحقاق المتفق عليه يُعرض مخفيًا لغير المستثنين (بلازور)
+      dates.maskRowDueDate(row, req.auth);
       return row;
     });
     return res.json({
@@ -80,6 +88,7 @@ async function getById(req, res) {
       return errorResponse(res, 'أمر التشغيل محمي حسب نطاق صلاحيات الحسابات', 403);
     }
     if (!policy.jobOrders.canSeeAmounts(req.auth)) delete row.GrandTotal;
+    dates.maskRowDueDate(row, req.auth);
     row.capabilities = capabilities(req.auth);
     return res.json({ success: true, data: row });
   } catch (error) {
