@@ -1736,8 +1736,10 @@ async function voidDeliveryEvent(value, deliveryId, data = {}, auth) {
 // (فاتورة × تاريخ بند فعّال) لا صفوف فواتير؛ النافذة على التاريخ
 // المعروض لهذا المستخدم، والحقيقي لا يخرج إلا لمن يراه أصلًا.
 // DueDate في الرد = المعروض دائمًا (توافق مع شكل الرد القائم).
+// التجميع الداخلي يبقي التاريخ الحقيقي دائمًا (RealDate) — والمصدّرات
+// هي من تصفّره لغير المستثنين قبل الإخراج.
 // ════════════════════════════════════════════════════════════════════
-async function getUpcomingDeliveries(auth = null, withinDays = 7) {
+async function collectUpcomingAppointments(auth = null, withinDays = 7) {
   const pool = await connectDB();
   const parsedWithin = Number(withinDays);
   const within = Number.isInteger(parsedWithin) && parsedWithin >= 0 ? parsedWithin : 7;
@@ -1852,7 +1854,7 @@ async function getUpcomingDeliveries(auth = null, withinDays = 7) {
       Phone: group.candidate.Phone,
       DaysRemaining: dates.diffDays(shown, today),
       DisplayDate: shown,
-      RealDate: seesReal ? group.realDate : null,
+      RealDate: group.realDate,
       DueLineCount: group.lineCount,
       RemainingQty: group.remainingQty,
     });
@@ -1860,7 +1862,99 @@ async function getUpcomingDeliveries(auth = null, withinDays = 7) {
 
   appointments.sort((a, b) => (a.DisplayDate - b.DisplayDate)
     || String(a.ClientName || '').localeCompare(String(b.ClientName || '')));
+  return { appointments, seesReal };
+}
+
+async function getUpcomingDeliveries(auth = null, withinDays = 7) {
+  const { appointments, seesReal } = await collectUpcomingAppointments(auth, withinDays);
+  if (!seesReal) {
+    for (const appointment of appointments) appointment.RealDate = null;
+  }
   return appointments;
+}
+
+// ترتيب الموعد بين مواعيد فاتورته — مرآة «موعد X من N» في قائمة بلازور
+// (SalesDeliveryStatus.razor:731-732, 823): مجموعات الفاتورة هي تواريخ
+// بنودها الفعّالة المميزة مرتبة زمنيًا (نفس تجميع المواعيد أعلاه)،
+// والترتيب موضع تاريخ هذا الموعد بينها (1-based).
+async function loadAppointmentOrdinals(pool, headersByTx) {
+  const ordinals = new Map();
+  const ids = [...headersByTx.keys()];
+  if (!ids.length) return ordinals;
+
+  const request = pool.request();
+  const inList = bindIdList(request, 'oid', ids);
+  const result = await request.query(`
+    SELECT TransactionID, DeliveryDate, DeliveryDateIsCustom
+    FROM TransactionDetails
+    WHERE TransactionID IN ${inList}
+  `);
+
+  const datesByTx = new Map();
+  for (const line of result.recordset) {
+    const txId = Number(line.TransactionID);
+    const header = headersByTx.get(txId);
+    if (!header) continue;
+    const isCustom = Boolean(line.DeliveryDateIsCustom) && Boolean(line.DeliveryDate);
+    const effective = dates.effectiveLineDate(line.DeliveryDate, isCustom, header.DueDate);
+    if (!effective) continue;
+    if (!datesByTx.has(txId)) datesByTx.set(txId, new Set());
+    datesByTx.get(txId).add(effective.toISOString().slice(0, 10));
+  }
+
+  for (const [txId, dateSet] of datesByTx) {
+    const sorted = [...dateSet].sort();
+    const perTx = new Map();
+    sorted.forEach((iso, index) => perTx.set(iso, { index: index + 1, count: sorted.length }));
+    ordinals.set(txId, perTx);
+  }
+  return ordinals;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// مواعيد رئيسية التطبيق — مرآة قسم «التسليمات القادمة — 10 أيام» في
+// رئيسية بلازور (Home.razor:594, 3190): نافذة 10 أيام ثابتة على
+// التواريخ المعروضة لهذا المستخدم، وسقف العرض 12 موعدًا مع العدد
+// الكلي. لا مبالغ هنا إطلاقًا كما في DTO بلازور (كميات فقط)، والتاريخ
+// الحقيقي لا يخرج إلا لمن يراه أصلًا.
+// ════════════════════════════════════════════════════════════════════
+const HOME_UPCOMING_WINDOW_DAYS = 10;
+const HOME_UPCOMING_CAP = 12;
+
+async function getHomeUpcomingDeliveries(auth) {
+  const { appointments, seesReal } = await collectUpcomingAppointments(auth, HOME_UPCOMING_WINDOW_DAYS);
+  const total = appointments.length;
+  const page = appointments.slice(0, HOME_UPCOMING_CAP);
+
+  if (page.length) {
+    const pool = await connectDB();
+    const txIds = [...new Set(page.map((a) => Number(a.TransactionID)))];
+    const headerRequest = pool.request();
+    const headerIn = bindIdList(headerRequest, 'hid', txIds);
+    const headerResult = await headerRequest.query(`
+      SELECT TransactionID, DueDate FROM Transactions WHERE TransactionID IN ${headerIn}
+    `);
+    const headersByTx = new Map(
+      headerResult.recordset.map((row) => [Number(row.TransactionID), row]),
+    );
+    const ordinals = await loadAppointmentOrdinals(pool, headersByTx);
+    const today = dates.todayOnly();
+
+    for (const appointment of page) {
+      const txId = Number(appointment.TransactionID);
+      const iso = appointment.RealDate
+        ? dates.dateOnly(appointment.RealDate)?.toISOString().slice(0, 10)
+        : null;
+      const ordinal = iso ? ordinals.get(txId)?.get(iso) : null;
+      appointment.AppointmentIndex = ordinal ? ordinal.index : null;
+      appointment.AppointmentCount = ordinal ? ordinal.count : null;
+      appointment.IsDueToday = dates.diffDays(appointment.DisplayDate, today) === 0;
+      appointment.Status = appointment.IsDueToday ? 'today' : 'upcoming';
+      if (!seesReal) appointment.RealDate = null;
+    }
+  }
+
+  return { appointments: page, total, windowDays: HOME_UPCOMING_WINDOW_DAYS };
 }
 
 module.exports = {
@@ -1882,4 +1976,5 @@ module.exports = {
   grantDeliveryPermission,
   getDailySheet,
   getUpcomingDeliveries,
+  getHomeUpcomingDeliveries,
 };

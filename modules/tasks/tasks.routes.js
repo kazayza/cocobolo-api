@@ -15,6 +15,10 @@ router.use(authenticate);
 // GET /api/tasks/summary?assignedTo=xxx
 router.get('/summary', tasksController.getSummary);
 
+// عدّاد إشاراتي (@) لشريط «مهامي» — الهوية من التوكن فقط
+// GET /api/tasks/my-mentions-count
+router.get('/my-mentions-count', tasksController.getMyMentionsCount);
+
 // مهام اليوم
 // GET /api/tasks/today?assignedTo=xxx
 router.get('/today', tasksController.getToday);

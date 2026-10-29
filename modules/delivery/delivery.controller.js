@@ -271,6 +271,17 @@ async function getUpcomingDeliveries(req, res) {
   }
 }
 
+// مواعيد قسم «التسليمات القادمة — 10 أيام» في رئيسية التطبيق
+async function getHomeUpcoming(req, res) {
+  try {
+    const data = await queries.getHomeUpcomingDeliveries(req.auth);
+    return res.json({ success: true, data });
+  } catch (error) {
+    console.error('delivery.getHomeUpcoming:', error);
+    return errorResponse(res, 'فشل تحميل التسليمات القادمة', 500, error.message);
+  }
+}
+
 // ── أحداث التسليم (التسليم على دفعات) ──────────────────────────────
 
 async function getEvents(req, res) {
@@ -386,6 +397,7 @@ module.exports = {
   grantPermission,
   getDailySheet,
   getUpcomingDeliveries,
+  getHomeUpcoming,
   getEvents,
   getCoverage,
   recordEvent,

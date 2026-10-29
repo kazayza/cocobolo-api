@@ -524,6 +524,40 @@ async function completeGeneralTask(taskId, notes, auth) {
   return { message: 'تم إكمال المهمة' };
 }
 
+function isMissingTableError(error) {
+  return Boolean(error) && (error.number === 208 || /Invalid object name/i.test(String(error.message || '')));
+}
+
+// عدّاد إشارات «مهامي» — مرآة Blazor GetMyTasksSummaryAsync
+// (Services/TaskService.cs): عدد التكليفات العامة المميزة (DISTINCT
+// TaskId) التي ذُكر فيها الموظف (@) في أي تعليق بخيطها. لا علم قراءة
+// في نموذج بلازور — العدّ هو «مهام ذُكرت فيها» لا «إشارات غير مقروءة».
+// الهوية من التوكن فقط (auth.employeeId)؛ حساب بلا موظف مربوط = صفر،
+// وغياب جداول الخيط (قبل سكربت المنصة) يُخفّض العدد لصفر كما يفعل
+// بلازور بدل كسر الرئيسية.
+async function getMyMentionsCount(auth) {
+  const employeeId = Number(auth?.employeeId || 0);
+  if (!Number.isInteger(employeeId) || employeeId <= 0) return 0;
+
+  const pool = await connectDB();
+  try {
+    const result = await pool.request()
+      .input('empId', sql.Int, employeeId)
+      .query(`
+        SELECT COUNT(DISTINCT c.TaskId) AS MentionCount
+        FROM TaskCommentMentions m
+        INNER JOIN TaskComments c ON c.Id = m.CommentId
+        INNER JOIN CRM_Tasks t ON t.TaskID = c.TaskId
+        WHERE m.MentionedEmployeeId = @empId
+          AND t.TaskScope = N'General'
+      `);
+    return Number(result.recordset[0]?.MentionCount || 0);
+  } catch (error) {
+    if (isMissingTableError(error)) return 0;
+    throw error;
+  }
+}
+
 // تصدير الدوال
 module.exports = {
   normalizeTaskPriority,
@@ -538,6 +572,7 @@ module.exports = {
   deleteTask,
   getTasksSummary,
   // التكليفات العامة
+  getMyMentionsCount,
   getGeneralTasks,
   createGeneralTask,
   startGeneralTask,

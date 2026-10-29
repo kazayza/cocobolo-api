@@ -285,12 +285,24 @@ async function completeTask(req, res) {
   }
 }
 
+// عدّاد إشاراتي (@) لشريط «مهامي» في الرئيسية — الهوية من التوكن فقط
+async function getMyMentionsCount(req, res) {
+  try {
+    const count = await tasksQueries.getMyMentionsCount(req.auth);
+    return res.json({ success: true, data: { count } });
+  } catch (err) {
+    console.error('خطأ في جلب عدد الإشارات:', err);
+    return errorResponse(res, 'فشل تحميل عدد الإشارات', 500, err.message);
+  }
+}
+
 // تصدير الدوال
 module.exports = {
   getAll,
   getToday,
   getOverdue,
   getSummary,
+  getMyMentionsCount,
   getById,
   create,
   update,

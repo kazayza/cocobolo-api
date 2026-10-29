@@ -11,6 +11,7 @@ router.get('/stats', requirePolicy(delivery.canView), controller.getDeliveryStat
 router.get('/employees', requirePolicy(delivery.canEditFull), controller.getEmployees);
 router.get('/daily-sheet', requirePolicy(delivery.canPrint), controller.getDailySheet);
 router.get('/upcoming', requirePolicy(delivery.canView), controller.getUpcomingDeliveries);
+router.get('/home-upcoming', requirePolicy(delivery.canView), controller.getHomeUpcoming);
 
 router.post(
   '/:id/request-permission',
