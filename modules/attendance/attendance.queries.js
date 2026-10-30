@@ -884,6 +884,515 @@ async function saveManualAttendance(dto, currentUserName) {
   return true;
 }
 
+// ══════════════════════════════════════════════════════════════
+// سجلات البصمة الخام + الحضور اليدوي اليومي — مرآة AttendanceService:
+// GetBiometricLogsAsync:854 و UpsertAttendanceAsync:511 /
+// UpdateAttendanceAsync:466 / DeleteAttendanceAsync:591 و
+// ApplyAttendanceEditValues:1729 و GetExpectedShiftWindowAsync:1717.
+// ══════════════════════════════════════════════════════════════
+const ABSENT_STATUSES = ['غائب', 'إجازة', 'راحة', 'عطلة أسبوعية'];
+
+function round2(value) {
+  return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+function parseTimeMinutes(value) {
+  if (value == null || value === '') return null;
+  const parts = String(value).trim().split(':');
+  const h = Number(parts[0]);
+  const m = Number(parts[1] || 0);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  return h * 60 + m;
+}
+
+function normalizeHHmm(value) {
+  if (value == null || value === '') return null;
+  const parts = String(value).trim().split(':');
+  const h = Number(parts[0]);
+  const m = Number(parts[1] || 0);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function toTimeParam(value) {
+  const hhmm = normalizeHHmm(value);
+  return hhmm ? `${hhmm}:00` : null;
+}
+
+function manualError(message, statusCode = 400) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  return err;
+}
+
+// حساب قيم الحضور اليدوي — مرآة حرفية لـ ApplyAttendanceEditValues:1729
+function computeManualValues({ timeIn = null, timeOut = null, status = null, shiftStart = null, shiftEnd = null } = {}) {
+  let finalStatus = status == null || status === '' ? 'حاضر' : String(status);
+  const shiftStartMin = parseTimeMinutes(shiftStart) != null ? parseTimeMinutes(shiftStart) : 8 * 60;
+  const shiftEndMin = parseTimeMinutes(shiftEnd) != null ? parseTimeMinutes(shiftEnd) : 17 * 60;
+
+  if (ABSENT_STATUSES.includes(finalStatus)) {
+    return {
+      timeIn: null, timeOut: null, status: finalStatus,
+      totalHours: null, lateMinutes: 0, earlyLeaveMinutes: 0, penaltyHours: 0,
+    };
+  }
+
+  const inHHmm = normalizeHHmm(timeIn);
+  const outHHmm = normalizeHHmm(timeOut);
+  const inMin = parseTimeMinutes(inHHmm);
+  const outMin = parseTimeMinutes(outHHmm);
+
+  let lateMinutes = 0;
+  if (inMin != null && inMin > shiftStartMin) lateMinutes = inMin - shiftStartMin;
+
+  let totalHours = null;
+  if (inMin != null && outMin != null) {
+    let duration = outMin - inMin;
+    if (duration < 0) duration += 24 * 60;
+    totalHours = round2(duration / 60);
+  }
+
+  let earlyLeaveMinutes = 0;
+  if (outMin != null && outMin < shiftEndMin) earlyLeaveMinutes = shiftEndMin - outMin;
+
+  if (finalStatus === 'حاضر' || finalStatus === 'متأخر') {
+    finalStatus = lateMinutes > 0 ? 'متأخر' : 'حاضر';
+  }
+
+  return {
+    timeIn: inHHmm, timeOut: outHHmm, status: finalStatus,
+    totalHours, lateMinutes, earlyLeaveMinutes, penaltyHours: 0,
+  };
+}
+
+// نافذة الوردية السارية — OUTER APPLY TOP 1 ORDER BY EffectiveFrom DESC
+// فوق EmployeeID، تمامًا كما في getAdvancedReport أعلاه.
+async function fetchShiftWindow(makeRequest, employeeId, dateStr) {
+  const result = await makeRequest()
+    .input('employeeId', sql.Int, employeeId)
+    .input('date', sql.VarChar(10), String(dateStr).slice(0, 10))
+    .query(`
+      SELECT
+        FORMAT(CAST(sh.StartTime AS DATETIME), 'HH:mm') AS StartTime,
+        FORMAT(CAST(sh.EndTime AS DATETIME), 'HH:mm') AS EndTime
+      FROM Employees e
+      OUTER APPLY (
+        SELECT TOP 1 s.StartTime, s.EndTime
+        FROM EmployeeShifts s
+        WHERE s.EmployeeID = e.EmployeeID
+          AND CAST(@date AS DATE) >= CAST(s.EffectiveFrom AS DATE)
+          AND (s.EffectiveTo IS NULL OR CAST(@date AS DATE) <= CAST(s.EffectiveTo AS DATE))
+        ORDER BY s.EffectiveFrom DESC
+      ) sh
+      WHERE e.EmployeeID = @employeeId
+    `);
+  const row = result.recordset[0];
+  if (!row) return { StartTime: null, EndTime: null };
+  return { StartTime: row.StartTime || null, EndTime: row.EndTime || null };
+}
+
+async function insertManualAudit(makeRequest, action, id, username, oldData, newData) {
+  await makeRequest()
+    .input('table', sql.NVarChar(128), 'Attendance')
+    .input('action', sql.NVarChar(100), action)
+    .input('key', sql.NVarChar(200), String(id))
+    .input('username', sql.NVarChar(100), username)
+    .input('oldData', sql.NVarChar(sql.MAX), oldData == null ? null : JSON.stringify(oldData))
+    .input('newData', sql.NVarChar(sql.MAX), newData == null ? null : JSON.stringify(newData))
+    .query(`
+      INSERT INTO [dbo].[Audit_Log]
+        (TableName, ActionType, PrimaryKeyValue, OldData, NewData,
+         ActionDate, LoginName, AppName, AccessUserName)
+      VALUES
+        (@table, @action, @key, @oldData, @newData,
+         GETDATE(), @username, N'COCOBOLO Flutter', @username)
+    `);
+}
+
+function oldDataOf(existing) {
+  if (!existing) return null;
+  return {
+    TimeIn: existing.TimeIn || null,
+    TimeOut: existing.TimeOut || null,
+    Status: existing.Status,
+    TotalHours: existing.TotalHours != null ? Number(existing.TotalHours) : null,
+    LateMinutes: existing.LateMinutes != null ? Number(existing.LateMinutes) : null,
+    EarlyLeaveMinutes: existing.EarlyLeaveMinutes != null ? Number(existing.EarlyLeaveMinutes) : null,
+  };
+}
+
+async function getRawBiometricLogs({ dateFrom = null, dateTo = null, searchText = null, biometricCode = null, pageNumber = 1, pageSize = 50 } = {}) {
+  const pool = await connectDB();
+  const page = Math.max(parseInt(pageNumber, 10) || 1, 1);
+  const size = Math.min(Math.max(parseInt(pageSize, 10) || 50, 1), 100);
+  const offset = (page - 1) * size;
+
+  let codes = null;
+  const text = searchText != null ? String(searchText).trim() : '';
+  if (text) {
+    const empResult = await pool.request()
+      .input('search', sql.NVarChar(200), `%${text}%`)
+      .query(`
+        SELECT BioEmployeeID
+        FROM Employees
+        WHERE BioEmployeeID IS NOT NULL
+          AND (FullName LIKE @search OR Department LIKE @search)
+      `);
+    codes = empResult.recordset.map((r) => r.BioEmployeeID);
+    if (codes.length === 0) {
+      return { items: [], totalCount: 0 };
+    }
+  }
+
+  function addFilters(request) {
+    const clauses = ['1=1'];
+    if (dateFrom) {
+      request.input('dateFrom', sql.Date, dateFrom);
+      clauses.push('CAST(bl.LogDate AS DATE) >= @dateFrom');
+    }
+    if (dateTo) {
+      request.input('dateTo', sql.Date, dateTo);
+      clauses.push('CAST(bl.LogDate AS DATE) <= @dateTo');
+    }
+    if (biometricCode != null && biometricCode !== '') {
+      request.input('biometricCode', sql.Int, Number(biometricCode));
+      clauses.push('bl.BiometricCode = @biometricCode');
+    }
+    if (codes) {
+      const placeholders = codes.map((code, i) => {
+        request.input(`code${i}`, sql.Int, code);
+        return `@code${i}`;
+      });
+      clauses.push(`bl.BiometricCode IN (${placeholders.join(', ')})`);
+    }
+    return clauses.join(' AND ');
+  }
+
+  const countRequest = pool.request();
+  const countWhere = addFilters(countRequest);
+  const countResult = await countRequest.query(`
+    SELECT COUNT(*) AS TotalCount
+    FROM BiometricLog bl
+    WHERE ${countWhere}
+  `);
+  const totalCount = Number(countResult.recordset[0]?.TotalCount || 0);
+
+  const dataRequest = pool.request();
+  const dataWhere = addFilters(dataRequest);
+  const dataResult = await dataRequest.query(`
+    SELECT
+      bl.BiometricLogID, bl.BiometricCode,
+      FORMAT(bl.LogDate, 'yyyy-MM-dd') AS LogDate,
+      FORMAT(CAST(bl.LogTime AS DATETIME), 'HH:mm:ss') AS LogTime,
+      e.EmployeeID, e.FullName AS EmployeeName, e.Department, e.Gender
+    FROM BiometricLog bl
+    LEFT JOIN Employees e ON e.BioEmployeeID = bl.BiometricCode
+    WHERE ${dataWhere}
+    ORDER BY bl.LogDate DESC, bl.LogTime DESC
+    OFFSET ${offset} ROWS FETCH NEXT ${size} ROWS ONLY
+  `);
+  return { items: dataResult.recordset, totalCount };
+}
+
+async function countTodayRawLogs() {
+  const pool = await connectDB();
+  const result = await pool.request().query(`
+    SELECT COUNT(*) AS TodayCount
+    FROM BiometricLog
+    WHERE CAST(LogDate AS DATE) = CAST(SWITCHOFFSET(SYSDATETIMEOFFSET(), '+02:00') AS DATE)
+  `);
+  return Number(result.recordset[0]?.TodayCount || 0);
+}
+
+async function getManualEmployeeById(employeeId) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('employeeId', sql.Int, employeeId)
+    .query(`
+      SELECT EmployeeID, FullName, Department, BioEmployeeID
+      FROM Employees
+      WHERE EmployeeID = @employeeId
+    `);
+  return result.recordset[0] || null;
+}
+
+async function getManualRecord(employeeId, date) {
+  const pool = await connectDB();
+  const shift = await fetchShiftWindow(() => pool.request(), employeeId, date);
+  const result = await pool.request()
+    .input('employeeId', sql.Int, employeeId)
+    .input('date', sql.VarChar(10), String(date).slice(0, 10))
+    .query(`
+      SELECT
+        a.AttendanceID, a.BiometricCode,
+        FORMAT(a.LogDate, 'yyyy-MM-dd') AS LogDate,
+        CONVERT(VARCHAR(5), a.TimeIn, 108) AS TimeIn,
+        CONVERT(VARCHAR(5), a.TimeOut, 108) AS TimeOut,
+        a.Status, a.TotalHours, a.LateMinutes, a.EarlyLeaveMinutes, a.PenaltyHours
+      FROM Attendance a
+      JOIN Employees e ON a.BiometricCode = e.BioEmployeeID
+      WHERE e.EmployeeID = @employeeId
+        AND CAST(a.LogDate AS DATE) = CAST(@date AS DATE)
+    `);
+  return { record: result.recordset[0] || null, shift };
+}
+
+async function getManualDayRecords(date) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('date', sql.VarChar(10), String(date).slice(0, 10))
+    .query(`
+      SELECT
+        a.AttendanceID, a.BiometricCode,
+        FORMAT(a.LogDate, 'yyyy-MM-dd') AS LogDate,
+        CONVERT(VARCHAR(5), a.TimeIn, 108) AS TimeIn,
+        CONVERT(VARCHAR(5), a.TimeOut, 108) AS TimeOut,
+        a.Status, a.TotalHours, a.LateMinutes, a.EarlyLeaveMinutes, a.PenaltyHours,
+        e.EmployeeID, e.FullName AS EmployeeName, e.Department, e.Gender
+      FROM Attendance a
+      LEFT JOIN Employees e ON a.BiometricCode = e.BioEmployeeID
+      WHERE CAST(a.LogDate AS DATE) = CAST(@date AS DATE)
+      ORDER BY e.FullName
+    `);
+  return result.recordset;
+}
+
+async function fetchAttendanceById(makeRequest, id) {
+  const result = await makeRequest()
+    .input('id', sql.Int, id)
+    .query(`
+      SELECT
+        AttendanceID, BiometricCode,
+        FORMAT(LogDate, 'yyyy-MM-dd') AS LogDate,
+        CONVERT(VARCHAR(8), TimeIn, 108) AS TimeIn,
+        CONVERT(VARCHAR(8), TimeOut, 108) AS TimeOut,
+        Status, TotalHours, LateMinutes, EarlyLeaveMinutes, PenaltyHours
+      FROM Attendance
+      WHERE AttendanceID = @id
+    `);
+  return result.recordset[0] || null;
+}
+
+async function upsertManualAttendance({ biometricCode, logDate, timeIn = null, timeOut = null, status = null, editReason = null, attendanceId = null } = {}, username) {
+  const code = Number(biometricCode);
+  if (!code || code <= 0) throw manualError('كود البصمة مطلوب.', 400);
+  const dateStr = String(logDate).slice(0, 10);
+
+  const pool = await connectDB();
+  const tx = new sql.Transaction(pool);
+  await tx.begin();
+  const mk = () => tx.request();
+  try {
+    const empResult = await mk()
+      .input('bioCode', sql.Int, code)
+      .query(`
+        SELECT EmployeeID, BioEmployeeID, FullName
+        FROM Employees
+        WHERE BioEmployeeID = @bioCode
+      `);
+    const employee = empResult.recordset[0];
+    if (!employee) throw manualError('الموظف المرتبط بكود البصمة غير موجود.', 400);
+
+    const shift = await fetchShiftWindow(mk, employee.EmployeeID, dateStr);
+    const computed = computeManualValues({
+      timeIn, timeOut, status,
+      shiftStart: shift.StartTime, shiftEnd: shift.EndTime,
+    });
+
+    let existing = null;
+    if (attendanceId != null && Number(attendanceId) > 0) {
+      existing = await fetchAttendanceById(mk, Number(attendanceId));
+    } else {
+      const existingResult = await mk()
+        .input('biometricCode', sql.Int, code)
+        .input('logDate', sql.VarChar(10), dateStr)
+        .query(`
+          SELECT
+            AttendanceID, BiometricCode,
+            FORMAT(LogDate, 'yyyy-MM-dd') AS LogDate,
+            CONVERT(VARCHAR(8), TimeIn, 108) AS TimeIn,
+            CONVERT(VARCHAR(8), TimeOut, 108) AS TimeOut,
+            Status, TotalHours, LateMinutes, EarlyLeaveMinutes, PenaltyHours
+          FROM Attendance
+          WHERE BiometricCode = @biometricCode
+            AND CAST(LogDate AS DATE) = CAST(@logDate AS DATE)
+        `);
+      existing = existingResult.recordset[0] || null;
+    }
+
+    const oldData = oldDataOf(existing);
+    let attendanceIdOut;
+    let isNew;
+
+    if (existing) {
+      attendanceIdOut = existing.AttendanceID;
+      isNew = false;
+      await mk()
+        .input('id', sql.Int, attendanceIdOut)
+        .input('timeIn', sql.VarChar(8), toTimeParam(computed.timeIn))
+        .input('timeOut', sql.VarChar(8), toTimeParam(computed.timeOut))
+        .input('status', sql.NVarChar(30), computed.status)
+        .input('totalHours', sql.Decimal(5, 2), computed.totalHours)
+        .input('lateMinutes', sql.Int, computed.lateMinutes)
+        .input('earlyLeaveMinutes', sql.Int, computed.earlyLeaveMinutes)
+        .input('penaltyHours', sql.Decimal(5, 2), computed.penaltyHours)
+        .query(`
+          UPDATE Attendance
+          SET TimeIn = CAST(@timeIn AS TIME),
+              TimeOut = CAST(@timeOut AS TIME),
+              Status = @status,
+              TotalHours = @totalHours,
+              LateMinutes = @lateMinutes,
+              EarlyLeaveMinutes = @earlyLeaveMinutes,
+              PenaltyHours = @penaltyHours
+          WHERE AttendanceID = @id
+        `);
+      await insertManualAudit(mk, 'Update', attendanceIdOut, username, oldData, {
+        TimeIn: computed.timeIn, TimeOut: computed.timeOut, Status: computed.status,
+        TotalHours: computed.totalHours, LateMinutes: computed.lateMinutes,
+        EarlyLeaveMinutes: computed.earlyLeaveMinutes, PenaltyHours: computed.penaltyHours,
+        EditReason: editReason, Source: 'ManualDailyEntry',
+      });
+    } else {
+      const insertResult = await mk()
+        .input('biometricCode', sql.Int, code)
+        .input('logDate', sql.VarChar(10), dateStr)
+        .input('timeIn', sql.VarChar(8), toTimeParam(computed.timeIn))
+        .input('timeOut', sql.VarChar(8), toTimeParam(computed.timeOut))
+        .input('status', sql.NVarChar(30), computed.status)
+        .input('totalHours', sql.Decimal(5, 2), computed.totalHours)
+        .input('lateMinutes', sql.Int, computed.lateMinutes)
+        .input('earlyLeaveMinutes', sql.Int, computed.earlyLeaveMinutes)
+        .input('penaltyHours', sql.Decimal(5, 2), computed.penaltyHours)
+        .query(`
+          INSERT INTO Attendance (BiometricCode, LogDate, TimeIn, TimeOut, Status, TotalHours, LateMinutes, EarlyLeaveMinutes, PenaltyHours)
+          OUTPUT INSERTED.AttendanceID
+          VALUES (@biometricCode, CAST(@logDate AS DATE), CAST(@timeIn AS TIME), CAST(@timeOut AS TIME), @status, @totalHours, @lateMinutes, @earlyLeaveMinutes, @penaltyHours)
+        `);
+      attendanceIdOut = insertResult.recordset[0].AttendanceID;
+      isNew = true;
+      await insertManualAudit(mk, 'Insert', attendanceIdOut, username, null, {
+        TimeIn: computed.timeIn, TimeOut: computed.timeOut, Status: computed.status,
+        TotalHours: computed.totalHours, LateMinutes: computed.lateMinutes,
+        EarlyLeaveMinutes: computed.earlyLeaveMinutes, PenaltyHours: computed.penaltyHours,
+        EditReason: editReason, Source: 'ManualDailyEntry',
+      });
+    }
+
+    await tx.commit();
+    const record = {
+      AttendanceID: attendanceIdOut,
+      BiometricCode: code,
+      LogDate: dateStr,
+      TimeIn: computed.timeIn,
+      TimeOut: computed.timeOut,
+      Status: computed.status,
+      TotalHours: computed.totalHours,
+      LateMinutes: computed.lateMinutes,
+      EarlyLeaveMinutes: computed.earlyLeaveMinutes,
+      PenaltyHours: computed.penaltyHours,
+    };
+    return { attendanceId: attendanceIdOut, isNew, record };
+  } catch (err) {
+    try { await tx.rollback(); } catch (_) {}
+    throw err;
+  }
+}
+
+async function updateManualAttendance(id, { timeIn = null, timeOut = null, status = null, editReason = null } = {}, username) {
+  const attendanceId = Number(id);
+  const pool = await connectDB();
+  const tx = new sql.Transaction(pool);
+  await tx.begin();
+  const mk = () => tx.request();
+  try {
+    const existing = await fetchAttendanceById(mk, attendanceId);
+    if (!existing) throw manualError('سجل الحضور غير موجود.', 404);
+
+    let shift = { StartTime: null, EndTime: null };
+    const empResult = await mk()
+      .input('bioCode', sql.Int, existing.BiometricCode)
+      .query(`
+        SELECT EmployeeID, BioEmployeeID, FullName
+        FROM Employees
+        WHERE BioEmployeeID = @bioCode
+      `);
+    const employee = empResult.recordset[0];
+    if (employee) {
+      shift = await fetchShiftWindow(mk, employee.EmployeeID, existing.LogDate);
+    }
+    const computed = computeManualValues({
+      timeIn, timeOut, status,
+      shiftStart: shift.StartTime, shiftEnd: shift.EndTime,
+    });
+    const oldData = oldDataOf(existing);
+
+    await mk()
+      .input('id', sql.Int, attendanceId)
+      .input('timeIn', sql.VarChar(8), toTimeParam(computed.timeIn))
+      .input('timeOut', sql.VarChar(8), toTimeParam(computed.timeOut))
+      .input('status', sql.NVarChar(30), computed.status)
+      .input('totalHours', sql.Decimal(5, 2), computed.totalHours)
+      .input('lateMinutes', sql.Int, computed.lateMinutes)
+      .input('earlyLeaveMinutes', sql.Int, computed.earlyLeaveMinutes)
+      .input('penaltyHours', sql.Decimal(5, 2), computed.penaltyHours)
+      .query(`
+        UPDATE Attendance
+        SET TimeIn = CAST(@timeIn AS TIME),
+            TimeOut = CAST(@timeOut AS TIME),
+            Status = @status,
+            TotalHours = @totalHours,
+            LateMinutes = @lateMinutes,
+            EarlyLeaveMinutes = @earlyLeaveMinutes,
+            PenaltyHours = @penaltyHours
+        WHERE AttendanceID = @id
+      `);
+    await insertManualAudit(mk, 'Update', attendanceId, username, oldData, {
+      TimeIn: computed.timeIn, TimeOut: computed.timeOut, Status: computed.status,
+      TotalHours: computed.totalHours, EditReason: editReason,
+    });
+    await tx.commit();
+    return {
+      AttendanceID: attendanceId,
+      BiometricCode: existing.BiometricCode,
+      LogDate: existing.LogDate,
+      TimeIn: computed.timeIn,
+      TimeOut: computed.timeOut,
+      Status: computed.status,
+      TotalHours: computed.totalHours,
+      LateMinutes: computed.lateMinutes,
+      EarlyLeaveMinutes: computed.earlyLeaveMinutes,
+      PenaltyHours: computed.penaltyHours,
+    };
+  } catch (err) {
+    try { await tx.rollback(); } catch (_) {}
+    throw err;
+  }
+}
+
+async function deleteManualAttendance(id, username) {
+  const attendanceId = Number(id);
+  const pool = await connectDB();
+  const tx = new sql.Transaction(pool);
+  await tx.begin();
+  const mk = () => tx.request();
+  try {
+    const existing = await fetchAttendanceById(mk, attendanceId);
+    if (!existing) throw manualError('سجل الحضور غير موجود.', 404);
+    const oldData = oldDataOf(existing);
+    await mk()
+      .input('id', sql.Int, attendanceId)
+      .query(`DELETE FROM Attendance WHERE AttendanceID = @id`);
+    await insertManualAudit(mk, 'Delete', attendanceId, username, oldData, null);
+    await tx.commit();
+    return { attendanceId };
+  } catch (err) {
+    try { await tx.rollback(); } catch (_) {}
+    throw err;
+  }
+}
+
 module.exports = {
   logBiometric,
   getTodayAttendance,
@@ -915,5 +1424,14 @@ module.exports = {
   getEmployeeStatistics,
   getAdvancedReport,
   getManualAttendance,
-  saveManualAttendance
+  saveManualAttendance,
+  computeManualValues,
+  getRawBiometricLogs,
+  countTodayRawLogs,
+  getManualEmployeeById,
+  getManualRecord,
+  getManualDayRecords,
+  upsertManualAttendance,
+  updateManualAttendance,
+  deleteManualAttendance
 };

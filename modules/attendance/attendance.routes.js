@@ -42,4 +42,14 @@ router.get('/manual', attendanceController.getManualAttendance);
 // POST /api/attendance/manual (بوابة كتابة داخل المتحكم)
 router.post('/manual', attendanceController.saveManualAttendance);
 
+// سجلات البصمة الخام
+// GET /api/attendance/raw-logs
+router.get('/raw-logs', attendanceController.getRawLogs);
+// الحضور اليدوي اليومي
+router.get('/manual-daily/record', attendanceController.getManualRecord);
+router.get('/manual-daily/day', attendanceController.getManualDay);
+router.post('/manual-daily', attendanceController.createManualDaily);
+router.put('/manual-daily/:id', attendanceController.updateManualDaily);
+router.delete('/manual-daily/:id', attendanceController.deleteManualDaily);
+
 module.exports = router;

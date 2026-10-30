@@ -488,6 +488,25 @@ const employeePenalties = {
     || a?.permissions?.frm_EmployeePenaltiesDirectSign?.canView === true,
 };
 
+const attendance = {
+  // سجلات البصمة الخام — عائلة مديري الحضور في الـ API (Admin/SalesManager/
+  // AccountManager/Account/HrManager) ∪ Claim عرض بلازور frm_Attendance:View.
+  canViewRawLogs: (a) => roles.admin(a)
+    || roles.salesManager(a)
+    || roles.accountManager(a)
+    || roles.account(a)
+    || roles.hrManager(a)
+    || hasClaim(a, 'frm_Attendance:View'),
+  // الكتابة اليدوية اليومية — مجموعة صفحة بلازور ManualDailyAttendancePage
+  // حرفيًا: Admin ∨ HrManager ∨ HRManager ∨ AccountManager ∨ Account
+  // ∨ claim frm_Attendance:Edit. SalesManager خارجها عمدًا كما في بلازور.
+  canManualWrite: (a) => roles.admin(a)
+    || roles.accountManager(a)
+    || roles.account(a)
+    || roles.hrManager(a)
+    || hasClaim(a, 'frm_Attendance:Edit'),
+};
+
 const loans = {
   // إنشاء السلفة في بلازور (LoansPage) بـ frmEmployeeLoans:Add، والإلغاء بـ :Delete.
   canCreate: (a) => roles.admin(a)
@@ -539,4 +558,5 @@ module.exports = {
   shifts,
   loans,
   employeePenalties,
+  attendance,
 };

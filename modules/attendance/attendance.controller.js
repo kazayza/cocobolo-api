@@ -1,5 +1,6 @@
 const notificationsQueries = require('../notifications/notifications.queries');
 const attendanceQueries = require('./attendance.queries');
+const { attendance: attendancePolicy } = require('../../shared/authorization.policy');
 const { successResponse, errorResponse } = require('../../shared/response.helper');
 const geolib = require('geolib');
 
@@ -734,6 +735,180 @@ async function getReport(req, res) {
   }
 }
 
+// ══════════════════════════════════════════════════════════════
+// سجلات البصمة الخام + الحضور اليدوي اليومي
+// ══════════════════════════════════════════════════════════════
+async function getRawLogs(req, res) {
+  try {
+    if (!attendancePolicy.canViewRawLogs(req.auth)) {
+      return errorResponse(res, 'غير مصرح لك بعرض سجلات البصمة', 403);
+    }
+    let pageNumber = parseInt(req.query.pageNumber, 10);
+    if (!Number.isFinite(pageNumber) || pageNumber < 1) pageNumber = 1;
+    let pageSize = parseInt(req.query.pageSize, 10);
+    if (!Number.isFinite(pageSize)) pageSize = 50;
+    pageSize = Math.min(Math.max(pageSize, 1), 100);
+    const biometricCodeRaw = req.query.biometricCode != null && req.query.biometricCode !== ''
+      ? parseInt(req.query.biometricCode, 10) : null;
+    const { items, totalCount } = await attendanceQueries.getRawBiometricLogs({
+      dateFrom: req.query.dateFrom || null,
+      dateTo: req.query.dateTo || null,
+      searchText: req.query.searchText || req.query.search || null,
+      biometricCode: Number.isFinite(biometricCodeRaw) ? biometricCodeRaw : null,
+      pageNumber,
+      pageSize,
+    });
+    const todayCount = await attendanceQueries.countTodayRawLogs();
+    const employeeCount = new Set(items.map((i) => i.BiometricCode)).size;
+    const totalPages = totalCount > 0 ? Math.ceil(totalCount / pageSize) : 0;
+    return res.json({
+      success: true,
+      data: { items, totalCount, pageNumber, pageSize, totalPages, todayCount, employeeCount },
+    });
+  } catch (err) {
+    return errorResponse(res, 'فشل تحميل سجلات البصمة', 500, err.message);
+  }
+}
+
+function requireManualWrite(req, res) {
+  if (attendancePolicy.canManualWrite(req.auth)) return true;
+  errorResponse(res, 'غير مصرح لك بكتابة الحضور اليدوي', 403);
+  return false;
+}
+
+async function getManualRecord(req, res) {
+  try {
+    if (!requireManualWrite(req, res)) return;
+    const employeeId = parseInt(req.query.employeeId, 10);
+    const date = req.query.date || req.query.logDate;
+    if (!employeeId || !date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
+      return errorResponse(res, 'معرف الموظف والتاريخ مطلوبان', 400);
+    }
+    const employee = await attendanceQueries.getManualEmployeeById(employeeId);
+    if (!employee) return errorResponse(res, 'الموظف غير موجود.', 404);
+    const { record, shift } = await attendanceQueries.getManualRecord(employeeId, String(date));
+    return res.json({
+      success: true,
+      data: {
+        employee: {
+          EmployeeID: employee.EmployeeID,
+          FullName: employee.FullName,
+          Department: employee.Department,
+          BiometricCode: employee.BioEmployeeID != null ? employee.BioEmployeeID : null,
+        },
+        record: record || null,
+        shift: {
+          StartTime: shift?.StartTime || '08:00',
+          EndTime: shift?.EndTime || '17:00',
+        },
+      },
+    });
+  } catch (err) {
+    return errorResponse(res, 'فشل تحميل سجل الحضور اليدوي', 500, err.message);
+  }
+}
+
+async function getManualDay(req, res) {
+  try {
+    if (!requireManualWrite(req, res)) return;
+    const date = req.query.date || req.query.logDate;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
+      return errorResponse(res, 'التاريخ مطلوب بصيغة yyyy-MM-dd', 400);
+    }
+    const data = await attendanceQueries.getManualDayRecords(String(date));
+    return res.json({ success: true, data });
+  } catch (err) {
+    return errorResponse(res, 'فشل تحميل حضور اليوم', 500, err.message);
+  }
+}
+
+async function createManualDaily(req, res) {
+  try {
+    if (!requireManualWrite(req, res)) return;
+    const body = req.body || {};
+    const employeeIdRaw = body.employeeId ?? body.EmployeeID;
+    const biometricCodeRaw = body.biometricCode ?? body.BiometricCode;
+    const logDate = body.logDate ?? body.LogDate ?? body.date;
+    const editReason = body.editReason ?? body.EditReason;
+    if (!logDate || !/^\d{4}-\d{2}-\d{2}$/.test(String(logDate))) {
+      return errorResponse(res, 'تاريخ الحضور مطلوب بصيغة yyyy-MM-dd', 400);
+    }
+    if (!editReason || !String(editReason).trim()) {
+      return errorResponse(res, 'سبب الإدخال أو التعديل مطلوب', 400);
+    }
+    let biometricCode;
+    if (employeeIdRaw != null && employeeIdRaw !== '') {
+      const employee = await attendanceQueries.getManualEmployeeById(parseInt(employeeIdRaw, 10));
+      if (!employee) return errorResponse(res, 'الموظف غير موجود.', 404);
+      if (employee.BioEmployeeID == null) {
+        return errorResponse(res, 'الموظف لا يملك كود بصمة، استخدم الحضور اليدوي الشهري للمعفيين', 400);
+      }
+      biometricCode = employee.BioEmployeeID;
+    } else {
+      biometricCode = parseInt(biometricCodeRaw, 10);
+      if (!biometricCode || biometricCode <= 0) {
+        return errorResponse(res, 'كود البصمة مطلوب.', 400);
+      }
+      const employee = await attendanceQueries.getEmployeeByBioCode(biometricCode);
+      if (!employee) {
+        return errorResponse(res, 'الموظف المرتبط بكود البصمة غير موجود.', 400);
+      }
+    }
+    const result = await attendanceQueries.upsertManualAttendance({
+      biometricCode,
+      logDate: String(logDate),
+      timeIn: body.timeIn ?? body.TimeIn ?? null,
+      timeOut: body.timeOut ?? body.TimeOut ?? null,
+      status: body.status ?? body.Status ?? null,
+      editReason: String(editReason).trim(),
+      attendanceId: body.attendanceId ?? body.AttendanceID ?? null,
+    }, req.auth.username);
+    return res.json({
+      success: true,
+      message: result.isNew ? 'تم إنشاء سجل الحضور اليدوي بنجاح.' : 'تم تحديث سجل الحضور اليدوي بنجاح.',
+      data: { attendanceId: result.attendanceId, record: result.record },
+    });
+  } catch (err) {
+    return errorResponse(res, err.message || 'فشل حفظ الحضور اليدوي', err.statusCode || 500, err.message);
+  }
+}
+
+async function updateManualDaily(req, res) {
+  try {
+    if (!requireManualWrite(req, res)) return;
+    const body = req.body || {};
+    const editReason = body.editReason ?? body.EditReason;
+    if (!editReason || !String(editReason).trim()) {
+      return errorResponse(res, 'سبب الإدخال أو التعديل مطلوب', 400);
+    }
+    const id = parseInt(req.params.id, 10);
+    const record = await attendanceQueries.updateManualAttendance(id, {
+      timeIn: body.timeIn ?? body.TimeIn ?? null,
+      timeOut: body.timeOut ?? body.TimeOut ?? null,
+      status: body.status ?? body.Status ?? null,
+      editReason: String(editReason).trim(),
+    }, req.auth.username);
+    return res.json({
+      success: true,
+      message: 'تم تعديل سجل الحضور بنجاح.',
+      data: { attendanceId: id, record },
+    });
+  } catch (err) {
+    return errorResponse(res, err.message || 'فشل تعديل سجل الحضور', err.statusCode || 500, err.message);
+  }
+}
+
+async function deleteManualDaily(req, res) {
+  try {
+    if (!requireManualWrite(req, res)) return;
+    const id = parseInt(req.params.id, 10);
+    await attendanceQueries.deleteManualAttendance(id, req.auth.username);
+    return res.json({ success: true, message: 'تم حذف سجل الحضور بنجاح.' });
+  } catch (err) {
+    return errorResponse(res, err.message || 'فشل حذف سجل الحضور', err.statusCode || 500, err.message);
+  }
+}
+
 module.exports = {
   checkIn,
   checkOut,
@@ -752,5 +927,11 @@ module.exports = {
   getStatistics,
   getReport,
   getManualAttendance,
-  saveManualAttendance
+  saveManualAttendance,
+  getRawLogs,
+  getManualRecord,
+  getManualDay,
+  createManualDaily,
+  updateManualDaily,
+  deleteManualDaily
 };
