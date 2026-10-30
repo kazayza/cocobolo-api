@@ -814,14 +814,14 @@ async function cancelTransaction(transactionId, reason, username) {
     if (invoice.TransactionType === 'Sale') {
       const qRes = await transaction.request()
         .input('id', sql.Int, transactionId)
-        .query(`SELECT QuotationId, ReferenceNumber FROM Quotations WHERE InvoiceId = @id`);
+        .query(`SELECT QuotationID, ReferenceNumber FROM Quotations WHERE InvoiceID = @id`);
       for (const q of qRes.recordset) {
         quotationNote += `، وفُك ارتباط عرض السعر ${q.ReferenceNumber} وأُعيد لحالة «مقبول»`;
       }
       if (qRes.recordset.length) {
         await transaction.request()
           .input('id', sql.Int, transactionId)
-          .query(`UPDATE Quotations SET InvoiceId = NULL, Status = 'Accepted' WHERE InvoiceId = @id`);
+          .query(`UPDATE Quotations SET InvoiceID = NULL, Status = 'Accepted' WHERE InvoiceID = @id`);
       }
     }
 

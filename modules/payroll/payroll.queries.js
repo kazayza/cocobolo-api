@@ -782,7 +782,7 @@ async function deductLoanInstallments(makeRequest, payroll, username) {
     .query(`
       SELECT InstallmentId, LoanId, InstallmentNumber, Amount, Notes
       FROM LoanInstallments
-      WHERE EmployeeID = @employeeId AND DeductionMonth = @month AND Status = 'Pending'
+      WHERE EmployeeId = @employeeId AND DeductionMonth = @month AND Status = 'Pending'
       ORDER BY InstallmentNumber
     `);
   const installments = instRes.recordset;
@@ -808,7 +808,7 @@ async function deductLoanInstallments(makeRequest, payroll, username) {
       .input('notes', sql.NVarChar(sql.MAX), notes)
       .query(`
         UPDATE LoanInstallments
-        SET Status = 'Deducted', PayrollID = @payrollId, PayrollDetailId = @payrollDetailId,
+        SET Status = 'Deducted', PayrollId = @payrollId, PayrollDetailId = @payrollDetailId,
             DeductionDate = GETDATE(), Notes = @notes
         WHERE InstallmentId = @installmentId
       `);

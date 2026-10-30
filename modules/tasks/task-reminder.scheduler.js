@@ -116,7 +116,7 @@ async function notifyEmployee(pool, employeeId, title, message, taskId) {
   try {
     const res = await pool.request()
       .input('empId', sql.Int, employeeId)
-      .query(`SELECT TOP 1 Username FROM Users WHERE EmployeeID = @empId AND ISNULL(IsActive,1)=1`);
+      .query(`SELECT TOP 1 Username FROM Users WHERE employeeID = @empId AND ISNULL(IsActive,1)=1`);
     const username = res.recordset[0]?.Username;
     if (!username) return false;
     await notificationsQueries.createNotification({

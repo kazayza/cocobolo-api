@@ -278,7 +278,7 @@ async function team(pool, scope, today) {
     fin._internal.request(pool, [['branchId', sql.Int, scope.branchId]], `
       SELECT EmployeeID, FullName, JobTitle, Status, BioEmployeeID, IsPermanentlyExempt
       FROM Employees WHERE EndDate IS NULL AND Status = N'نشط'
-      ${scope.scoped ? 'AND BranchId = @branchId' : ''} ORDER BY FullName`),
+      ${scope.scoped ? 'AND BranchID = @branchId' : ''} ORDER BY FullName`),
     fin._internal.request(pool, [], 'SELECT Username, employeeID AS EmployeeID FROM Users WHERE employeeID IS NOT NULL'),
     fin._internal.request(pool, [['auditFrom', sql.DateTime, auditFrom]], `
       SELECT u.employeeID AS EmployeeID, a.LoginName, a.ActionDate, a.TableName, a.ActionType
@@ -1027,7 +1027,7 @@ async function b2b(pool, ranges) {
 async function hr(pool, ranges, scope, today) {
   const employees = await fin._internal.request(pool, [['branchId', sql.Int, scope.branchId]], `
     SELECT Status, BioEmployeeID, IsPermanentlyExempt FROM Employees WHERE EndDate IS NULL
-    ${scope.scoped ? 'AND BranchId = @branchId' : ''}`);
+    ${scope.scoped ? 'AND BranchID = @branchId' : ''}`);
   const active = employees.filter((e) => e.Status === 'نشط');
   const dto = {
     ActiveEmployees: active.length,

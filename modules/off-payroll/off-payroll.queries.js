@@ -60,9 +60,9 @@ async function create(data, username) {
       .input('notes', sql.NVarChar(500), notes)
       .input('user', sql.NVarChar(50), username)
       .query(`
-        INSERT INTO Payroll (EmployeeID, PayrollMonth, BasicSalary, NetSalary, PaymentStatus, Notes, CreatedBy, CreatedAt)
+        INSERT INTO Payroll (EmployeeID, PayrollMonth, BasicSalary, PaymentStatus, Notes, CreatedBy, CreatedAt)
         OUTPUT INSERTED.PayrollID
-        VALUES (@empId, @month, @amount, @amount, N'قيد المراجعة', @notes, @user, GETDATE())
+        VALUES (@empId, @month, @amount, N'قيد المراجعة', @notes, @user, GETDATE())
       `);
     const payrollId = rs.recordset[0].PayrollID;
     await tx.request().input('id', sql.Int, payrollId).input('user', sql.NVarChar(50), username).query(`

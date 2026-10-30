@@ -178,10 +178,10 @@ async function enrichCashboxTransactions(items) {
     const pool = await connectDB();
     try {
       const res = await pool.request().query(
-        `SELECT PersonalAccountID, AccountName
-         FROM PersonalAccounts WHERE PersonalAccountID IN (${ids(accountIds)})`
+        `SELECT PersonalAccountId, AccountName
+         FROM PersonalAccounts WHERE PersonalAccountId IN (${ids(accountIds)})`
       );
-      for (const r of res.recordset) accounts.set(r.PersonalAccountID, r.AccountName);
+      for (const r of res.recordset) accounts.set(r.PersonalAccountId, r.AccountName);
     } catch (e) { console.error('⚠️ enrich personal accounts:', e.message); }
   }
 

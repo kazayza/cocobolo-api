@@ -238,7 +238,7 @@ async function expenseSum(pool, range, from, to) {
     SELECT ISNULL(SUM(Amount), 0) AS Total FROM Expenses
     WHERE ExpenseDate >= @fromDate AND ExpenseDate < DATEADD(DAY, 1, @toDate)
       AND (ISNULL(IsAdvance, 0) <> 1 OR AdvanceParentExpenseId IS NOT NULL)
-      ${range.branchId ? 'AND BranchId = @branchId' : ''}
+      ${range.branchId ? 'AND BranchID = @branchId' : ''}
   `);
   return Number(rows[0]?.Total || 0);
 }
@@ -525,7 +525,7 @@ async function getBalanceSheet(pool, range) {
   const prepaidRows = await request(pool, baseParams(range), `
     SELECT ISNULL(SUM(Amount), 0) AS Total FROM Expenses
     WHERE AdvanceParentExpenseId IS NOT NULL AND ExpenseDate > CAST(GETDATE() AS DATE)
-    ${scoped ? 'AND BranchId = @branchId' : ''}
+    ${scoped ? 'AND BranchID = @branchId' : ''}
   `);
   dto.PrepaidExpensesAsset = money(prepaidRows[0]?.Total);
   dto.TotalAssets = money(dto.CashBalance + dto.AccountsReceivable + dto.InventoryValue + dto.EmployeeLoansOutstanding + dto.PrepaidExpensesAsset);

@@ -35,7 +35,7 @@ async function getLoans(filter={}){
   const rs = await req.query(`
     SELECT l.LoanId, l.EmployeeId, l.LoanAmount, l.TotalInstallments, l.MonthlyInstallment, l.RemainingAmount, l.PaidInstallments, l.StartDeductionMonth, l.Status, l.LoanDate, l.Notes,
            e.FullName AS EmployeeName, e.Department, e.JobTitle, e.BranchID,
-           CASE WHEN e.EmploymentStatus='Resigned' THEN 'Resigned' ELSE 'Active' END AS EmployeeStatus,
+           CASE WHEN e.Status = N'مستقيل' THEN 'Resigned' ELSE 'Active' END AS EmployeeStatus,
            b.BranchNameAr AS BranchName
     FROM EmployeeLoans l 
     INNER JOIN Employees e ON l.EmployeeId=e.EmployeeID
@@ -167,7 +167,7 @@ async function createWithInstallments(data, username){
       await new sql.Request(tx)
         .input('loanId', sql.Int, loanId)
         .input('txId', sql.Int, txRes.recordset[0].CashboxTransactionID)
-        .query(`UPDATE EmployeeLoans SET CashboxTransactionID = @txId WHERE LoanId = @loanId`);
+        .query(`UPDATE EmployeeLoans SET CashboxTransactionId = @txId WHERE LoanId = @loanId`);
     }
 
     await tx.commit();
