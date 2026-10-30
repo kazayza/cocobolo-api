@@ -320,9 +320,72 @@ async function getExemptions(req, res) {
   }
 }
 
+// إشعارات الاستثناءات — مرآة Notify* في AttendanceService: الإنشاء
+// (معلقًا أو معتمدًا مباشرة) يُخطر مديري الاستثناءات بأدوار بلازور
+// الأربعة، والقرار يُخطر منشئ الاستثناء باسمه. فشل الإشعار لا يُفشل
+// العملية أبدًا (نفس قاعدة الجزاءات).
+async function notifyExemptionManagers(req, { title, message, exemptionId }) {
+  try {
+    const usernames = await attendanceQueries.getExemptionManagerUsernames();
+    for (const username of [...new Set(usernames)]) {
+      try {
+        await notificationsQueries.createNotification({
+          title,
+          message,
+          recipientUser: username,
+          relatedTable: 'DailyExemptions',
+          relatedId: exemptionId,
+          formName: 'frmDailyExemptions',
+          createdBy: req.auth.username,
+        });
+      } catch (err) {
+        console.error('exemption notify (manager):', err.message);
+      }
+    }
+  } catch (err) {
+    console.error('exemption notify (managers):', err.message);
+  }
+}
+
+async function notifyExemptionDecision(req, { exemption, employeeName, approved, reason }) {
+  try {
+    if (!exemption?.CreatedBy) return;
+    const dateText = exemptionDateText(exemption.ExemptionDate);
+    const title = approved ? '✅ تم اعتماد الاستثناء' : '❌ تم رفض الاستثناء';
+    const message = approved
+      ? `تم اعتماد الاستثناء الخاص بالموظف ${employeeName} بتاريخ ${dateText} بسبب (${exemption.ReasonCode}) بواسطة ${req.auth.username}.`
+      : `تم رفض الاستثناء الخاص بالموظف ${employeeName} بتاريخ ${dateText} بسبب (${exemption.ReasonCode}) بواسطة ${req.auth.username}.${reason ? ` سبب الرفض: ${reason}` : ''}`;
+    await notificationsQueries.createNotification({
+      title,
+      message,
+      recipientUser: exemption.CreatedBy,
+      relatedTable: 'DailyExemptions',
+      relatedId: exemption.ExemptionID,
+      formName: 'frmDailyExemptions',
+      createdBy: req.auth.username,
+    });
+  } catch (err) {
+    console.error('exemption notify (decision):', err.message);
+  }
+}
+
+// تنسيق تاريخ بلازور في رسائل الإشعارات: yyyy/MM/dd
+function exemptionDateText(value) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value || '');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}/${mm}/${dd}`;
+}
+
 // إنشاء إعفاء — مرآة CreateExemptionAsync:2081: لا يُوثق بـ approvedBy
 // من الجسم إطلاقًا (كان اعتمادًا ذاتيًا باسم المنشئ). مدير الإعفاءات
 // يُعتمد فورًا مع الانعكاس على الحضور، وغيره يبقى Pending بلا معتمِد.
+// المستهدف: المدير يرسل employeeId فيُحلّ كود البصمة من الموظف نفسه
+// (كما في بلازور) أو bioEmployeeId صراحة؛ وغير المدير يُفرض عليه
+// موظفه المرتبط بجلسته ويُتجاهل أي استهداف في الجسم (مرحلة صفر).
+// تحققات بلازور: لا تكرار في اليوم نفسه (غير المرفوض)، لا استثناء في
+// يوم راحة أسبوعية، والساعات إلزامية للاستثناء الجزئي.
 async function createExemption(req, res) {
   try {
     const body = req.body || {};
@@ -330,22 +393,56 @@ async function createExemption(req, res) {
       return errorResponse(res, 'بيانات الإعفاء غير مكتملة', 400);
     }
     const manager = isExemptionManager(req.auth);
-    // مرحلة صفر (أمن): غير المدير ينشئ لنفسه فقط — كود البصمة يُفرض
-    // من جلسته ويُتجاهل أي كود في الجسم (كان بإمكان أي مستخدم إنشاء
-    // إعفاء لأي موظف آخر). المدير وحده ينشئ لغيره.
-    let bioEmployeeId = body.bioEmployeeId;
+
+    let employee = null;
     if (!manager) {
-      bioEmployeeId = await attendanceQueries.getBioCodeByUserId(req.auth.userId);
-      if (!bioEmployeeId) {
+      employee = await attendanceQueries.getOwnEmployeeForUser(req.auth.userId);
+      if (!employee || !employee.BioEmployeeID) {
         return errorResponse(res, 'لم يتم ربط الموظف برقم بصمة', 400);
       }
-    } else if (!bioEmployeeId) {
+    } else if (body.employeeId) {
+      employee = await attendanceQueries.getEmployeeForExemption(Number(body.employeeId));
+      if (!employee) {
+        return errorResponse(res, 'الموظف غير موجود.', 400);
+      }
+      if (!employee.BioEmployeeID) {
+        return errorResponse(res, 'الموظف ليس لديه كود بصمة.', 400);
+      }
+    } else if (body.bioEmployeeId) {
+      employee = await attendanceQueries.getEmployeeByBioCode(Number(body.bioEmployeeId));
+      if (!employee) {
+        return errorResponse(res, 'الموظف غير موجود.', 400);
+      }
+    } else {
       return errorResponse(res, 'بيانات الإعفاء غير مكتملة', 400);
     }
+
+    const bioEmployeeId = employee.BioEmployeeID;
+    const employeeId = employee.EmployeeID;
+
+    const isFullDay = body.isFullDay !== false;
+    if (!isFullDay && !(Number(body.hours) > 0)) {
+      return errorResponse(res, 'يرجى تحديد عدد الساعات للاستثناء الجزئي.', 400);
+    }
+
+    const duplicate = await attendanceQueries.findDuplicateExemption(bioEmployeeId, body.exemptionDate);
+    if (duplicate) {
+      return errorResponse(res, 'يوجد استثناء مسجل بالفعل لهذا الموظف في هذا اليوم.', 400);
+    }
+
+    const shift = await attendanceQueries.getCurrentShiftOffDays(employeeId, body.exemptionDate);
+    if (shift) {
+      const dayOfWeek = new Date(body.exemptionDate).getDay();
+      const offDays = [shift.OffDay1, shift.OffDay2].filter((d) => d != null).map(Number);
+      if (offDays.includes(dayOfWeek)) {
+        return errorResponse(res, 'هذا اليوم هو راحة أسبوعية للموظف - لا حاجة لاستثناء.', 400);
+      }
+    }
+
     const status = manager ? 'Approved' : 'Pending';
     const { exemptionId, exemption } = await attendanceQueries.createExemption({
       bioEmployeeId,
-      employeeId: body.employeeId || null,
+      employeeId,
       exemptionDate: body.exemptionDate,
       reasonCode: body.reasonCode,
       description: body.description || null,
@@ -360,6 +457,22 @@ async function createExemption(req, res) {
     if (status === 'Approved') {
       await attendanceQueries.applyExemptionAttendance(exemption);
     }
+
+    const dateText = exemptionDateText(body.exemptionDate);
+    if (status === 'Pending') {
+      await notifyExemptionManagers(req, {
+        title: '📝 استثناء جديد قيد الاعتماد',
+        message: `تم تسجيل استثناء جديد للموظف ${employee.FullName} بتاريخ ${dateText} بسبب (${body.reasonCode}) وهو الآن قيد الاعتماد.`,
+        exemptionId,
+      });
+    } else {
+      await notifyExemptionManagers(req, {
+        title: '✅ تم اعتماد استثناء مباشرة',
+        message: `تم تسجيل واعتماد استثناء للموظف ${employee.FullName} بتاريخ ${dateText} بسبب (${body.reasonCode}) بواسطة ${req.auth.username}.`,
+        exemptionId,
+      });
+    }
+
     return res.json({
       success: true,
       exemptionId,
@@ -391,6 +504,14 @@ async function approveExemption(req, res) {
       approvedBy: req.auth.username,
     });
     await attendanceQueries.applyExemptionAttendance(exemption);
+    const employee = exemption.EmployeeID
+      ? await attendanceQueries.getEmployeeForExemption(exemption.EmployeeID)
+      : await attendanceQueries.getEmployeeByBioCode(exemption.BioEmployeeID);
+    await notifyExemptionDecision(req, {
+      exemption,
+      employeeName: employee?.FullName || 'موظف',
+      approved: true,
+    });
     return res.json({ success: true, message: 'تم اعتماد الاستثناء بنجاح.' });
   } catch (err) {
     return errorResponse(res, 'فشل اعتماد الاستثناء', 500, err.message);
@@ -416,6 +537,15 @@ async function rejectExemption(req, res) {
       approvedBy: req.auth.username,
       rejectionReason: reason ? String(reason).trim() : null,
     });
+    const employee = exemption.EmployeeID
+      ? await attendanceQueries.getEmployeeForExemption(exemption.EmployeeID)
+      : await attendanceQueries.getEmployeeByBioCode(exemption.BioEmployeeID);
+    await notifyExemptionDecision(req, {
+      exemption,
+      employeeName: employee?.FullName || 'موظف',
+      approved: false,
+      reason: reason ? String(reason).trim() : null,
+    });
     return res.json({ success: true, message: 'تم رفض الاستثناء.' });
   } catch (err) {
     return errorResponse(res, 'فشل رفض الاستثناء', 500, err.message);
@@ -440,7 +570,19 @@ async function getExemptionsList(req, res) {
   try {
     const filters = {
       date: req.query.date,
-      employeeName: req.query.employeeName
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+      employeeName: req.query.employeeName,
+      status: ['Pending', 'Approved', 'Rejected'].includes(req.query.status)
+        ? req.query.status
+        : null,
+      reasonCode: req.query.reasonCode || null,
+      isDeducted: req.query.isDeducted === 'true'
+        ? true
+        : req.query.isDeducted === 'false'
+          ? false
+          : null,
+      employeeId: req.query.employeeId ? Number(req.query.employeeId) : null,
     };
     if (!isExemptionManager(req.auth)) {
       const ownBio = await attendanceQueries.getBioCodeByUserId(req.auth.userId);
@@ -507,13 +649,24 @@ async function saveManualAttendance(req, res) {
 }
 
 // حذف استثناء — مدير إعفاءات فقط (كان مفتوحًا لأي جلسة)
+// حذف استثناء — بوابة صفحة بلازور الحرفية (ExemptionsPage):
+// Admin أو HrManager (بصيغتيه) أو حامل frmDailyExemptions:Delete.
+// (المدير العام ومدير الحسابات يعتمدان ويرفضان لكنهما لا يحذفان في
+// بلازور.) الحذف يزيل سجل الحضور المرتبط بالاستثناء المعتمد — مرآة
+// DeleteExemptionAsync داخل الاستعلام.
 async function removeExemption(req, res) {
   try {
-    if (!isExemptionManager(req.auth)) {
+    const role = normRole(req.auth?.role);
+    const canDelete = role === 'admin'
+      || role === 'hrmanager'
+      || (req.auth?.claims instanceof Set && req.auth.claims.has('frmDailyExemptions:Delete'));
+    if (!canDelete) {
       return errorResponse(res, 'ليس لديك صلاحية حذف الاستثناءات.', 403);
     }
-    const { id } = req.params;
-    await attendanceQueries.deleteExemption(id);
+    const id = parseInt(req.params.id, 10);
+    const exemption = await attendanceQueries.getExemptionById(id);
+    if (!exemption) return errorResponse(res, 'الاستثناء غير موجود.', 404);
+    await attendanceQueries.deleteExemption(id, exemption);
     return res.json({ success: true, message: 'تم الحذف بنجاح' });
   } catch (err) {
     return errorResponse(res, 'فشل الحذف', 500);

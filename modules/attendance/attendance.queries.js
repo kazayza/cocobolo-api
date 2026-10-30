@@ -461,9 +461,9 @@ async function getAllExemptions(filters = {}) {
   const request = pool.request();
   let query = `
     SELECT
-      x.ExemptionID, x.ExemptionDate, x.ReasonCode, x.Description,
-      x.Status, x.ApprovedBy, x.CreatedBy, x.Notes, x.IsFullDay, x.Hours, x.IsDeducted,
-      e.FullName as EmployeeName, e.Department
+      x.ExemptionID, x.BioEmployeeID, x.EmployeeID, x.ExemptionDate, x.ReasonCode, x.Description,
+      x.Status, x.ApprovedBy, x.CreatedBy, x.CreatedDate, x.Notes, x.IsFullDay, x.Hours, x.IsDeducted,
+      e.FullName as EmployeeName, e.Department, e.Gender
     FROM DailyExemptions x
     JOIN Employees e ON x.BioEmployeeID = e.BioEmployeeID
     WHERE 1=1
@@ -474,9 +474,47 @@ async function getAllExemptions(filters = {}) {
     query += ` AND CAST(x.ExemptionDate AS DATE) = @exemptionDate`;
   }
 
+  // مدى تاريخي — مرآة ExemptionFilterDto (DateFrom/DateTo) في
+  // BuildExemptionsQueryAsync؛ يُستخدم بدل اليوم الواحد عند حضوره.
+  if (filters.dateFrom) {
+    request.input('dateFrom', sql.Date, filters.dateFrom);
+    query += ` AND CAST(x.ExemptionDate AS DATE) >= @dateFrom`;
+  }
+  if (filters.dateTo) {
+    request.input('dateTo', sql.Date, filters.dateTo);
+    query += ` AND CAST(x.ExemptionDate AS DATE) <= @dateTo`;
+  }
+
   if (filters.employeeName) {
     request.input('employeeName', sql.NVarChar(200), `%${String(filters.employeeName).trim()}%`);
     query += ` AND e.FullName LIKE @employeeName`;
+  }
+
+  if (filters.employeeId) {
+    request.input('employeeId', sql.Int, filters.employeeId);
+    query += ` AND x.EmployeeID = @employeeId`;
+  }
+
+  if (filters.reasonCode) {
+    request.input('reasonCode', sql.NVarChar(200), `%${String(filters.reasonCode).trim()}%`);
+    query += ` AND x.ReasonCode LIKE @reasonCode`;
+  }
+
+  if (filters.isDeducted != null) {
+    request.input('isDeducted', sql.Bit, filters.isDeducted);
+    query += ` AND x.IsDeducted = @isDeducted`;
+  }
+
+  // الحالة بدلالات بلازور الحرفية لبناء الاستعلام (BuildExemptionsQueryAsync):
+  // «قيد الاعتماد» = Pending صريحة أو صف قديم بلا حالة وبلا معتمِد؛
+  // «معتمد» = Approved صريحة أو صف قديم بلا حالة وله معتمِد؛
+  // «مرفوض» = Rejected صريحة فقط.
+  if (filters.status === 'Pending') {
+    query += ` AND (x.Status = N'Pending' OR ((x.Status IS NULL OR x.Status = N'') AND (x.ApprovedBy IS NULL OR x.ApprovedBy = N'')))`;
+  } else if (filters.status === 'Approved') {
+    query += ` AND (x.Status = N'Approved' OR ((x.Status IS NULL OR x.Status = N'') AND (x.ApprovedBy IS NOT NULL AND x.ApprovedBy <> N'')))`;
+  } else if (filters.status === 'Rejected') {
+    query += ` AND x.Status = N'Rejected'`;
   }
 
   // قيد النفس لغير المديرين (مرحلة صفر): سجلات كود البصمة هذا فقط
@@ -491,13 +529,122 @@ async function getAllExemptions(filters = {}) {
   return result.recordset;
 }
 
-// حذف استثناء
-async function deleteExemption(id) {
+// حذف استثناء — مرآة DeleteExemptionAsync (AttendanceService.cs:2260):
+// لو الاستثناء معتمد (بالحالة المستنتجة) يُحذف أولًا سجل الحضور المرتبط
+// (صف واحد: نفس كود البصمة والتاريخ وحالته من حالات الاستثناء الثلاث)،
+// ثم يُحذف الاستثناء نفسه.
+async function deleteExemption(id, exemption) {
   const pool = await connectDB();
+  if (exemption && inferExemptionStatus(exemption) === 'Approved') {
+    await pool.request()
+      .input('bioCode', sql.Int, exemption.BioEmployeeID)
+      .input('exemptionDate', sql.Date, exemption.ExemptionDate)
+      .query(`
+        DELETE FROM Attendance
+        WHERE AttendanceID = (
+          SELECT TOP 1 AttendanceID FROM Attendance
+          WHERE BiometricCode = @bioCode
+            AND CAST(LogDate AS DATE) = CAST(@exemptionDate AS DATE)
+            AND Status IN (N'مأمورية', N'إذن', N'خروج مبكر')
+        )
+      `);
+  }
   await pool.request()
     .input('id', sql.Int, id)
     .query('DELETE FROM DailyExemptions WHERE ExemptionID = @id');
   return true;
+}
+
+// موظف بمعرفه — لإنشاء الاستثناء بمعرف الموظف كما في بلازور
+// (CreateExemptionAsync يجلب الموظف وكود بصمته من EmployeeId).
+async function getEmployeeForExemption(employeeId) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('employeeId', sql.Int, employeeId)
+    .query(`
+      SELECT EmployeeID, BioEmployeeID, FullName
+      FROM Employees
+      WHERE EmployeeID = @employeeId
+    `);
+  return result.recordset[0] || null;
+}
+
+// موظف ببصمته — لاستكمال معرف الموظف عند الإنشاء بكود البصمة فقط.
+async function getEmployeeByBioCode(bioCode) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('bioCode', sql.Int, bioCode)
+    .query(`
+      SELECT EmployeeID, BioEmployeeID, FullName
+      FROM Employees
+      WHERE BioEmployeeID = @bioCode
+    `);
+  return result.recordset[0] || null;
+}
+
+// الموظف المرتبط بحساب المستخدم (Users.employeeID) — لإنشاء غير المدير
+// لنفسه فقط (مرحلة صفر): الهوية من الجلسة لا من الجسم.
+async function getOwnEmployeeForUser(userId) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('userId', sql.Int, userId)
+    .query(`
+      SELECT e.EmployeeID, e.BioEmployeeID, e.FullName
+      FROM Users u
+      JOIN Employees e ON e.EmployeeID = u.employeeID
+      WHERE u.UserID = @userId
+    `);
+  return result.recordset[0] || null;
+}
+
+// فحص التكرار — مرآة CreateExemptionAsync: استثناء قائم لنفس البصمة
+// واليوم بحالة غير «مرفوض» (الصفوف القديمة بلا حالة تُعد قائمة).
+async function findDuplicateExemption(bioCode, exemptionDate) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('bioCode', sql.Int, bioCode)
+    .input('exemptionDate', sql.Date, exemptionDate)
+    .query(`
+      SELECT TOP 1 ExemptionID
+      FROM DailyExemptions
+      WHERE BioEmployeeID = @bioCode
+        AND CAST(ExemptionDate AS DATE) = CAST(@exemptionDate AS DATE)
+        AND (Status IS NULL OR Status <> N'Rejected')
+    `);
+  return result.recordset[0] || null;
+}
+
+// أيام الراحة الأسبوعية من الوردية السارية في تاريخ الاستثناء — مرآة
+// فحص CreateExemptionAsync (أحدث وردية بدأت، بنفس حسم وحدة الورديات:
+// ORDER BY EffectiveFrom DESC). OffDay1/OffDay2 أعداد DayOfWeek بنظام
+// .NET (0=الأحد..6=السبت) وهي مطابقة لترقيم JS Date.getDay().
+async function getCurrentShiftOffDays(employeeId, exemptionDate) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('employeeId', sql.Int, employeeId)
+    .input('exemptionDate', sql.Date, exemptionDate)
+    .query(`
+      SELECT TOP 1 OffDay1, OffDay2
+      FROM EmployeeShifts
+      WHERE EmployeeID = @employeeId
+        AND CAST(EffectiveFrom AS DATE) <= CAST(@exemptionDate AS DATE)
+        AND (EffectiveTo IS NULL OR CAST(EffectiveTo AS DATE) >= CAST(@exemptionDate AS DATE))
+      ORDER BY EffectiveFrom DESC
+    `);
+  return result.recordset[0] || null;
+}
+
+// أسماء مستخدمي أدوار إدارة الاستثناءات — مرآة NotifyExemptionManagersAsync
+// (الأدوار الأربعة بصيغ بلازور الحرفية: Admin/GeneralManager/
+// AccountManager/HrManager).
+async function getExemptionManagerUsernames() {
+  const pool = await connectDB();
+  const result = await pool.request().query(`
+    SELECT Username
+    FROM Users
+    WHERE Role IN (N'Admin', N'GeneralManager', N'AccountManager', N'HrManager')
+  `);
+  return result.recordset.map((r) => r.Username).filter(Boolean);
 }
 
 // جلب الفروع النشطة
@@ -758,6 +905,12 @@ module.exports = {
   getEmployeeNameByUserId,
   getAllExemptions,
   deleteExemption,
+  getEmployeeForExemption,
+  getEmployeeByBioCode,
+  getOwnEmployeeForUser,
+  findDuplicateExemption,
+  getCurrentShiftOffDays,
+  getExemptionManagerUsernames,
   getActiveLocations,
   getEmployeeStatistics,
   getAdvancedReport,
