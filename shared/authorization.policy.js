@@ -371,6 +371,16 @@ const payroll = {
     || roles.account(a)
     || isRole(a, 'AccountsManager')
     || hasAnyClaim(a, 'frmPayrollProcessor:View', 'frm_Payroll:View'),
+  // استثناء الذات — قائمة مرتبات موظف (GET /employee/:employeeId):
+  // المدير كما هو، وغير المدير لا يمر إلا إذا كان الموظف المطلوب هو
+  // موظفه المرتبط بالتوكن (Users.employeeID) نفسه.
+  canViewOrSelfEmployee: (a, req) => payroll.canView(a)
+    || (Number(a?.employeeId) > 0
+      && Number(req?.params?.employeeId) === Number(a.employeeId)),
+  // استثناء الذات — قسيمة مفردة (GET /:id): البوابة تمرّر المدير أو أي
+  // مستخدم مربوط بموظف، وفحص الملكية الفعلي (المرتب يخص موظف التوكن)
+  // يتم داخل المتحكم بعد جلب المرتب — غير المربوط يبقى 403 هنا.
+  canViewOrLinked: (a) => payroll.canView(a) || Number(a?.employeeId) > 0,
   // الاعتماد/الدفع في بلازور: Admin/AccountManager/AccountsManager — وأضيف HrManager كمشغّل للمرتبات.
   canMutate: (a) => roles.admin(a)
     || roles.hrManager(a)

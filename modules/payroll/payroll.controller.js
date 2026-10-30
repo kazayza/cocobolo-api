@@ -1,5 +1,6 @@
 const payrollQueries = require('./payroll.queries');
 const notificationsQueries = require('../notifications/notifications.queries');
+const policies = require('../../shared/authorization.policy');
 const { successResponse, errorResponse, notFoundResponse } = require('../../shared/response.helper');
 
 // جلب مرتبات شهر معين — يدعم month=null للأرشيف (كل الشهور) + branch/paymentStatus/search
@@ -61,6 +62,16 @@ async function getById(req, res) {
 
     if (!payroll) {
       return notFoundResponse(res, 'المرتب غير موجود');
+    }
+
+    // استثناء الذات: غير المدير لا يرى إلا قسيمة مرتبه هو — المرتب الذي
+    // يخص موظفًا آخر يُرفض 403 كما كان قبل الاستثناء (البوابة مرّرته
+    // لأنه مربوط بموظف، والملكية تُحسم هنا بعد الجلب).
+    if (!policies.payroll.canView(req.auth)) {
+      const myEmployeeId = Number(req.auth?.employeeId);
+      if (!(myEmployeeId > 0) || Number(payroll.EmployeeID) !== myEmployeeId) {
+        return errorResponse(res, 'غير مصرح لك بعرض هذه القسيمة', 403);
+      }
     }
 
     const details = await payrollQueries.getPayrollDetails(parsedId);

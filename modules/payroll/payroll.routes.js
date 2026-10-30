@@ -12,6 +12,8 @@ const { payroll: payrollPolicy } = require('../../shared/authorization.policy');
 router.use(authenticate);
 
 const canView = requirePolicy(payrollPolicy.canView, 'غير مصرح لك بعرض المرتبات');
+const canViewOrSelfEmployee = requirePolicy(payrollPolicy.canViewOrSelfEmployee, 'غير مصرح لك بعرض المرتبات');
+const canViewOrLinked = requirePolicy(payrollPolicy.canViewOrLinked, 'غير مصرح لك بعرض المرتبات');
 const canMutate = requirePolicy(payrollPolicy.canMutate, 'غير مصرح لك بتنفيذ هذا الإجراء على المرتبات');
 
 // جلب مرتبات شهر معين
@@ -26,9 +28,9 @@ router.get('/months', canView, payrollController.getMonths);
 // GET /api/payroll/stats
 router.get('/stats', canView, payrollController.getStats);
 
-// جلب مرتبات موظف
+// جلب مرتبات موظف — المدير أو الموظف نفسه (استثناء الذات)
 // GET /api/payroll/employee/:employeeId
-router.get('/employee/:employeeId', canView, payrollController.getByEmployee);
+router.get('/employee/:employeeId', canViewOrSelfEmployee, payrollController.getByEmployee);
 
 // ══════════════════════════════════════════════════════════════
 // دورة الرواتب الشهرية (البند 34) — قبل /:id حتى لا تُلتقط كمعرّف
@@ -46,9 +48,10 @@ router.post('/runs', canMutate, payrollController.createRun);
 // GET /api/payroll/runs?month=YYYY-MM
 router.get('/runs', canView, payrollController.getRuns);
 
-// جلب مرتب بالـ ID
+// جلب مرتب بالـ ID (القسيمة) — المدير أو أي مستخدم مربوط بموظف،
+// والمتحكم يتحقق أن المرتب يخص موظف التوكن لغير المديرين
 // GET /api/payroll/:id
-router.get('/:id', canView, payrollController.getById);
+router.get('/:id', canViewOrLinked, payrollController.getById);
 
 // اعتماد مرتب (حارس المراجع الأضيق داخل المحرك)
 // POST /api/payroll/:id/approve
