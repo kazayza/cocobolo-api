@@ -83,10 +83,10 @@ async function getCashBoxBalance(makeRequest, cashBoxId){
 
 // إنشاء سلفة + أقساطها — مرآة EmployeeLoanService.SaveLoanAsync:238:
 // شهر البداية لا يكون في الماضي؛ القسط = round(المبلغ/العدد, 2) والأخير
-// يأخذ الباقي (:323-330). قرار موثق للواجهة: CashBoxId اختياري — عند
-// إرساله تُفرض حركة صرف 'Loan' وحارس الرصيد وربط CashboxTransactionId
-// في المعاملة نفسها (قاعدة بلازور كاملة)، وعند غيابه يبقى السلوك
-// القديم بلا حركة حتى لا ينكسر عقد POST القائم (بلازور يوجبه).
+// يأخذ الباقي (:323-330). الخزينة إلزامية (قرار المالك د٤ — تطابق بلازور
+// SaveLoanAsync الذي يرفض غياب CashBoxId بـ «يرجى اختيار الخزينة»):
+// حارس الرصيد وحركة صرف 'Loan' وربط CashboxTransactionId تتم دائمًا
+// في المعاملة نفسها، ولا إنشاء بلا حركة خزينة.
 async function createWithInstallments(data, username){
   const employeeId = parseInt(data.employeeId, 10);
   const amount = Number(data.amount);
@@ -100,6 +100,7 @@ async function createWithInstallments(data, username){
   if (!/^\d{4}-\d{2}$/.test(startMonth)) throw loanError('يرجى تحديد شهر بداية الخصم');
   const currentMonth = new Date().toISOString().slice(0, 7);
   if (startMonth < currentMonth) throw loanError('شهر بداية الخصم لا يمكن أن يكون في الماضي');
+  if (!cashBoxId) throw loanError('يرجى اختيار الخزينة');
 
   const monthlyInstallment = round2(amount / totalInstallments);
 
@@ -112,11 +113,9 @@ async function createWithInstallments(data, username){
     const employee = empRes.recordset[0];
     if (!employee) throw loanError('الموظف غير موجود');
 
-    if (cashBoxId) {
-      const balance = await getCashBoxBalance(() => new sql.Request(tx), cashBoxId);
-      if (balance == null) throw loanError('الخزينة غير موجودة');
-      if (balance < amount) throw loanError(`رصيد الخزينة (${balance.toFixed(2)} جـ) أقل من قيمة السلفة (${amount.toFixed(2)} جـ)`);
-    }
+    const balance = await getCashBoxBalance(() => new sql.Request(tx), cashBoxId);
+    if (balance == null) throw loanError('الخزينة غير موجودة');
+    if (balance < amount) throw loanError(`رصيد الخزينة (${balance.toFixed(2)} جـ) أقل من قيمة السلفة (${amount.toFixed(2)} جـ)`);
 
     const rs = await new sql.Request(tx)
       .input('empId', sql.Int, employeeId)
@@ -149,26 +148,24 @@ async function createWithInstallments(data, username){
         .query(`INSERT INTO LoanInstallments (LoanId, EmployeeId, InstallmentNumber, DeductionMonth, Amount, Status, CreatedBy, CreatedAt) VALUES (@loanId, @empId, @num, @m, @amt, 'Pending', @user, GETDATE())`);
     }
 
-    if (cashBoxId) {
-      const txRes = await new sql.Request(tx)
-        .input('cashBoxId', sql.Int, cashBoxId)
-        .input('amount', sql.Decimal(18,2), amount)
-        .input('referenceId', sql.Int, loanId)
-        .input('notes', sql.NVarChar(500), `سلفة للموظف ${employee.FullName} - ${totalInstallments} قسط`)
-        .input('user', sql.NVarChar(50), username)
-        .query(`
-          INSERT INTO CashboxTransactions (
-            CashBoxID, TransactionType, ReferenceType, ReferenceID,
-            Amount, TransactionDate, Notes, CreatedBy, CreatedAt
-          )
-          OUTPUT INSERTED.CashboxTransactionID
-          VALUES (@cashBoxId, N'صرف', 'Loan', @referenceId, @amount, GETDATE(), @notes, @user, GETDATE())
-        `);
-      await new sql.Request(tx)
-        .input('loanId', sql.Int, loanId)
-        .input('txId', sql.Int, txRes.recordset[0].CashboxTransactionID)
-        .query(`UPDATE EmployeeLoans SET CashboxTransactionId = @txId WHERE LoanId = @loanId`);
-    }
+    const txRes = await new sql.Request(tx)
+      .input('cashBoxId', sql.Int, cashBoxId)
+      .input('amount', sql.Decimal(18,2), amount)
+      .input('referenceId', sql.Int, loanId)
+      .input('notes', sql.NVarChar(500), `سلفة للموظف ${employee.FullName} - ${totalInstallments} قسط`)
+      .input('user', sql.NVarChar(50), username)
+      .query(`
+        INSERT INTO CashboxTransactions (
+          CashBoxID, TransactionType, ReferenceType, ReferenceID,
+          Amount, TransactionDate, Notes, CreatedBy, CreatedAt
+        )
+        OUTPUT INSERTED.CashboxTransactionID
+        VALUES (@cashBoxId, N'صرف', 'Loan', @referenceId, @amount, GETDATE(), @notes, @user, GETDATE())
+      `);
+    await new sql.Request(tx)
+      .input('loanId', sql.Int, loanId)
+      .input('txId', sql.Int, txRes.recordset[0].CashboxTransactionID)
+      .query(`UPDATE EmployeeLoans SET CashboxTransactionId = @txId WHERE LoanId = @loanId`);
 
     await tx.commit();
     return { loanId, monthlyInstallment };
@@ -249,6 +246,323 @@ async function getEmployeeStatement(employeeId){
   };
 }
 
+// ============================================================
+// حرّاس نقل الأقساط — مرآة ValidateTargetMonthAsync /
+// GetUnpaidPayrollBlockAsync في بلازور (12-H9/12-H11/د).
+// حالات دفع الراتب نصوص عربية حرفية (PayrollPaymentStatuses):
+// مدفوع / قيد المراجعة / معتمد / غير مدفوع / مرفوض / ملغي.
+// الأعمدة الفيزيائية: Payroll.EmployeeID و Payroll.PayrollID.
+// استثناء [OFFPAYROLL] بـ CHARINDEX لا LIKE (الأقواس أحرف Wildcard في LIKE).
+// ============================================================
+const PAYROLL_STATUS = {
+  Paid: 'مدفوع',
+  PendingReview: 'قيد المراجعة',
+  Approved: 'معتمد',
+  Unpaid: 'غير مدفوع',
+  Rejected: 'مرفوض',
+  Cancelled: 'ملغي',
+};
+
+function isValidMonthFormat(m){
+  return /^\d{4}-\d{2}$/.test(String(m || '').trim());
+}
+
+function addMonths(monthStr, n){
+  const [y, m] = String(monthStr).split('-').map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + n, 1));
+  return d.toISOString().slice(0, 7);
+}
+
+function appendNote(notes, line){
+  return !notes ? line : `${notes}\n${line}`;
+}
+
+// يرجع { message, statusCode } عند المنع، و null عند السماح.
+// فشل حالة الراتب (مصروف/محسوب) = 409؛ نفس الشهر/قبل البداية = 400.
+async function validateTargetMonth(makeRequest, employeeId, targetMonth, currentInstMonth, loanStartMonth){
+  if (targetMonth === currentInstMonth) {
+    return { message: 'الشهر المختار هو نفس شهر القسط الحالي', statusCode: 400 };
+  }
+  if (targetMonth < loanStartMonth) {
+    return { message: `لا يمكن نقل القسط لشهر قبل بداية خصم السلفة (${loanStartMonth})`, statusCode: 400 };
+  }
+  const rs = await makeRequest()
+    .input('empId', sql.Int, employeeId)
+    .input('targetMonth', sql.NVarChar(7), targetMonth)
+    .query(`
+      SELECT PaymentStatus FROM Payroll
+      WHERE EmployeeID = @empId AND PayrollMonth = @targetMonth
+        AND (Notes IS NULL OR CHARINDEX(N'[OFFPAYROLL]', Notes) = 0)
+        AND PaymentStatus NOT IN (N'ملغي', N'مرفوض')
+    `);
+  const statuses = rs.recordset.map((r) => r.PaymentStatus);
+  if (statuses.includes(PAYROLL_STATUS.Paid)) {
+    return { message: `راتب شهر ${targetMonth} تم صرفه بالفعل — القسط لن يُخصم أبدًا لو انتقل إليه`, statusCode: 409 };
+  }
+  if (statuses.some((s) => s === PAYROLL_STATUS.PendingReview || s === PAYROLL_STATUS.Approved || s === PAYROLL_STATUS.Unpaid)) {
+    return { message: `راتب شهر ${targetMonth} محسوب وغير مصروف — ارفض الراتب أو أعد حسابه أولًا ثم انقل القسط`, statusCode: 409 };
+  }
+  return null;
+}
+
+// يرجع رسالة المنع (409) أو null: قسط داخل راتب محسوب غير مصروف وبه خصم سلفة.
+async function getUnpaidPayrollBlock(makeRequest, employeeId, month){
+  const rs = await makeRequest()
+    .input('empId', sql.Int, employeeId)
+    .input('month', sql.NVarChar(7), month)
+    .query(`
+      SELECT TOP 1 PayrollID FROM Payroll
+      WHERE EmployeeID = @empId AND PayrollMonth = @month
+        AND ISNULL(LoanDeduction, 0) > 0
+        AND PaymentStatus IN (N'قيد المراجعة', N'معتمد', N'غير مدفوع')
+    `);
+  return rs.recordset.length
+    ? `هذا القسط داخل راتب شهر ${month} المحسوب وغير المصروف بعد — ارفض الراتب أو أعد حسابه أولًا، وإلا سيُخصم المبلغ من الموظف دون أن يُسجل على السلفة`
+    : null;
+}
+
+async function fetchInstallmentWithLoan(makeRequest, installmentId){
+  const rs = await makeRequest()
+    .input('instId', sql.Int, installmentId)
+    .query(`
+      SELECT i.InstallmentId, i.LoanId, i.EmployeeId, i.InstallmentNumber,
+             i.DeductionMonth, i.Amount, i.Status, i.Notes,
+             l.Status AS LoanStatus, l.StartDeductionMonth
+      FROM LoanInstallments i
+      INNER JOIN EmployeeLoans l ON i.LoanId = l.LoanId
+      WHERE i.InstallmentId = @instId
+    `);
+  return rs.recordset[0] || null;
+}
+
+async function fetchLastInstallment(makeRequest, loanId){
+  const rs = await makeRequest()
+    .input('loanId', sql.Int, loanId)
+    .query(`
+      SELECT TOP 1 InstallmentId, InstallmentNumber, DeductionMonth
+      FROM LoanInstallments
+      WHERE LoanId = @loanId
+      ORDER BY InstallmentNumber DESC
+    `);
+  return rs.recordset[0] || null;
+}
+
+async function insertInstallment(makeRequest, { loanId, employeeId, number, month, amount, notes, username }){
+  await makeRequest()
+    .input('loanId', sql.Int, loanId)
+    .input('empId', sql.Int, employeeId)
+    .input('num', sql.Int, number)
+    .input('month', sql.NVarChar(7), month)
+    .input('amt', sql.Decimal(18,2), amount)
+    .input('notes', sql.NVarChar(500), notes ?? null)
+    .input('user', sql.NVarChar(50), username)
+    .query(`
+      INSERT INTO LoanInstallments (LoanId, EmployeeId, InstallmentNumber, DeductionMonth, Amount, Status, Notes, CreatedBy, CreatedAt)
+      VALUES (@loanId, @empId, @num, @month, @amt, 'Pending', @notes, @user, GETDATE())
+    `);
+}
+
+async function incrementLoanInstallments(makeRequest, loanId){
+  await makeRequest()
+    .input('loanId', sql.Int, loanId)
+    .query(`UPDATE EmployeeLoans SET TotalInstallments = TotalInstallments + 1, LastUpdatedAt = GETDATE() WHERE LoanId = @loanId`);
+}
+
+// تفاصيل سلفة مع الأقساط — GetLoanDetailAsync:158.
+// PaidAmount محسوب كما في الكشف: LoanAmount − RemainingAmount.
+async function getLoanDetail(loanId){
+  const pool = await connectDB();
+  const loanRes = await pool.request()
+    .input('loanId', sql.Int, loanId)
+    .query(`
+      SELECT l.LoanId, l.EmployeeId,
+             e.FullName AS EmployeeName, e.Department, e.JobTitle,
+             l.LoanAmount, l.MonthlyInstallment, l.TotalInstallments, l.PaidInstallments,
+             (l.LoanAmount - l.RemainingAmount) AS PaidAmount, l.RemainingAmount,
+             l.LoanDate, l.StartDeductionMonth, l.Status,
+             l.CashBoxId, cb.CashBoxName,
+             l.Notes, l.ApprovedBy, l.CreatedBy, l.CreatedAt
+      FROM EmployeeLoans l
+      INNER JOIN Employees e ON l.EmployeeId = e.EmployeeID
+      LEFT JOIN CashBoxes cb ON l.CashBoxId = cb.CashBoxID
+      WHERE l.LoanId = @loanId
+    `);
+  const loan = loanRes.recordset[0];
+  if (!loan) return null;
+
+  const instRes = await pool.request()
+    .input('loanId', sql.Int, loanId)
+    .query(`
+      SELECT i.InstallmentId, i.LoanId, i.EmployeeId, i.InstallmentNumber,
+             i.DeductionMonth, i.Amount, i.Status, i.DeductionDate, i.Notes,
+             p.PayrollMonth
+      FROM LoanInstallments i
+      LEFT JOIN Payroll p ON i.PayrollId = p.PayrollID
+      WHERE i.LoanId = @loanId
+      ORDER BY i.InstallmentNumber
+    `);
+  return { Loan: loan, Installments: instRes.recordset };
+}
+
+// تأجيل قسط — SkipInstallmentAsync:502. الشهر الافتراضي: بعد شهر آخر قسط
+// في جدول السلفة. القديم يصبح Skipped وملاحظاته تُستبدل بالسبب، ويُنشأ
+// قسط Pending جديد برقم (الأخير + 1) وبنفس المبلغ، وTotalInstallments += 1.
+async function skipInstallment(installmentId, opts = {}, username){
+  const pool = await connectDB();
+  const tx = new sql.Transaction(pool); await tx.begin();
+  try{
+    const mk = () => new sql.Request(tx);
+    const inst = await fetchInstallmentWithLoan(mk, installmentId);
+    if (!inst) throw loanError('القسط غير موجود', 404);
+    if (inst.Status !== 'Pending') throw loanError('لا يمكن تأجيل هذا القسط — الأقساط المعلقة فقط هي التي يمكن تأجيلها', 409);
+
+    const last = await fetchLastInstallment(mk, inst.LoanId);
+    const target = opts.targetMonth != null ? String(opts.targetMonth).trim() : '';
+    let newMonth;
+    if (target) {
+      if (!isValidMonthFormat(target)) throw loanError('صيغة الشهر غير صحيحة — مثال: 2026-08', 400);
+      newMonth = target;
+    } else {
+      newMonth = addMonths(last.DeductionMonth, 1);
+    }
+
+    const targetBlock = await validateTargetMonth(mk, inst.EmployeeId, newMonth, inst.DeductionMonth, inst.StartDeductionMonth);
+    if (targetBlock) throw loanError(targetBlock.message, targetBlock.statusCode);
+    const unpaidBlock = await getUnpaidPayrollBlock(mk, inst.EmployeeId, inst.DeductionMonth);
+    if (unpaidBlock) throw loanError(unpaidBlock, 409);
+
+    await mk()
+      .input('instId', sql.Int, installmentId)
+      .input('reason', sql.NVarChar(500), opts.reason ?? null)
+      .query(`UPDATE LoanInstallments SET Status = 'Skipped', Notes = @reason WHERE InstallmentId = @instId`);
+    await insertInstallment(mk, {
+      loanId: inst.LoanId, employeeId: inst.EmployeeId,
+      number: last.InstallmentNumber + 1, month: newMonth,
+      amount: Number(inst.Amount), notes: null, username,
+    });
+    await incrementLoanInstallments(mk, inst.LoanId);
+
+    await tx.commit();
+    return { installmentId, newMonth, message: `تم تأجيل القسط إلى شهر ${newMonth}` };
+  }catch(e){ try{await tx.rollback();}catch(_){} throw e; }
+}
+
+// تجزئة قسط — SplitInstallmentAsync:568. الشهر الافتراضي: شهر القسط نفسه + 1
+// (يختلف عن التأجيل). الجزء المُبقى يبقى على القسط الحالي، والمُرحّل قسط
+// Pending جديد بمجموع محفوظ تمامًا (round2 للجزأين).
+async function splitInstallment(installmentId, opts = {}, username){
+  const pool = await connectDB();
+  const tx = new sql.Transaction(pool); await tx.begin();
+  try{
+    const mk = () => new sql.Request(tx);
+    const inst = await fetchInstallmentWithLoan(mk, installmentId);
+    if (!inst) throw loanError('القسط غير موجود', 404);
+    if (inst.Status !== 'Pending') throw loanError('يمكن تعديل أو تجزئة القسط فقط وهو في حالة لم يُخصم بعد', 409);
+
+    const keepRaw = Number(opts.amountToKeep);
+    if (!(keepRaw > 0)) throw loanError('قيمة الخصم في هذا الشهر يجب أن تكون أكبر من صفر', 400);
+    if (keepRaw >= Number(inst.Amount)) throw loanError('استخدم القسط الحالي كما هو أو التأجيل الكامل؛ التجزئة تتطلب مبلغًا أقل من قيمة القسط', 400);
+    const amountToKeep = round2(keepRaw);
+    const carriedAmount = round2(Number(inst.Amount) - amountToKeep);
+
+    const target = opts.targetMonth != null ? String(opts.targetMonth).trim() : '';
+    let newMonth;
+    if (target) {
+      if (!isValidMonthFormat(target)) throw loanError('صيغة الشهر غير صحيحة — مثال: 2026-08', 400);
+      newMonth = target;
+    } else {
+      newMonth = addMonths(inst.DeductionMonth, 1);
+    }
+
+    const targetBlock = await validateTargetMonth(mk, inst.EmployeeId, newMonth, inst.DeductionMonth, inst.StartDeductionMonth);
+    if (targetBlock) throw loanError(targetBlock.message, targetBlock.statusCode);
+    const unpaidBlock = await getUnpaidPayrollBlock(mk, inst.EmployeeId, inst.DeductionMonth);
+    if (unpaidBlock) throw loanError(unpaidBlock, 409);
+
+    const last = await fetchLastInstallment(mk, inst.LoanId);
+    const reason = opts.reason != null ? String(opts.reason) : '';
+    if (reason.trim()) {
+      await mk()
+        .input('instId', sql.Int, installmentId)
+        .input('amount', sql.Decimal(18,2), amountToKeep)
+        .input('notes', sql.NVarChar(500), appendNote(inst.Notes, reason))
+        .query(`UPDATE LoanInstallments SET Amount = @amount, Notes = @notes WHERE InstallmentId = @instId`);
+    } else {
+      // سبب فارغ: بلازور AppendNote كان سيضيف سطرًا فارغًا — نتجاوزه ونبقي
+      // الملاحظات كما هي، ونحدّث المبلغ فقط.
+      await mk()
+        .input('instId', sql.Int, installmentId)
+        .input('amount', sql.Decimal(18,2), amountToKeep)
+        .query(`UPDATE LoanInstallments SET Amount = @amount WHERE InstallmentId = @instId`);
+    }
+    await insertInstallment(mk, {
+      loanId: inst.LoanId, employeeId: inst.EmployeeId,
+      number: last.InstallmentNumber + 1, month: newMonth,
+      amount: carriedAmount,
+      notes: `مُرحّل من تجزئة القسط رقم ${inst.InstallmentNumber}`, username,
+    });
+    await incrementLoanInstallments(mk, inst.LoanId);
+
+    await tx.commit();
+    return {
+      installmentId, keptAmount: amountToKeep, carriedAmount, newMonth,
+      message: `تم تجزئة القسط: ${amountToKeep.toFixed(2)} جـ لهذا الشهر، وترحيل ${carriedAmount.toFixed(2)} جـ إلى ${newMonth}`,
+    };
+  }catch(e){ try{await tx.rollback();}catch(_){} throw e; }
+}
+
+// تعديل قسط معلق — UpdateInstallmentAsync:851. تعديل المبلغ لا يمتد لأي
+// قسط آخر ولا لـ RemainingAmount (بلازور لا يطبق أي أثر متسلسل — موثق).
+// حارس الراتب غير المصروف يُفحص فقط عند طلب تغيير الشهر (داخل فرع الشهر).
+// الملاحظات تُستبدل عند وجود مفتاح notes في الطلب ولو كان نصًا فارغًا.
+async function updateInstallment(installmentId, opts = {}, username){
+  const pool = await connectDB();
+  const tx = new sql.Transaction(pool); await tx.begin();
+  try{
+    const mk = () => new sql.Request(tx);
+    const inst = await fetchInstallmentWithLoan(mk, installmentId);
+    if (!inst) throw loanError('القسط غير موجود', 404);
+    if (inst.Status !== 'Pending') throw loanError('يمكن تعديل الأقساط المعلقة فقط — المخصومة والمؤجلة سجل تاريخي لا يعدل', 409);
+    if (inst.LoanStatus !== 'Active') throw loanError('السلفة غير نشطة', 409);
+
+    const req = mk().input('instId', sql.Int, installmentId);
+    const sets = [];
+
+    if (opts.newAmount !== undefined && opts.newAmount !== null) {
+      const na = Number(opts.newAmount);
+      if (!(na > 0)) throw loanError('قيمة القسط يجب أن تكون أكبر من صفر', 400);
+      sets.push('Amount = @newAmount');
+      req.input('newAmount', sql.Decimal(18,2), round2(na));
+    }
+
+    const newMonth = opts.newMonth != null ? String(opts.newMonth).trim() : '';
+    if (newMonth) {
+      if (!isValidMonthFormat(newMonth)) throw loanError('صيغة الشهر غير صحيحة — مثال: 2026-08', 400);
+      const targetBlock = await validateTargetMonth(mk, inst.EmployeeId, newMonth, inst.DeductionMonth, inst.StartDeductionMonth);
+      if (targetBlock) throw loanError(targetBlock.message, targetBlock.statusCode);
+      const unpaidBlock = await getUnpaidPayrollBlock(mk, inst.EmployeeId, inst.DeductionMonth);
+      if (unpaidBlock) throw loanError(unpaidBlock, 409);
+      sets.push('DeductionMonth = @newMonth');
+      req.input('newMonth', sql.NVarChar(7), newMonth);
+    }
+
+    if (opts.notesPresent) {
+      sets.push('Notes = @notes');
+      req.input('notes', sql.NVarChar(500), opts.notes ?? null);
+    }
+
+    if (sets.length) {
+      await req.query(`UPDATE LoanInstallments SET ${sets.join(', ')} WHERE InstallmentId = @instId`);
+    }
+    await mk()
+      .input('loanId', sql.Int, inst.LoanId)
+      .query(`UPDATE EmployeeLoans SET LastUpdatedAt = GETDATE() WHERE LoanId = @loanId`);
+
+    await tx.commit();
+    return { installmentId, message: 'تم تعديل القسط بنجاح' };
+  }catch(e){ try{await tx.rollback();}catch(_){} throw e; }
+}
+
 // إلغاء سلفة — CancelLoanAsync:363: نشطة فقط، بلا أقساط مخصومة،
 // وحركة عكس «LoanCancel» قبض في المعاملة نفسها عند وجود خزينة.
 async function cancelLoan(loanId, username){
@@ -313,4 +627,4 @@ async function getEmployeesLookup(search){
   return rs.recordset;
 }
 
-module.exports={ getStats, getLoans, create, createWithInstallments, getMonthInstallments, getEmployeeStatement, cancelLoan, getEmployeesLookup };
+module.exports={ getStats, getLoans, create, createWithInstallments, getMonthInstallments, getEmployeeStatement, cancelLoan, getEmployeesLookup, getLoanDetail, skipInstallment, splitInstallment, updateInstallment, validateTargetMonth, getUnpaidPayrollBlock, PAYROLL_STATUS };

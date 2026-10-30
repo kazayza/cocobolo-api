@@ -22,19 +22,20 @@ async function getStats(req, res) {
   }
 }
 
-// إنشاء سلفة — CashBoxId اختياري بالقرار الموثق في loans.queries:
-// عند إرساله تُفرض حركة الصرف وحارس الرصيد، وعند غيابه لا حركة.
+// إنشاء سلفة — الخزينة إلزامية (قرار المالك د٤، تطابق بلازور SaveLoanAsync):
+// غياب cashBoxId يُرفض هنا قبل أي استعلام بـ «يرجى اختيار الخزينة».
 async function create(req, res) {
   try {
     const { employeeId, amount, totalInstallments, startMonth } = req.body;
     if (!employeeId || !amount) return errorResponse(res, 'الموظف والمبلغ مطلوبان', 400);
     if (!startMonth) return errorResponse(res, 'شهر بداية الخصم مطلوب', 400);
+    if (!req.body.cashBoxId) return errorResponse(res, 'يرجى اختيار الخزينة', 400);
     const r = await q.create({
       employeeId,
       amount,
       totalInstallments,
       startMonth,
-      cashBoxId: req.body.cashBoxId || null,
+      cashBoxId: req.body.cashBoxId,
       notes: req.body.notes || null,
       purpose: req.body.purpose || null,
     }, req.auth?.username || 'system');
@@ -104,4 +105,64 @@ async function employeesLookup(req, res) {
   }
 }
 
-module.exports = { getAll, getStats, create, getInstallments, getStatement, cancel, employeesLookup };
+// تفاصيل سلفة — GET /api/loans/:id (أي جلسة مصادقة)
+// الشكل: { Loan: {...}, Installments: [...] } مرآة GetLoanDetailAsync.
+async function getById(req, res) {
+  try {
+    const detail = await q.getLoanDetail(parseInt(req.params.id, 10));
+    if (!detail) return errorResponse(res, 'السلفة غير موجودة', 404);
+    return res.json({ success: true, data: detail });
+  } catch (e) {
+    console.error(e);
+    return errorResponse(res, 'فشل تحميل تفاصيل السلفة', 500, e.message);
+  }
+}
+
+// تأجيل قسط — POST /api/loans/installments/:id/skip { reason?, targetMonth? }
+async function skipInstallment(req, res) {
+  try {
+    const result = await q.skipInstallment(parseInt(req.params.id, 10), {
+      reason: req.body?.reason ?? null,
+      targetMonth: req.body?.targetMonth,
+    }, req.auth?.username || 'system');
+    return res.json({ success: true, message: result.message, data: result });
+  } catch (e) {
+    console.error(e);
+    return errorResponse(res, e.message || 'فشل تأجيل القسط', e.statusCode || 500, e.message);
+  }
+}
+
+// تجزئة قسط — POST /api/loans/installments/:id/split { amountToKeep, reason?, targetMonth? }
+async function splitInstallment(req, res) {
+  try {
+    const result = await q.splitInstallment(parseInt(req.params.id, 10), {
+      amountToKeep: req.body?.amountToKeep,
+      reason: req.body?.reason ?? null,
+      targetMonth: req.body?.targetMonth,
+    }, req.auth?.username || 'system');
+    return res.json({ success: true, message: result.message, data: result });
+  } catch (e) {
+    console.error(e);
+    return errorResponse(res, e.message || 'فشل تجزئة القسط', e.statusCode || 500, e.message);
+  }
+}
+
+// تعديل قسط — POST /api/loans/installments/:id/update { newAmount?, newMonth?, notes? }
+// وجود مفتاح notes نفسه (ولو فارغًا) يعني استبدال الملاحظات.
+async function updateInstallment(req, res) {
+  try {
+    const body = req.body || {};
+    const result = await q.updateInstallment(parseInt(req.params.id, 10), {
+      newAmount: body.newAmount,
+      newMonth: body.newMonth,
+      notes: body.notes,
+      notesPresent: Object.prototype.hasOwnProperty.call(body, 'notes'),
+    }, req.auth?.username || 'system');
+    return res.json({ success: true, message: result.message, data: result });
+  } catch (e) {
+    console.error(e);
+    return errorResponse(res, e.message || 'فشل تعديل القسط', e.statusCode || 500, e.message);
+  }
+}
+
+module.exports = { getAll, getStats, create, getInstallments, getStatement, cancel, employeesLookup, getById, skipInstallment, splitInstallment, updateInstallment };

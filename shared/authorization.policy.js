@@ -480,6 +480,12 @@ const loans = {
     || roles.accountManager(a)
     || isRole(a, 'AccountsManager')
     || hasClaim(a, 'frmEmployeeLoans:Add'),
+  // تعديل أقساط السلفة (تأجيل/تجزئة/تعديل قسط) بـ frmEmployeeLoans:Edit — نفس أدوار الإنشاء/الإلغاء.
+  canEdit: (a) => roles.admin(a)
+    || roles.hrManager(a)
+    || roles.accountManager(a)
+    || isRole(a, 'AccountsManager')
+    || hasClaim(a, 'frmEmployeeLoans:Edit'),
   canCancel: (a) => roles.admin(a)
     || roles.hrManager(a)
     || roles.accountManager(a)
