@@ -209,6 +209,9 @@ async function checkShiftReminders() {
       console.log(`[Shifts] Egypt now = ${egypt.display} | weekday=${egypt.weekday}`);
     }
 
+    // حسم حتمي: شيفت حالي واحد لكل موظف — أحدث EffectiveFrom يغطي
+    // اليوم (OUTER APPLY + TOP 1 + ORDER BY EffectiveFrom DESC)،
+    // حتى لا تتكرر التذكيرات عند وجود سجلات متداخلة لنفس الموظف.
     const result = await pool.request().query(`
       SELECT
         s.EmployeeShiftID,
@@ -220,12 +223,19 @@ async function checkShiftReminders() {
         s.OffDay2,
         u.Username,
         e.FullName
-      FROM EmployeeShifts s
-      INNER JOIN Employees e ON s.EmployeeID = e.EmployeeID
+      FROM Employees e
       INNER JOIN Users u ON e.EmployeeID = u.employeeID
+      OUTER APPLY (
+        SELECT TOP 1 EmployeeShiftID, EmployeeID, StartTime, EndTime,
+                     BiometricCode, OffDay1, OffDay2
+        FROM EmployeeShifts
+        WHERE EmployeeID = e.EmployeeID
+          AND CAST(GETDATE() AS DATE) >= CAST(EffectiveFrom AS DATE)
+          AND (EffectiveTo IS NULL OR CAST(GETDATE() AS DATE) <= CAST(EffectiveTo AS DATE))
+        ORDER BY EffectiveFrom DESC
+      ) s
       WHERE ISNULL(u.IsActive, 1) = 1
-        AND CAST(GETDATE() AS DATE) >= CAST(s.EffectiveFrom AS DATE)
-        AND (s.EffectiveTo IS NULL OR CAST(GETDATE() AS DATE) <= CAST(s.EffectiveTo AS DATE))
+        AND s.EmployeeShiftID IS NOT NULL
     `);
 
     for (const shift of result.recordset || []) {
@@ -233,9 +243,19 @@ async function checkShiftReminders() {
       const bioCode = shift.BiometricCode;
       if (!username) continue;
 
-      // Skip off days (OffDay1/2: 0=Sun .. 6=Sat — same as JS)
-      const off1 = shift.OffDay1 != null ? Number(shift.OffDay1) : null;
-      const off2 = shift.OffDay2 != null ? Number(shift.OffDay2) : null;
+      // Skip off days. Numbering note: JS Date.getDay() numbering
+      // (0=Sunday..6=Saturday) matches the stored .NET DayOfWeek bytes
+      // in OffDay1/OffDay2 exactly, and egypt.weekday above is already
+      // converted to that same getDay-style numbering.
+      // When BOTH off-days are unset (NULL) — e.g. shifts created before
+      // off-days existed — the default weekly rest is Friday(5) +
+      // Saturday(6), mirroring Blazor's IsEmployeeOffDay default.
+      let off1 = shift.OffDay1 != null ? Number(shift.OffDay1) : null;
+      let off2 = shift.OffDay2 != null ? Number(shift.OffDay2) : null;
+      if (off1 == null && off2 == null) {
+        off1 = 5; // Friday
+        off2 = 6; // Saturday
+      }
       if (off1 === egypt.weekday || off2 === egypt.weekday) continue;
 
       // ── Check-in reminder ────────────────────────────────

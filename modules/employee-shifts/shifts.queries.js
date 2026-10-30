@@ -10,7 +10,7 @@ async function getShiftsByEmployee(employeeId) {
         EmployeeShiftID, ShiftType, 
         FORMAT(StartTime, 'hh:mm tt') as StartTime, 
         FORMAT(EndTime, 'hh:mm tt') as EndTime,
-        EffectiveFrom, EffectiveTo, CreatedAt
+        EffectiveFrom, EffectiveTo, CreatedAt, OffDay1, OffDay2
       FROM EmployeeShifts
       WHERE EmployeeID = @employeeId
       ORDER BY EffectiveFrom DESC
@@ -58,6 +58,8 @@ async function createShift(data) {
     .input('endTime', sql.VarChar(8), data.endTime)
     .input('effectiveFrom', sql.DateTime, data.effectiveFrom)
     .input('effectiveTo', sql.DateTime, data.effectiveTo || null)
+    .input('offDay1', sql.Int, data.offDay1 ?? null)
+    .input('offDay2', sql.Int, data.offDay2 ?? null)
     .input('createdBy', sql.NVarChar(50), data.createdBy)
     .input('createdAt', sql.DateTime, data.createdAt)
     .query(`
@@ -65,16 +67,18 @@ async function createShift(data) {
       DECLARE @BioCode INT;
       SELECT @BioCode = BioEmployeeID FROM Employees WHERE EmployeeID = @employeeId;
 
-      -- ✅ ثانياً: نسجل الشيفت مع الكود
+      -- ✅ ثانياً: نسجل الشيفت مع الكود وأيام الراحة الأسبوعية
+      -- (OffDay1/OffDay2: بايتات DayOfWeek بنظام .NET — 0=الأحد..6=السبت؛
+      --  غيابهما يُحفظ NULL كما في إنشاء البلازور تمامًا)
       INSERT INTO EmployeeShifts (
         EmployeeID, BiometricCode, ShiftType, StartTime, EndTime, 
-        EffectiveFrom, EffectiveTo, CreatedBy, CreatedAt
+        EffectiveFrom, EffectiveTo, OffDay1, OffDay2, CreatedBy, CreatedAt
       )
       OUTPUT INSERTED.EmployeeShiftID
       VALUES (
         @employeeId, @BioCode, @shiftType, 
         CAST(@startTime AS TIME), CAST(@endTime AS TIME),
-        @effectiveFrom, @effectiveTo, @createdBy, @createdAt
+        @effectiveFrom, @effectiveTo, @offDay1, @offDay2, @createdBy, @createdAt
       )
     `);
     
@@ -84,6 +88,9 @@ async function createShift(data) {
 // تعديل شيفت — مرآة EmployeeShiftService.UpdateShiftAsync:295:
 // تحديث في المكان نفسه (النوع والأوقات والسريان وأيام الراحة وكود
 // البصمة عند إرساله) دون إغلاق أي شيفتات أخرى ودون إنشاء سجل جديد.
+// أيام الراحة ثلاثية الحالة لكل يوم: قيمة 0–6 تُضبط، وغيابها (null بلا
+// علم مسح) يُبقي المخزَّن عبر ISNULL (سلوك البلازور)، وعلم المسح
+// (offDayNClear — مصدره إشارة −1 في المتحكم) يُفرّغ العمود إلى NULL.
 async function updateShift(shiftId, data) {
   const pool = await connectDB();
   const existingRes = await pool.request()
@@ -95,6 +102,27 @@ async function updateShift(shiftId, data) {
     throw err;
   }
 
+  // فحص التعارض قبل الكتابة: الفترة الناتجة (EffectiveFrom..EffectiveTo)
+  // لا يجوز أن تتداخل مع سجل آخر لنفس الموظف (باستثناء السجل نفسه).
+  // فترة مفتوحة النهاية (EffectiveTo فارغ) تمتد بلا نهاية.
+  const overlapRes = await pool.request()
+    .input('id', sql.Int, shiftId)
+    .input('effectiveFrom', sql.DateTime, data.effectiveFrom)
+    .input('effectiveTo', sql.DateTime, data.effectiveTo || null)
+    .query(`
+      SELECT TOP 1 EmployeeShiftID
+      FROM EmployeeShifts
+      WHERE EmployeeID = (SELECT EmployeeID FROM EmployeeShifts WHERE EmployeeShiftID = @id)
+        AND EmployeeShiftID <> @id
+        AND CAST(EffectiveFrom AS DATE) <= CAST(ISNULL(@effectiveTo, '9999-12-31') AS DATE)
+        AND (EffectiveTo IS NULL OR CAST(EffectiveTo AS DATE) >= CAST(@effectiveFrom AS DATE))
+    `);
+  if (overlapRes.recordset.length > 0) {
+    const err = new Error('توجد فترة شيفت أخرى متداخلة مع هذه الفترة لنفس الموظف؛ عدّل التواريخ أولًا.');
+    err.statusCode = 409;
+    throw err;
+  }
+
   await pool.request()
     .input('id', sql.Int, shiftId)
     .input('shiftType', sql.VarChar(20), data.shiftType)
@@ -103,7 +131,9 @@ async function updateShift(shiftId, data) {
     .input('effectiveFrom', sql.DateTime, data.effectiveFrom)
     .input('effectiveTo', sql.DateTime, data.effectiveTo || null)
     .input('offDay1', sql.Int, data.offDay1 ?? null)
+    .input('offDay1Clear', sql.Bit, data.offDay1Clear ? 1 : 0)
     .input('offDay2', sql.Int, data.offDay2 ?? null)
+    .input('offDay2Clear', sql.Bit, data.offDay2Clear ? 1 : 0)
     .input('biometricCode', sql.Int, data.biometricCode ?? null)
     .query(`
       UPDATE EmployeeShifts
@@ -112,17 +142,51 @@ async function updateShift(shiftId, data) {
           EndTime = CAST(@endTime AS TIME),
           EffectiveFrom = @effectiveFrom,
           EffectiveTo = @effectiveTo,
-          OffDay1 = ISNULL(@offDay1, OffDay1),
-          OffDay2 = ISNULL(@offDay2, OffDay2),
+          OffDay1 = CASE WHEN @offDay1Clear = 1 THEN NULL ELSE ISNULL(@offDay1, OffDay1) END,
+          OffDay2 = CASE WHEN @offDay2Clear = 1 THEN NULL ELSE ISNULL(@offDay2, OffDay2) END,
           BiometricCode = ISNULL(@biometricCode, BiometricCode)
       WHERE EmployeeShiftID = @id
     `);
   return true;
 }
 
-// حذف شيفت (لو أضيف بالخطأ)
+// بيانات حارس الحذف: هل السجل هو الشيفت الساري اليوم؟ وهل هو سجل
+// الموظف الوحيد؟ (حذف أيٍّ منهما مرفوض — انظر deleteShift)
+async function getShiftDeleteInfo(shiftId) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('id', sql.Int, shiftId)
+    .query(`
+      SELECT
+        s.EmployeeShiftID, s.EmployeeID,
+        CASE WHEN CAST(s.EffectiveFrom AS DATE) <= CAST(GETDATE() AS DATE)
+              AND (s.EffectiveTo IS NULL OR CAST(s.EffectiveTo AS DATE) >= CAST(GETDATE() AS DATE))
+             THEN 1 ELSE 0 END AS IsCurrent,
+        (SELECT COUNT(*) FROM EmployeeShifts WHERE EmployeeID = s.EmployeeID) AS TotalCount
+      FROM EmployeeShifts s
+      WHERE s.EmployeeShiftID = @id
+    `);
+  return result.recordset[0] || null;
+}
+
+// حذف شيفت (لو أضيف بالخطأ) — بحارس: حذف الشيفت الساري حاليًا أو
+// سجل الموظف الوحيد مرفوض (409)؛ السجلات التاريخية غير الوحيدة
+// تُحذف كما كانت. سجل غير موجود: الحذف يمر بلا أثر كما كان سابقًا.
 async function deleteShift(shiftId) {
   const pool = await connectDB();
+  const info = await getShiftDeleteInfo(shiftId);
+  if (info) {
+    if (info.IsCurrent) {
+      const err = new Error('لا يمكن حذف الشيفت الساري حاليًا؛ أغلقه بتاريخ انتهاء أو عدّل سريانه أولًا.');
+      err.statusCode = 409;
+      throw err;
+    }
+    if (info.TotalCount <= 1) {
+      const err = new Error('لا يمكن حذف الشيفت الوحيد لهذا الموظف.');
+      err.statusCode = 409;
+      throw err;
+    }
+  }
   await pool.request()
     .input('id', sql.Int, shiftId)
     .query('DELETE FROM EmployeeShifts WHERE EmployeeShiftID = @id');
@@ -141,12 +205,21 @@ async function getEmployeesWithCurrentShift() {
       FORMAT(CAST(s.StartTime AS DATETIME), 'hh:mm tt') as StartTime,
       FORMAT(CAST(s.EndTime AS DATETIME), 'hh:mm tt') as EndTime,
       FORMAT(s.EffectiveFrom, 'yyyy-MM-dd') as EffectiveFrom,
-      FORMAT(s.EffectiveTo, 'yyyy-MM-dd') as EffectiveTo
+      FORMAT(s.EffectiveTo, 'yyyy-MM-dd') as EffectiveTo,
+      s.OffDay1, s.OffDay2
       
     FROM Employees e
-    LEFT JOIN EmployeeShifts s ON e.EmployeeID = s.EmployeeID 
-      AND CAST(GETDATE() AS DATE) >= CAST(s.EffectiveFrom AS DATE)
-      AND (s.EffectiveTo IS NULL OR CAST(GETDATE() AS DATE) <= CAST(s.EffectiveTo AS DATE))
+    -- حسم حتمي للشيفت الحالي: سجل واحد لكل موظف — أحدث EffectiveFrom
+    -- يغطي اليوم (OUTER APPLY + TOP 1)؛ بلا شيفت سارٍ تبقى أعمدة
+    -- الشيفت فارغة كما كانت مع LEFT JOIN.
+    OUTER APPLY (
+      SELECT TOP 1 *
+      FROM EmployeeShifts
+      WHERE EmployeeID = e.EmployeeID
+        AND CAST(GETDATE() AS DATE) >= CAST(EffectiveFrom AS DATE)
+        AND (EffectiveTo IS NULL OR CAST(GETDATE() AS DATE) <= CAST(EffectiveTo AS DATE))
+      ORDER BY EffectiveFrom DESC
+    ) s
     WHERE e.Status = N'نشط' 
     AND (e.IsPermanentlyExempt = 0 OR e.IsPermanentlyExempt IS NULL)
     ORDER BY e.FullName
@@ -260,6 +333,7 @@ module.exports = {
   createShift,
   updateShift,
   deleteShift,
+  getShiftDeleteInfo,
   getEmployeesWithCurrentShift,
   searchShifts,
   getMySchedule

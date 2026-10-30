@@ -8,6 +8,26 @@ function getEgyptTime() {
   return new Date(date.toLocaleString("en-US", { timeZone: "Africa/Cairo" }));
 }
 
+// تحقق يوم راحة أسبوعي (OffDay1/OffDay2): القيم بايتات DayOfWeek بنظام
+// .NET — 0=الأحد .. 6=السبت. ثلاث حالات:
+//  - غياب القيمة (null/undefined): «غير مضبوط» — value=null و clear=false
+//    (في التعديل يُبقي الاستعلام القيمة المخزنة عبر ISNULL كما في البلازور).
+//  - القيمة −1: إشارة «مسح صريح» — value=null و clear=true (في التعديل
+//    تُفرَّغ القيمة المخزنة فعلًا؛ وفي الإنشاء تُعامل كغياب وتُكتب NULL).
+//  - أي قيمة أخرى حاضرة: يجب أن تكون عددًا صحيحًا من 0 إلى 6.
+// يرجع { ok: true, value: رقم أو null, clear: bool } أو { ok: false }.
+function normalizeOffDay(value) {
+  if (value === null || value === undefined) return { ok: true, value: null, clear: false };
+  if (typeof value === 'boolean') return { ok: false };
+  if (typeof value === 'string' && value.trim() === '') return { ok: false };
+  const n = Number(value);
+  if (n === -1) return { ok: true, value: null, clear: true };
+  if (!Number.isInteger(n) || n < 0 || n > 6) return { ok: false };
+  return { ok: true, value: n, clear: false };
+}
+
+const OFF_DAY_ERROR = 'قيمة يوم الراحة غير صحيحة: يجب أن تكون رقمًا صحيحًا من 0 (الأحد) إلى 6 (السبت).';
+
 // جلب شيفتات موظف
 async function getByEmployee(req, res) {
   try {
@@ -29,11 +49,21 @@ async function create(req, res) {
       return errorResponse(res, 'البيانات ناقصة', 400);
     }
 
+    // أيام الراحة الأسبوعية: اختيارية عند الإنشاء، وتُتحقق عند حضورها.
+    // إشارة المسح (−1) عند الإنشاء تُعامل كغياب: تُكتب NULL من value.
+    const offDay1 = normalizeOffDay(req.body.offDay1);
+    const offDay2 = normalizeOffDay(req.body.offDay2);
+    if (!offDay1.ok || !offDay2.ok) {
+      return errorResponse(res, OFF_DAY_ERROR, 400);
+    }
+
     // ✅ تحديد توقيت الإنشاء بتوقيت مصر
     const createdAt = getEgyptTime();
 
     const shiftId = await shiftsQueries.createShift({
       ...req.body,
+      offDay1: offDay1.value,
+      offDay2: offDay2.value,
       createdBy: req.auth.username,
       createdAt: createdAt // هنبعت الوقت ده للـ Query
     });
@@ -60,14 +90,25 @@ async function update(req, res) {
       return errorResponse(res, 'البيانات ناقصة', 400);
     }
 
+    // نفس تحقق أيام الراحة المطبق عند الإنشاء؛ الغياب (null) يحفظ
+    // القيمة القائمة عبر ISNULL في الاستعلام كما كان، وإشارة المسح
+    // (−1 ← clear) تُفرّغها فعلًا عبر علم المسح المرافق للقيمة.
+    const offDay1 = normalizeOffDay(req.body.offDay1);
+    const offDay2 = normalizeOffDay(req.body.offDay2);
+    if (!offDay1.ok || !offDay2.ok) {
+      return errorResponse(res, OFF_DAY_ERROR, 400);
+    }
+
     await shiftsQueries.updateShift(parseInt(id, 10), {
       shiftType,
       startTime,
       endTime,
       effectiveFrom,
       effectiveTo: req.body.effectiveTo || null,
-      offDay1: req.body.offDay1 ?? null,
-      offDay2: req.body.offDay2 ?? null,
+      offDay1: offDay1.value,
+      offDay1Clear: offDay1.clear,
+      offDay2: offDay2.value,
+      offDay2Clear: offDay2.clear,
       biometricCode: req.body.biometricCode ?? null,
     });
 
@@ -78,14 +119,16 @@ async function update(req, res) {
   }
 }
 
-// حذف شيفت
+// حذف شيفت — حارس الحذف في طبقة الاستعلامات يرفض الشيفت الساري أو
+// الوحيد بـ 409 ورسالة عربية واضحة تمر هنا كما هي.
 async function remove(req, res) {
   try {
     const { id } = req.params;
     await shiftsQueries.deleteShift(id);
     return res.json({ success: true, message: 'تم حذف الشيفت' });
   } catch (err) {
-    return errorResponse(res, 'فشل الحذف', 500);
+    console.error(err);
+    return errorResponse(res, err.message || 'فشل الحذف', err.statusCode || 500, err.message);
   }
 }
 
@@ -148,5 +191,6 @@ module.exports = {
   remove,
   getEmployeesShiftsStatus,
   search,
-  getMySchedule
+  getMySchedule,
+  normalizeOffDay
 };

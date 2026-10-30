@@ -545,9 +545,14 @@ async function getReport(req, res) {
     let filters = { startDate, endDate };
 
     if (isManager) {
-      // مدير: بحث اختياري باسم موظف، أو استهداف مستخدم محدد
-      if (employeeName) filters.employeeName = employeeName;
-      if (req.query.userId) {
+      // مدير: بحث اختياري باسم موظف، أو استهداف مستخدم محدد — بديلان
+      // لا يُجمعان: التطبيق يرسل userId دائمًا (هوية العارض نفسه في
+      // شاشة سجل الحضور)، فجمع الشرطين بـ AND في الاستعلام كان يقيّد
+      // بحث الاسم بكود بصمة العارض ويُرجع صفر صفوف عند بحث المدير
+      // عن أي موظف آخر. البحث بالاسم إذن مقدَّم على الاستهداف.
+      if (employeeName) {
+        filters.employeeName = employeeName;
+      } else if (req.query.userId) {
         const targetUserId = resolveTargetUserId(req, req.query.userId);
         if (targetUserId == null) {
           return errorResponse(res, 'غير مصرح لك بعرض تقرير مستخدم آخر', 403);
