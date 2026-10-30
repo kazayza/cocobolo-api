@@ -502,24 +502,24 @@ async function getStockCountWorkspace(warehouseId, stockCountId = null) {
     const headerRes = await pool.request()
       .input('stockCountId', sql.Int, stockCountId)
       .query(`
-        SELECT h.StockCountId, h.BranchId, b.BranchNameAr, h.WarehouseId,
+        SELECT h.StockCountID, h.BranchID, b.BranchNameAr, h.WarehouseID,
                w.WarehouseName, h.CountDate, h.Status, h.Notes,
                h.CreatedBy, h.CreatedAt, h.FinalizedBy, h.FinalizedAt
         FROM StockCountHeaders h
-        LEFT JOIN Branches b ON h.BranchId = b.BranchID
-        LEFT JOIN Warehouses w ON h.WarehouseId = w.WarehouseID
-        WHERE h.StockCountId = @stockCountId
+        LEFT JOIN Branches b ON h.BranchID = b.BranchID
+        LEFT JOIN Warehouses w ON h.WarehouseID = w.WarehouseID
+        WHERE h.StockCountID = @stockCountId
       `);
     const header = headerRes.recordset[0];
     if (!header) return null;
     const linesRes = await pool.request()
       .input('stockCountId', sql.Int, stockCountId)
       .query(`
-        SELECT l.StockCountLineId, l.ProductId, p.ProductName,
+        SELECT l.StockCountLineID, l.ProductID, p.ProductName,
                l.SystemQty, l.ActualQty, l.DifferenceQty, l.Notes
         FROM StockCountLines l
-        INNER JOIN Products p ON l.ProductId = p.ProductID
-        WHERE l.StockCountId = @stockCountId
+        INNER JOIN Products p ON l.ProductID = p.ProductID
+        WHERE l.StockCountID = @stockCountId
         ORDER BY p.ProductName
       `);
     return { ...header, Lines: linesRes.recordset };
@@ -568,14 +568,14 @@ async function getStockCounts({ branchId = null, warehouseId = null } = {}) {
   const pool = await connectDB();
   const request = pool.request();
   let query = `
-    SELECT h.StockCountId, h.BranchId, b.BranchNameAr, h.WarehouseId,
+    SELECT h.StockCountID, h.BranchID, b.BranchNameAr, h.WarehouseID,
            w.WarehouseName, h.CountDate, h.Status, h.CreatedBy, h.CreatedAt,
            h.FinalizedBy, h.FinalizedAt,
-           (SELECT COUNT(*) FROM StockCountLines l WHERE l.StockCountId = h.StockCountId) AS LinesCount,
-           (SELECT COUNT(*) FROM StockCountLines l WHERE l.StockCountId = h.StockCountId AND l.DifferenceQty != 0) AS DifferenceItemsCount
+           (SELECT COUNT(*) FROM StockCountLines l WHERE l.StockCountID = h.StockCountID) AS LinesCount,
+           (SELECT COUNT(*) FROM StockCountLines l WHERE l.StockCountID = h.StockCountID AND l.DifferenceQty != 0) AS DifferenceItemsCount
     FROM StockCountHeaders h
-    LEFT JOIN Branches b ON h.BranchId = b.BranchID
-    LEFT JOIN Warehouses w ON h.WarehouseId = w.WarehouseID
+    LEFT JOIN Branches b ON h.BranchID = b.BranchID
+    LEFT JOIN Warehouses w ON h.WarehouseID = w.WarehouseID
     WHERE 1=1
   `;
   if (branchId) {
@@ -622,15 +622,15 @@ async function saveStockCountDraft(dto, currentUserName) {
         .input('notes', sql.NVarChar(500), dto.notes || null)
         .input('createdBy', sql.NVarChar(100), currentUserName)
         .query(`
-          INSERT INTO StockCountHeaders (BranchId, WarehouseId, CountDate, Status, Notes, CreatedBy, CreatedAt)
-          OUTPUT INSERTED.StockCountId
+          INSERT INTO StockCountHeaders (BranchID, WarehouseID, CountDate, Status, Notes, CreatedBy, CreatedAt)
+          OUTPUT INSERTED.StockCountID
           VALUES (@branchId, @warehouseId, @countDate, 'Draft', @notes, @createdBy, GETDATE())
         `);
       stockCountId = headerRes.recordset[0].StockCountId;
     } else {
       const existingRes = await new sql.Request(transaction)
         .input('stockCountId', sql.Int, stockCountId)
-        .query(`SELECT StockCountId, Status FROM StockCountHeaders WHERE StockCountId = @stockCountId`);
+        .query(`SELECT StockCountID, Status FROM StockCountHeaders WHERE StockCountID = @stockCountId`);
       const existing = existingRes.recordset[0];
       if (!existing) throw badRequest('مستند الجرد غير موجود.');
       if (String(existing.Status).toLowerCase() === 'finalized') {
@@ -644,10 +644,10 @@ async function saveStockCountDraft(dto, currentUserName) {
         .input('notes', sql.NVarChar(500), dto.notes || null)
         .query(`
           UPDATE StockCountHeaders SET
-            BranchId = @branchId, WarehouseId = @warehouseId,
+            BranchID = @branchId, WarehouseID = @warehouseId,
             CountDate = ISNULL(@countDate, CountDate), Notes = @notes
-          WHERE StockCountId = @stockCountId;
-          DELETE FROM StockCountLines WHERE StockCountId = @stockCountId;
+          WHERE StockCountID = @stockCountId;
+          DELETE FROM StockCountLines WHERE StockCountID = @stockCountId;
         `);
     }
 
@@ -662,7 +662,7 @@ async function saveStockCountDraft(dto, currentUserName) {
         .input('differenceQty', sql.Int, actualQty - systemQty)
         .input('notes', sql.NVarChar(500), line.notes || null)
         .query(`
-          INSERT INTO StockCountLines (StockCountId, ProductId, SystemQty, ActualQty, DifferenceQty, Notes)
+          INSERT INTO StockCountLines (StockCountID, ProductID, SystemQty, ActualQty, DifferenceQty, Notes)
           VALUES (@stockCountId, @productId, @systemQty, @actualQty, @differenceQty, @notes)
         `);
     }
@@ -686,7 +686,7 @@ async function finalizeStockCount(stockCountId, currentUserName) {
   try {
     const headerRes = await new sql.Request(transaction)
       .input('stockCountId', sql.Int, stockCountId)
-      .query(`SELECT StockCountId, WarehouseId, Status FROM StockCountHeaders WHERE StockCountId = @stockCountId`);
+      .query(`SELECT StockCountID, WarehouseID, Status FROM StockCountHeaders WHERE StockCountID = @stockCountId`);
     const header = headerRes.recordset[0];
     if (!header) throw badRequest('مستند الجرد غير موجود.');
     if (String(header.Status).toLowerCase() === 'finalized') {
@@ -695,7 +695,7 @@ async function finalizeStockCount(stockCountId, currentUserName) {
 
     const linesRes = await new sql.Request(transaction)
       .input('stockCountId', sql.Int, stockCountId)
-      .query(`SELECT ProductId, ActualQty, Notes FROM StockCountLines WHERE StockCountId = @stockCountId`);
+      .query(`SELECT ProductID, ActualQty, Notes FROM StockCountLines WHERE StockCountID = @stockCountId`);
     const lines = linesRes.recordset;
 
     for (const line of lines) {
@@ -751,7 +751,7 @@ async function finalizeStockCount(stockCountId, currentUserName) {
       .query(`
         UPDATE StockCountHeaders
         SET Status = 'Finalized', FinalizedAt = GETDATE(), FinalizedBy = @finalizedBy
-        WHERE StockCountId = @stockCountId
+        WHERE StockCountID = @stockCountId
       `);
 
     await transaction.commit();

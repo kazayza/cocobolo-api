@@ -79,10 +79,10 @@ async function getClientById(id) {
         p.OpeningBalance, p.BalanceType, p.Notes, p.IsActive,
         p.NationalID, p.FloorNumber, p.CreatedBy, p.CreatedAt,
         p.ReferralSourceID, p.ReferralSourceClient,
-        p.CustomerStage, p.StageId, p.JobTitle, p.ParentPartyId,
-        p.City, p.Area, p.ContactSourceId,
+        p.CustomerStage, p.StageID, p.JobTitle, p.ParentPartyID,
+        p.City, p.Area, p.ContactSourceID,
         p.LastContactDate, p.Rating, p.LastUpdatedBy, p.LastUpdatedAt,
-        p.DataDone, p.IsB2B,
+        p.dataDone, p.IsB2B,
         rs.SourceName AS ReferralSourceName,
         pt.PartyTypeName AS PartyTypeName,
         ss.StageName AS StageName, ss.StageNameAr AS StageNameAr,
@@ -90,10 +90,10 @@ async function getClientById(id) {
         parent.PartyName AS ParentPartyName
       FROM Parties p
       LEFT JOIN ReferralSources rs ON p.ReferralSourceID = rs.ReferralSourceID
-      LEFT JOIN PartyTypes pt ON p.PartyType = pt.PartyTypeId
-      LEFT JOIN SalesStages ss ON p.StageId = ss.StageId
-      LEFT JOIN ContactSources cs ON p.ContactSourceId = cs.SourceId
-      LEFT JOIN Parties parent ON p.ParentPartyId = parent.PartyID
+      LEFT JOIN PartyTypes pt ON p.PartyType = pt.PartyTypeID
+      LEFT JOIN SalesStages ss ON p.StageID = ss.StageID
+      LEFT JOIN ContactSources cs ON p.ContactSourceID = cs.SourceID
+      LEFT JOIN Parties parent ON p.ParentPartyID = parent.PartyID
       WHERE p.PartyID = @id
     `);
   const client = result.recordset[0] || null;
@@ -103,11 +103,11 @@ async function getClientById(id) {
     const contacts = await pool.request()
       .input('id', sql.Int, id)
       .query(`
-        SELECT ContactId, PartyId, ContactName, JobTitle, Phone, Email,
+        SELECT ContactID, PartyID, ContactName, JobTitle, Phone, Email,
                Notes, IsPrimary, IsActive, CreatedBy, CreatedAt
         FROM PartyContacts
-        WHERE PartyId = @id
-        ORDER BY IsPrimary DESC, ContactId ASC
+        WHERE PartyID = @id
+        ORDER BY IsPrimary DESC, ContactID ASC
       `);
     client.Contacts = contacts.recordset;
   } catch (_) {

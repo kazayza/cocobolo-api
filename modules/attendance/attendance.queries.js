@@ -640,7 +640,7 @@ async function getManualAttendance(month) {
   const existingRes = await pool.request()
     .input('month', sql.NVarChar(10), month)
     .query(`
-      SELECT ManualId, EmployeeId, AttendanceMonth, PresentDays, AbsenceDays, LateMinutes, Notes
+      SELECT ManualID, EmployeeID, AttendanceMonth, PresentDays, AbsenceDays, LateMinutes, Notes
       FROM AttendanceManual
       WHERE AttendanceMonth = @month
     `);
@@ -702,13 +702,13 @@ async function saveManualAttendance(dto, currentUserName) {
     .input('notes', sql.NVarChar(500), dto.notes || null)
     .input('createdBy', sql.NVarChar(100), currentUserName)
     .query(`
-      IF EXISTS (SELECT 1 FROM AttendanceManual WHERE EmployeeId = @employeeId AND AttendanceMonth = @month)
+      IF EXISTS (SELECT 1 FROM AttendanceManual WHERE EmployeeID = @employeeId AND AttendanceMonth = @month)
         UPDATE AttendanceManual
         SET PresentDays = @presentDays, AbsenceDays = @absenceDays,
             LateMinutes = @lateMinutes, Notes = @notes
-        WHERE EmployeeId = @employeeId AND AttendanceMonth = @month
+        WHERE EmployeeID = @employeeId AND AttendanceMonth = @month
       ELSE
-        INSERT INTO AttendanceManual (EmployeeId, AttendanceMonth, PresentDays, AbsenceDays, LateMinutes, Notes, CreatedBy, CreatedAt)
+        INSERT INTO AttendanceManual (EmployeeID, AttendanceMonth, PresentDays, AbsenceDays, LateMinutes, Notes, CreatedBy, CreatedAt)
         VALUES (@employeeId, @month, @presentDays, @absenceDays, @lateMinutes, @notes, @createdBy, GETDATE())
     `);
   return true;

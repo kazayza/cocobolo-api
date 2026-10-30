@@ -45,7 +45,7 @@ async function getAllExpenses(search = '', groupId = null, startDate = null, end
     SELECT 
       e.ExpenseID, e.ExpenseName, e.ExpenseDate, e.Amount,
       e.Notes, e.Torecipient, e.IsAdvance, e.AdvanceMonths,
-      e.AdvanceParentExpenseId, e.AdvanceMonthIndex, e.BranchId,
+      e.AdvanceParentExpenseId, e.AdvanceMonthIndex, e.BranchID,
       e.CreatedBy, e.CreatedAt,
       eg.ExpenseGroupID, eg.ExpenseGroupName,
       cb.CashBoxID, cb.CashBoxName
@@ -112,7 +112,7 @@ async function assertBranchAndCashbox(transaction, branchId, cashBoxId) {
   if (branchId == null || !(Number(branchId) > 0)) throw guardError('الفرع مطلوب');
   const cashResult = await transaction.request()
     .input('cashBoxId', sql.Int, cashBoxId)
-    .query(`SELECT CashBoxID, BranchId, IsActive FROM CashBoxes WHERE CashBoxID = @cashBoxId`);
+    .query(`SELECT CashBoxID, BranchID, IsActive FROM CashBoxes WHERE CashBoxID = @cashBoxId`);
   const cashbox = cashResult.recordset[0];
   if (!cashbox) throw guardError('الخزينة المحددة غير موجودة');
   if (!cashbox.IsActive) throw guardError('الخزينة المحددة غير نشطة');
@@ -142,7 +142,7 @@ async function createRegularExpense(expenseData, transaction) {
     .input('createdBy', sql.NVarChar(50), expenseData.createdBy)
     .query(`
       INSERT INTO Expenses (
-        ExpenseName, ExpenseGroupID, CashBoxID, BranchId, Amount, ExpenseDate,
+        ExpenseName, ExpenseGroupID, CashBoxID, BranchID, Amount, ExpenseDate,
         Notes, Torecipient, IsAdvance, AdvanceMonths,
         AdvanceParentExpenseId, AdvanceMonthIndex, CreatedBy, CreatedAt
       )
@@ -200,7 +200,7 @@ async function createAdvanceExpense(expenseData, transaction) {
     .input('createdBy', sql.NVarChar(50), expenseData.createdBy)
     .query(`
       INSERT INTO Expenses (
-        ExpenseName, ExpenseGroupID, CashBoxID, BranchId, Amount, ExpenseDate,
+        ExpenseName, ExpenseGroupID, CashBoxID, BranchID, Amount, ExpenseDate,
         Notes, Torecipient, IsAdvance, AdvanceMonths,
         AdvanceParentExpenseId, AdvanceMonthIndex, CreatedBy, CreatedAt
       )
@@ -235,7 +235,7 @@ async function createAdvanceExpense(expenseData, transaction) {
       .input('createdBy', sql.NVarChar(50), expenseData.createdBy)
       .query(`
         INSERT INTO Expenses (
-          ExpenseName, ExpenseGroupID, CashBoxID, BranchId, Amount, ExpenseDate,
+          ExpenseName, ExpenseGroupID, CashBoxID, BranchID, Amount, ExpenseDate,
           Notes, Torecipient, IsAdvance, AdvanceMonths,
           AdvanceParentExpenseId, AdvanceMonthIndex, CreatedBy, CreatedAt
         )
@@ -367,7 +367,7 @@ async function updateExpense(id, expenseData) {
       .query(`
         UPDATE Expenses SET
           ExpenseName = @expenseName, ExpenseGroupID = @expenseGroupId,
-          CashBoxID = @cashBoxId, BranchId = @branchId,
+          CashBoxID = @cashBoxId, BranchID = @branchId,
           Amount = @amount, ExpenseDate = @expenseDate,
           Notes = @notes, Torecipient = @toRecipient,
           IsAdvance = 0, AdvanceMonths = NULL, AdvanceMonthIndex = NULL

@@ -356,7 +356,7 @@ async function getAttendance(pool, employeeId, month) {
     .input('month', sql.NVarChar(10), month)
     .query(`
       SELECT TOP 1 PresentDays, LateMinutes FROM AttendanceManual
-      WHERE EmployeeId = @employeeId AND AttendanceMonth = @month
+      WHERE EmployeeID = @employeeId AND AttendanceMonth = @month
     `);
   const manual = manualRes.recordset[0];
   if (manual) {
@@ -428,7 +428,7 @@ async function calculateOne(pool, employeeId, month) {
       SELECT li.InstallmentId, li.InstallmentNumber, li.Amount, l.TotalInstallments
       FROM LoanInstallments li
       INNER JOIN EmployeeLoans l ON li.LoanId = l.LoanId
-      WHERE li.EmployeeId = @employeeId AND li.DeductionMonth = @month AND li.Status = 'Pending'
+      WHERE li.EmployeeID = @employeeId AND li.DeductionMonth = @month AND li.Status = 'Pending'
       ORDER BY li.InstallmentNumber
     `);
   const loanItems = loanRes.recordset.map((r) => ({
@@ -782,7 +782,7 @@ async function deductLoanInstallments(makeRequest, payroll, username) {
     .query(`
       SELECT InstallmentId, LoanId, InstallmentNumber, Amount, Notes
       FROM LoanInstallments
-      WHERE EmployeeId = @employeeId AND DeductionMonth = @month AND Status = 'Pending'
+      WHERE EmployeeID = @employeeId AND DeductionMonth = @month AND Status = 'Pending'
       ORDER BY InstallmentNumber
     `);
   const installments = instRes.recordset;
@@ -808,7 +808,7 @@ async function deductLoanInstallments(makeRequest, payroll, username) {
       .input('notes', sql.NVarChar(sql.MAX), notes)
       .query(`
         UPDATE LoanInstallments
-        SET Status = 'Deducted', PayrollId = @payrollId, PayrollDetailId = @payrollDetailId,
+        SET Status = 'Deducted', PayrollID = @payrollId, PayrollDetailId = @payrollDetailId,
             DeductionDate = GETDATE(), Notes = @notes
         WHERE InstallmentId = @installmentId
       `);

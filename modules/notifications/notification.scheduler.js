@@ -341,7 +341,7 @@ async function checkNewLeadsWithoutNotify() {
     // Leads created in last 15 minutes still "جديد"
     const result = await pool.request().query(`
       SELECT TOP 50
-        l.LeadId, l.FullName, l.Phone, l.CampaignName, l.CreatedAt
+        l.LeadID, l.FullName, l.Phone, l.CampaignName, l.CreatedAt
       FROM LeadsCRM l
       WHERE l.LeadStatus = N'جديد'
         AND l.IsConverted = 0
@@ -351,10 +351,10 @@ async function checkNewLeadsWithoutNotify() {
           SELECT 1 FROM Notifications n
           INNER JOIN Users u ON u.Username = n.RecipientUser
           WHERE n.RelatedTable = 'LeadsCRM'
-            AND n.RelatedID = l.LeadId
+            AND n.RelatedID = l.LeadID
             AND n.CreatedAt >= DATEADD(MINUTE, -30, GETDATE())
         )
-      ORDER BY l.LeadId DESC
+      ORDER BY l.LeadID DESC
     `);
 
     for (const lead of result.recordset || []) {
