@@ -220,6 +220,37 @@ function executeQuery(rawText, p) {
     }
     return { recordset: [] };
   }
+  // قائمة السلف: فلاتر getLoans بدلالات SQL نفسها — الحالة مطابقة حرفية
+  // (تُتخطى عند الغياب أو 'all')، والشهر = شهر بداية الخصم أو أي قسط
+  // في الشهر (تطابق بلازور GetLoansAsync:52-57)، ثم ترتيب وتصفح.
+  if (text.includes('FROM EmployeeLoans l') && (text.includes('OFFSET') || text.includes('COUNT(*) AS Total'))) {
+    const suf = text.includes('COUNT(*) AS Total') ? '2' : '';
+    const st = p[`status${suf}`]; const srch = p[`search${suf}`]; const mon = p[`month${suf}`]; const br = p[`branchId${suf}`];
+    let rows = s.loans.map((l) => {
+      const e = s.employees.find((x) => x.EmployeeID === l.EmployeeId) || {};
+      return {
+        LoanId: l.LoanId, EmployeeId: l.EmployeeId, LoanAmount: l.LoanAmount,
+        TotalInstallments: l.TotalInstallments, MonthlyInstallment: l.MonthlyInstallment,
+        RemainingAmount: l.RemainingAmount, PaidInstallments: l.PaidInstallments,
+        StartDeductionMonth: l.StartDeductionMonth, Status: l.Status,
+        LoanDate: l.LoanDate, Notes: l.Notes,
+        EmployeeName: e.FullName, Department: e.Department, JobTitle: e.JobTitle,
+        BranchID: e.BranchID ?? null, EmployeeStatus: 'Active', BranchName: null,
+        __start: l.StartDeductionMonth,
+      };
+    });
+    if (st && st !== 'all') rows = rows.filter((r) => r.Status === st);
+    if (srch) {
+      const needle = srch.replace(/%/g, '');
+      rows = rows.filter((r) => (r.EmployeeName || '').includes(needle) || (r.Department || '').includes(needle) || (r.JobTitle || '').includes(needle));
+    }
+    if (mon) rows = rows.filter((r) => r.__start === mon || s.installments.some((i) => i.LoanId === r.LoanId && i.DeductionMonth === mon));
+    if (br) rows = rows.filter((r) => r.BranchID === br);
+    if (text.includes('COUNT(*) AS Total')) return { recordset: [{ Total: rows.length }] };
+    const mOff = text.match(/OFFSET (\d+) ROWS FETCH NEXT (\d+)/);
+    const off = mOff ? Number(mOff[1]) : 0; const ps = mOff ? Number(mOff[2]) : rows.length;
+    return { recordset: rows.slice(off, off + ps).map(({ __start, ...r }) => r) };
+  }
   throw new Error(`unstubbed query: ${text.slice(0, 160)}`);
 }
 
@@ -542,4 +573,63 @@ test('routes: GET /:id registered after specific GETs; installment mutation rout
   assert.ok(idx('/installments/:id/skip', 'post') >= 0);
   assert.ok(idx('/installments/:id/split', 'post') >= 0);
   assert.ok(idx('/installments/:id/update', 'post') >= 0);
+});
+
+// ── قائمة السلف: النطاق الافتراضي وفلتر «منتهية» وشهر بلازور ─────────
+function seedListLoans() {
+  resetStore();
+  // سلفة منتهية بدأت في يناير ولها قسط وحيد في مارس (اكتملت به)
+  state.store.loans.push({
+    LoanId: 101, EmployeeId: 1, LoanAmount: 900, MonthlyInstallment: 900,
+    TotalInstallments: 1, PaidInstallments: 1, RemainingAmount: 0,
+    LoanDate: '2026-01-05', StartDeductionMonth: '2026-01', Status: 'Completed',
+    CashBoxId: 10, CashboxTransactionId: 501, Notes: null,
+    ApprovedBy: 'المدير', CreatedBy: 'admin', CreatedAt: '2026-01-05', LastUpdatedAt: '2026-03-30',
+  });
+  state.store.installments.push({
+    InstallmentId: 1010, LoanId: 101, EmployeeId: 1, InstallmentNumber: 1,
+    DeductionMonth: '2026-03', Amount: 900, Status: 'Deducted',
+    DeductionDate: '2026-03-28', Notes: null, PayrollId: null,
+    CreatedBy: 'admin', CreatedAt: '2026-01-05',
+  });
+  // سلفة ملغية بدأت في مايو
+  state.store.loans.push({
+    LoanId: 102, EmployeeId: 1, LoanAmount: 600, MonthlyInstallment: 300,
+    TotalInstallments: 2, PaidInstallments: 0, RemainingAmount: 0,
+    LoanDate: '2026-05-02', StartDeductionMonth: '2026-05', Status: 'Cancelled',
+    CashBoxId: 10, CashboxTransactionId: 502, Notes: null,
+    ApprovedBy: null, CreatedBy: 'admin', CreatedAt: '2026-05-02', LastUpdatedAt: '2026-05-03',
+  });
+}
+
+test('list: no filters → ALL loans of every status (no implicit month/status restriction)', async () => {
+  seedListLoans();
+  const r = await q.getLoans({});
+  assert.equal(r.totalCount, 3);
+  assert.deepEqual(r.items.map((i) => i.Status).sort(), ['Active', 'Cancelled', 'Completed']);
+});
+
+test('list: status=Completed returns exactly the completed loans (stored EN literal)', async () => {
+  seedListLoans();
+  const r = await q.getLoans({ status: 'Completed' });
+  assert.equal(r.totalCount, 1);
+  assert.equal(r.items[0].LoanId, 101);
+  assert.equal(r.items[0].Status, 'Completed');
+  const a = await q.getLoans({ status: 'Active' });
+  assert.deepEqual(a.items.map((i) => i.LoanId), [100]);
+  const all = await q.getLoans({ status: 'all' });
+  assert.equal(all.totalCount, 3);
+});
+
+test('list: month filter matches via installment month too (Blazor OR semantics)', async () => {
+  seedListLoans();
+  // سلفة 101 بدأت 2026-01 لكن قسطها في 2026-03 — لا تظهر إلا بدلالة بلازور
+  const byInst = await q.getLoans({ month: '2026-03' });
+  assert.deepEqual(byInst.items.map((i) => i.LoanId), [101]);
+  // شهر البداية نفسه يطابق أيضًا
+  const byStart = await q.getLoans({ month: '2026-11' });
+  assert.deepEqual(byStart.items.map((i) => i.LoanId), [100]);
+  // دمج «منتهية» مع شهر لا يخصها = فارغ فعلًا (لا قيد ضمني آخر)
+  const none = await q.getLoans({ status: 'Completed', month: '2026-11' });
+  assert.equal(none.totalCount, 0);
 });

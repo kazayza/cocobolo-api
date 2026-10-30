@@ -388,6 +388,21 @@ const payroll = {
     || isRole(a, 'AccountsManager'),
 };
 
+const offPayroll = {
+  // دخول/إنشاء/إلغاء دفعة خارج الراتب في بلازور = CanEnterPayroll
+  // (PayrollService.cs:69): أدوار عرض الرواتب أو أيٌّ من مطالبات عرض
+  // الوحدة الثلاث المستخدمة عبر صفحاتها.
+  canEnter: (a) => roles.admin(a)
+    || roles.hrManager(a)
+    || roles.accountManager(a)
+    || roles.account(a)
+    || isRole(a, 'AccountsManager')
+    || hasAnyClaim(a, 'frm_Payroll:View', 'frmPayrollProcessor:View', 'frm_PayrollPayment:View'),
+  // الاعتماد/الرفض/الصرف: بوابة عمليات الرواتب نفسها، ويبقى حارس
+  // المراجع الأضيق (Admin/AccountManager) مطبقًا داخل المحرك.
+  canReviewOrPay: (a) => payroll.canMutate(a),
+};
+
 const expenses = {
   // ExpenseService/ExpensesList في بلازور: العرض بـ frm_ExpensesList:View،
   // والنموذج frm_Expenses:Add/Edit، وحذف القائمة frm_ExpensesList:Delete.
@@ -516,6 +531,7 @@ module.exports = {
   reports,
   cashbox,
   payroll,
+  offPayroll,
   expenses,
   personalAccounts,
   settings,

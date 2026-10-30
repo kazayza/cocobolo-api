@@ -29,7 +29,9 @@ async function getLoans(filter={}){
   let where="WHERE l.Status IS NOT NULL";
   if(filter.status && filter.status!=='all'){ req.input('status', sql.NVarChar(20), filter.status); where+=` AND l.Status=@status`; }
   if(filter.search){ req.input('search', sql.NVarChar(100), `%${filter.search}%`); where+=` AND (e.FullName LIKE @search OR e.Department LIKE @search OR e.JobTitle LIKE @search)`; }
-  if(filter.month){ req.input('month', sql.NVarChar(7), filter.month); where+=` AND l.StartDeductionMonth=@month`; }
+  // فلتر الشهر — تطابق حرفي مع بلازور GetLoansAsync:52-57: شهر بداية
+  // الخصم يساوي الشهر أو أي قسط من أقساط السلفة يقع في الشهر
+  if(filter.month){ req.input('month', sql.NVarChar(7), filter.month); where+=` AND (l.StartDeductionMonth=@month OR EXISTS (SELECT 1 FROM LoanInstallments i WHERE i.LoanId=l.LoanId AND i.DeductionMonth=@month))`; }
   if(filter.branchId){ req.input('branchId', sql.Int, parseInt(filter.branchId,10)); where+=` AND e.BranchID=@branchId`; }
   const page=Math.max(parseInt(filter.page)||1,1); const ps=Math.min(Math.max(parseInt(filter.pageSize)||15,1),100); const off=(page-1)*ps;
   const rs = await req.query(`

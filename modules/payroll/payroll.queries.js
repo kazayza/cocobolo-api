@@ -5,7 +5,7 @@ const { sql, connectDB } = require('../../core/database');
 async function getPayrollByMonth(payrollMonth, extra = {}) {
   const pool = await connectDB();
   const request = pool.request();
-  let where = `WHERE (p.Notes IS NULL OR p.Notes NOT LIKE '%[OFFPAYROLL]%')`;
+  let where = `WHERE (p.Notes IS NULL OR CHARINDEX(N'[OFFPAYROLL]', p.Notes) = 0)`;
   if (payrollMonth && String(payrollMonth).trim() !== '' && payrollMonth !== 'all') {
     request.input('payrollMonth', sql.Char(7), String(payrollMonth).trim());
     where += ` AND p.PayrollMonth = @payrollMonth`;
@@ -50,7 +50,7 @@ async function getPayrollMonths() {
   const result = await pool.request().query(`
       SELECT PayrollMonth, COUNT(*) AS PayrollCount, ISNULL(SUM(NetSalary),0) AS TotalNet
       FROM Payroll
-      WHERE PayrollMonth IS NOT NULL AND (Notes IS NULL OR Notes NOT LIKE '%[OFFPAYROLL]%')
+      WHERE PayrollMonth IS NOT NULL AND (Notes IS NULL OR CHARINDEX(N'[OFFPAYROLL]', Notes) = 0)
       GROUP BY PayrollMonth
       ORDER BY PayrollMonth DESC
     `);
@@ -61,7 +61,7 @@ async function getPayrollMonths() {
 async function getPayrollStats(month) {
   const pool = await connectDB();
   const request = pool.request();
-  let where = `WHERE (Notes IS NULL OR Notes NOT LIKE '%[OFFPAYROLL]%')`;
+  let where = `WHERE (Notes IS NULL OR CHARINDEX(N'[OFFPAYROLL]', Notes) = 0)`;
   if (month && month !== 'all') {
     request.input('month', sql.Char(7), month);
     where += ` AND PayrollMonth = @month`;
@@ -76,10 +76,21 @@ async function getPayrollStats(month) {
         SUM(CASE WHEN PaymentStatus NOT IN (N'مدفوع',N'ملغي') THEN 1 ELSE 0 END) AS PendingCount
       FROM Payroll ${where}
     `);
-  // إضافات منفصلة من OffPayroll
+  // إضافات منفصلة — تعريف بلازور (GetStatsAsync): مجموع بنود
+  // PayrollDetails المنفصلة (PaymentType='Separate') على رواتب
+  // المجموعة الشهرية نفسها (غير الموسومة [OFFPAYROLL]). كان يجمع
+  // NetSalary صفوف خارج الراتب — وصفوف بلازور منها صافيها المحسوب
+  // صفر أصلًا، فكان الرقم خاطئًا في الاتجاهين.
   const offReq = pool.request();
   if (month && month !== 'all') offReq.input('month2', sql.Char(7), month);
-  const off = await offReq.query(`SELECT ISNULL(SUM(NetSalary),0) AS TotalSeparateBonuses FROM Payroll WHERE Notes LIKE '%[OFFPAYROLL]%' ${month && month !== 'all' ? `AND PayrollMonth=@month2` : ''}`);
+  const off = await offReq.query(`
+    SELECT ISNULL(SUM(d.Amount),0) AS TotalSeparateBonuses
+    FROM PayrollDetails d
+    INNER JOIN Payroll p ON d.PayrollID = p.PayrollID
+    WHERE d.PaymentType = 'Separate'
+      AND (p.Notes IS NULL OR CHARINDEX(N'[OFFPAYROLL]', p.Notes) = 0)
+      ${month && month !== 'all' ? 'AND p.PayrollMonth = @month2' : ''}
+  `);
   const stats = result.recordset[0] || {};
   stats.TotalSeparateBonuses = off.recordset[0]?.TotalSeparateBonuses || 0;
   return stats;
@@ -99,6 +110,7 @@ async function getPayrollByEmployee(employeeId) {
         p.PaymentStatus, p.PaymentDate, p.Notes
       FROM Payroll p
       WHERE p.EmployeeID = @employeeId
+        AND (p.Notes IS NULL OR CHARINDEX(N'[OFFPAYROLL]', p.Notes) = 0)
       ORDER BY p.PayrollMonth DESC
     `);
   return result.recordset;
@@ -514,7 +526,7 @@ async function calculateOne(pool, employeeId, month) {
     .query(`
       SELECT TOP 1 PayrollID, PaymentStatus FROM Payroll
       WHERE EmployeeID = @employeeId AND PayrollMonth = @month
-        AND (Notes IS NULL OR Notes NOT LIKE '%' + @marker + '%')
+        AND (Notes IS NULL OR CHARINDEX(@marker, Notes) = 0)
     `);
   const existing = existingRes.recordset[0] || null;
 
@@ -713,7 +725,7 @@ async function getRuns(month = null) {
            TotalDeductions, TotalNet, CashBoxID, ProcessedBy, ProcessedAt,
            CreatedBy, CreatedAt
     FROM PayrollRuns
-    WHERE (Notes IS NULL OR Notes NOT LIKE '%[OFFPAYROLL]%')
+    WHERE (Notes IS NULL OR CHARINDEX(N'[OFFPAYROLL]', Notes) = 0)
   `;
   if (month) {
     request.input('month', sql.Char(7), month);
@@ -845,6 +857,36 @@ async function rejectPayroll(payrollId, auth, reason = null) {
     await updateRunStatus(makeRequest, payroll.PayrollRunID);
     await transaction.commit();
     return { payrollId, status: PAYROLL_STATUS.Rejected };
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) {}
+    throw err;
+  }
+}
+
+// إلغاء مرتب/دفعة — مرآة CancelAsync:1113: قبل الصرف فقط، وبوابة
+// الدخول (CanEnterPayroll) على المسار لا داخل المحرك كما في بلازور.
+async function cancelPayroll(payrollId, auth) {
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
+  try {
+    const makeRequest = () => new sql.Request(transaction);
+    const payroll = await loadPayrollRow(makeRequest, payrollId);
+    if (!payroll) throw payrollError('الراتب غير موجود', 404);
+    const isOffPayroll = String(payroll.Notes || '').toUpperCase().includes(OFFPAYROLL_MARKER);
+    const recordLabel = isOffPayroll ? 'الدفعة خارج الراتب' : 'الراتب';
+    if (payroll.PaymentStatus === PAYROLL_STATUS.Paid) throw payrollError(`لا يمكن إلغاء ${recordLabel} بعد الصرف`);
+    if (payroll.PaymentStatus === PAYROLL_STATUS.Cancelled) throw payrollError(`${recordLabel} ملغاة بالفعل`);
+
+    await makeRequest()
+      .input('id', sql.Int, payrollId)
+      .input('status', sql.NVarChar(20), PAYROLL_STATUS.Cancelled)
+      .input('notes', sql.NVarChar(sql.MAX), appendNoteLine(payroll.Notes, `[إلغاء: ${auth.username} - ${nowStamp()}]`))
+      .query(`UPDATE Payroll SET PaymentStatus = @status, Notes = @notes WHERE PayrollID = @id`);
+
+    await updateRunStatus(makeRequest, payroll.PayrollRunID);
+    await transaction.commit();
+    return { payrollId, status: PAYROLL_STATUS.Cancelled };
   } catch (err) {
     try { await transaction.rollback(); } catch (_) {}
     throw err;
@@ -1053,6 +1095,7 @@ module.exports = {
   getRuns,
   approvePayroll,
   rejectPayroll,
+  cancelPayroll,
   payPayroll,
   isPayrollReviewer
 };
