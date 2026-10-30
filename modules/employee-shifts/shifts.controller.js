@@ -19,10 +19,10 @@ async function getByEmployee(req, res) {
   }
 }
 
-// إضافة شيفت
+// إضافة شيفت — المنشئ من التوكن فقط؛ createdBy الجسم يُتجاهل
 async function create(req, res) {
   try {
-    const { employeeId, shiftType, startTime, endTime, effectiveFrom, createdBy } = req.body;
+    const { employeeId, shiftType, startTime, endTime, effectiveFrom } = req.body;
 
     if (!employeeId || !shiftType || !startTime || !endTime || !effectiveFrom) {
       return errorResponse(res, 'البيانات ناقصة', 400);
@@ -33,19 +33,47 @@ async function create(req, res) {
 
     const shiftId = await shiftsQueries.createShift({
       ...req.body,
-      createdBy: createdBy || 'Unknown',
+      createdBy: req.auth.username,
       createdAt: createdAt // هنبعت الوقت ده للـ Query
     });
 
-    return res.json({ 
-      success: true, 
-      shiftId, 
-      message: 'تم إضافة الشيفت وتحديث المواعيد بنجاح' 
+    return res.json({
+      success: true,
+      shiftId,
+      message: 'تم إضافة الشيفت وتحديث المواعيد بنجاح'
     });
 
   } catch (err) {
     console.error(err);
     return errorResponse(res, 'فشل إضافة الشيفت', 500, err.message);
+  }
+}
+
+// تعديل شيفت قائم في مكانه — PUT /api/shifts/:id
+async function update(req, res) {
+  try {
+    const { id } = req.params;
+    const { shiftType, startTime, endTime, effectiveFrom } = req.body;
+
+    if (!shiftType || !startTime || !endTime || !effectiveFrom) {
+      return errorResponse(res, 'البيانات ناقصة', 400);
+    }
+
+    await shiftsQueries.updateShift(parseInt(id, 10), {
+      shiftType,
+      startTime,
+      endTime,
+      effectiveFrom,
+      effectiveTo: req.body.effectiveTo || null,
+      offDay1: req.body.offDay1 ?? null,
+      offDay2: req.body.offDay2 ?? null,
+      biometricCode: req.body.biometricCode ?? null,
+    });
+
+    return res.json({ success: true, message: 'تم تعديل الشيفت بنجاح.' });
+  } catch (err) {
+    console.error(err);
+    return errorResponse(res, err.message || 'فشل تعديل الشيفت', err.statusCode || 500, err.message);
   }
 }
 
@@ -109,6 +137,7 @@ async function getMySchedule(req, res) {
 module.exports = {
   getByEmployee,
   create,
+  update,
   remove,
   getEmployeesShiftsStatus,
   search,

@@ -130,10 +130,23 @@ async function create(req, res) {
 }
 
 // تعديل مهمة
+// فرعان: التكليفات العامة تمرّ عبر التعديل المحروس المطابق لبلازور
+// (UpdateGeneralTaskAsync: منشئ/مدير، وصف إلزامي، لا تاريخ ماضٍ، إعادة
+// إسناد تُصفّر الاستلام وتُشعر الطرفين)؛ ومهام CRM غير العامة تبقى على
+// المسار العام القائم دون أي تغيير.
 async function update(req, res) {
   try {
     const id = parseTaskId(req.params.id);
     if (id === null) return invalidTaskIdResponse(res);
+
+    const existing = await tasksQueries.getTaskById(id);
+    if (existing && String(existing.TaskScope || '').toLowerCase() === 'general') {
+      const result = await tasksQueries.updateGeneralTask(id, req.body || {}, req.auth);
+      return res.json({
+        success: true,
+        message: result?.message || 'تم تحديث التكليف وإشعار المكلَّف.'
+      });
+    }
 
     await tasksQueries.updateTask(id, req.body);
 
@@ -230,6 +243,10 @@ async function createGeneral(req, res) {
       dueDate: req.body.dueDate,
       dueTime: req.body.dueTime,
       priority: req.body.priority,
+      reminderMinutes: req.body.reminderMinutes,
+      // ربط اختياري بمستند — العنوان يُحسم خادميًا داخل الاستعلام.
+      linkedEntityType: req.body.linkedEntityType,
+      linkedEntityId: req.body.linkedEntityId,
       // مصدر الإسناد يُحسم من دور المنشئ خادميًا — لا من الجسم.
       assignmentSource: resolveGeneralTaskAssignmentSource(req.auth),
     }, req.auth);
@@ -285,6 +302,88 @@ async function completeTask(req, res) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════
+// منصة التكليفات: استلام / إرجاع / إلغاء / نقاش / إشاراتي
+// الهوية من التوكن فقط في كل مسار؛ الحرّاس داخل الاستعلامات
+// بترتيب بلازور الحرفي.
+// ═══════════════════════════════════════════════════════════
+
+function platformError(res, err, fallback) {
+  console.error('tasks platform:', err);
+  return errorResponse(
+    res,
+    err.statusCode ? err.message : fallback,
+    err.statusCode || 500,
+    err.code || err.message,
+  );
+}
+
+async function acknowledgeTask(req, res) {
+  try {
+    const id = parseTaskId(req.params.id);
+    if (id === null) return invalidTaskIdResponse(res);
+    const result = await tasksQueries.acknowledgeGeneralTask(id, req.auth);
+    return res.json({ success: true, message: result?.message || 'تم تأكيد الاستلام' });
+  } catch (err) {
+    return platformError(res, err, 'فشل تأكيد الاستلام');
+  }
+}
+
+async function returnTask(req, res) {
+  try {
+    const id = parseTaskId(req.params.id);
+    if (id === null) return invalidTaskIdResponse(res);
+    const result = await tasksQueries.returnGeneralTask(id, req.body?.reason, req.auth);
+    return res.json({ success: true, message: result?.message || 'تم إرجاع التكليف' });
+  } catch (err) {
+    return platformError(res, err, 'فشل إرجاع التكليف');
+  }
+}
+
+async function cancelTask(req, res) {
+  try {
+    const id = parseTaskId(req.params.id);
+    if (id === null) return invalidTaskIdResponse(res);
+    const result = await tasksQueries.cancelGeneralTask(id, req.body?.reason, req.auth);
+    return res.json({ success: true, message: result?.message || 'تم إلغاء التكليف' });
+  } catch (err) {
+    return platformError(res, err, 'فشل إلغاء التكليف');
+  }
+}
+
+async function getComments(req, res) {
+  try {
+    const id = parseTaskId(req.params.id);
+    if (id === null) return invalidTaskIdResponse(res);
+    const comments = await tasksQueries.getTaskComments(id, req.auth);
+    return res.json(comments);
+  } catch (err) {
+    return platformError(res, err, 'فشل تحميل النقاش');
+  }
+}
+
+async function addComment(req, res) {
+  try {
+    const id = parseTaskId(req.params.id);
+    if (id === null) return invalidTaskIdResponse(res);
+    const result = await tasksQueries.addTaskComment(id, req.body || {}, req.auth);
+    return res.json({ success: true, commentId: result.commentId, message: result.message });
+  } catch (err) {
+    return platformError(res, err, 'فشل إضافة التعليق');
+  }
+}
+
+// «إشاراتي» — تكليفات عامة ذُكر فيها موظف التوكن، الأحدث ذكرًا أولًا
+async function getMyMentions(req, res) {
+  try {
+    const tasks = await tasksQueries.getMyMentions(req.auth);
+    return res.json(tasks);
+  } catch (err) {
+    console.error('getMyMentions:', err);
+    return errorResponse(res, 'فشل تحميل الإشارات', 500, err.message);
+  }
+}
+
 // عدّاد إشاراتي (@) لشريط «مهامي» في الرئيسية — الهوية من التوكن فقط
 async function getMyMentionsCount(req, res) {
   try {
@@ -312,4 +411,10 @@ module.exports = {
   createGeneral,
   startTask,
   completeTask,
+  acknowledgeTask,
+  returnTask,
+  cancelTask,
+  getComments,
+  addComment,
+  getMyMentions,
 };

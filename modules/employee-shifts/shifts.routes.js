@@ -25,6 +25,10 @@ router.get('/employee/:id', shiftsController.getByEmployee);
 // POST /api/shifts
 router.post('/', shiftsController.create);
 
+// تعديل شيفت قائم في مكانه (لا يكرّره)
+// PUT /api/shifts/:id
+router.put('/:id', shiftsController.update);
+
 // حذف شيفت
 // DELETE /api/shifts/:id
 router.delete('/:id', shiftsController.remove);

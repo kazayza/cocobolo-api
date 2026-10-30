@@ -28,8 +28,18 @@ router.get('/biometric/:biometricCode', attendanceController.getBiometricLogs);
 router.get('/exemptions/:biometricCode', attendanceController.getExemptions);
 
 router.post('/exemptions', attendanceController.createExemption);
+// اعتماد / رفض استثناء (مديرو الإعفاءات فقط — الحارس داخل المتحكم)
+// POST /api/attendance/exemptions/:id/approve | /reject
+router.post('/exemptions/:id/approve', attendanceController.approveExemption);
+router.post('/exemptions/:id/reject', attendanceController.rejectExemption);
 // حذف استثناء
 // DELETE /api/attendance/exemptions/:id
 router.delete('/exemptions/:id', attendanceController.removeExemption);
+
+// الحضور اليدوي للمعفيين من البصمة
+// GET /api/attendance/manual?month=YYYY-MM
+router.get('/manual', attendanceController.getManualAttendance);
+// POST /api/attendance/manual (بوابة كتابة داخل المتحكم)
+router.post('/manual', attendanceController.saveManualAttendance);
 
 module.exports = router;

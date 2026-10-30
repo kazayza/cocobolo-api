@@ -167,6 +167,7 @@ async function getDeliveries(filters = {}, auth = null) {
   `);
 
   await attachProgressAndSchedules(pool, result.recordset, auth);
+  await attachSchedulePending(pool, result.recordset);
 
   return {
     rows: result.recordset,
@@ -604,7 +605,7 @@ async function grantDeliveryPermission(value, auth) {
   }
 }
 
-async function getDailySheet(filters = {}) {
+async function getDailySheetLegacy(filters = {}) {
   const pool = await connectDB();
   const request = pool.request();
   const where = buildWhere(request, { ...filters, status: 'pending' });
@@ -621,6 +622,149 @@ async function getDailySheet(filters = {}) {
     ORDER BY t.DueDate, t.TransactionID
   `);
   return result.recordset;
+}
+
+// Item 10 (Pkg2) — line-based daily sheet, mirror of Blazor
+// SalesDeliveryStatusService.GetDailyDeliverySheetByLinesAsync
+// (Services/SalesDeliveryStatusService.cs:2380): one row per
+// (invoice x appointment); "due lines" = lines whose EFFECTIVE date
+// (DeliveryScheduleResolver.EffectiveDate) is that day and not complete.
+// filters.dateFrom/dateTo arrive ALREADY shifted to real dates by the
+// controller (ShiftDueDateRange mirror), exactly as Blazor shifts the
+// range inside the service before filtering on real effective dates.
+async function getDailySheet(filters = {}, auth = null) {
+  try {
+    return await getDailySheetByLines(filters, auth);
+  } catch (error) {
+    if (isMissingTableError(error) || (error && (error.number === 207 || /Invalid column name/i.test(String(error.message || ''))))) {
+      return getDailySheetLegacy(filters);
+    }
+    throw error;
+  }
+}
+
+async function getDailySheetByLines(filters = {}, auth = null) {
+  const pool = await connectDB();
+  const seesReal = auth ? dates.canSeeRealDate(auth) : true;
+  const buffer = dates.dateBufferDays();
+  const candRequest = pool.request();
+  let searchClause = '';
+  if (filters.search && String(filters.search).trim()) {
+    candRequest.input('sheetSearch', sql.NVarChar(200), `%${String(filters.search).trim()}%`);
+    searchClause = `AND (p.PartyName LIKE @sheetSearch OR p.Phone LIKE @sheetSearch OR t.ReferenceNumber LIKE @sheetSearch)`;
+  }
+  const candResult = await candRequest.query(`
+    SELECT TOP 500 t.TransactionID, t.ReferenceNumber, t.TransactionDate, t.DueDate,
+           t.DeliveredNotes, p.PartyName, p.Phone, p.Address,
+           COALESCE(e.FullName, t.DeliveryEmployeeName) AS DeliveryEmployeeName
+    FROM Transactions t
+    INNER JOIN Parties p ON t.PartyID = p.PartyID
+    LEFT JOIN Employees e ON t.DeliveryEmployeeId = e.EmployeeID
+    WHERE t.TransactionType = 'Sale'
+      AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')
+      AND ISNULL(t.IsDelivered, 0) = 0
+      ${searchClause}
+    ORDER BY t.TransactionID
+  `);
+  const candidates = candResult.recordset;
+  if (!candidates.length) return [];
+  const ids = candidates.map((c) => Number(c.TransactionID));
+  const candById = new Map(candidates.map((c) => [Number(c.TransactionID), c]));
+
+  const linesRequest = pool.request();
+  const linesIn = bindIdList(linesRequest, 'shl', ids);
+  const linesResult = await linesRequest.query(`
+    SELECT td.TransactionID, td.DetailID, td.Quantity, td.DeliveryDate, td.DeliveryDateIsCustom,
+           pr.ProductName
+    FROM TransactionDetails td
+    LEFT JOIN Products pr ON pr.ProductID = td.ProductID
+    WHERE td.TransactionID IN ${linesIn}
+    ORDER BY td.DetailID
+  `);
+
+  const acceptedByDetail = new Map();
+  const settledByDetail = new Map();
+  try {
+    const accRequest = pool.request();
+    const accIn = bindIdList(accRequest, 'sha', ids);
+    const accResult = await accRequest.query(`
+      SELECT idl.TransactionId, idi.TransactionDetailId, COALESCE(SUM(idi.AcceptedQty), 0) AS AcceptedQty
+      FROM InvoiceDeliveryItems idi
+      JOIN InvoiceDeliveries idl ON idl.DeliveryId = idi.DeliveryId
+      WHERE idl.IsVoided = 0 AND idl.TransactionId IN ${accIn}
+      GROUP BY idl.TransactionId, idi.TransactionDetailId
+    `);
+    for (const row of accResult.recordset) acceptedByDetail.set(`${row.TransactionId}:${row.TransactionDetailId}`, num(row.AcceptedQty));
+    const setRequest = pool.request();
+    const setIn = bindIdList(setRequest, 'shm', ids);
+    const setResult = await setRequest.query(`
+      SELECT TransactionId, TransactionDetailId, COALESCE(SUM(Quantity), 0) AS SettledQty
+      FROM DeliveryMaintenanceItems
+      WHERE IsVoided = 0 AND Status = '${MAINTENANCE_SETTLED}' AND TransactionId IN ${setIn}
+      GROUP BY TransactionId, TransactionDetailId
+    `);
+    for (const row of setResult.recordset) settledByDetail.set(`${row.TransactionId}:${row.TransactionDetailId}`, num(row.SettledQty));
+  } catch (error) {
+    if (!isMissingTableError(error)) throw error;
+  }
+
+  const fromD = filters.dateFrom ? dates.dateOnly(filters.dateFrom) : null;
+  const toD = filters.dateTo ? dates.dateOnly(filters.dateTo) : null;
+  const groups = new Map();
+  for (const line of linesResult.recordset) {
+    const txId = Number(line.TransactionID);
+    const cand = candById.get(txId);
+    if (!cand) continue;
+    const accepted = acceptedByDetail.get(`${txId}:${line.DetailID}`) || 0;
+    const settled = settledByDetail.get(`${txId}:${line.DetailID}`) || 0;
+    const remaining = num(line.Quantity) - accepted - settled;
+    if (remaining <= QTY_EPSILON) continue;
+    const isCustom = Boolean(line.DeliveryDateIsCustom) && Boolean(line.DeliveryDate);
+    const effective = dates.effectiveLineDate(line.DeliveryDate, isCustom, cand.DueDate);
+    if (!effective) continue;
+    if (fromD && effective < fromD) continue;
+    if (toD && effective > toD) continue;
+    const key = `${txId}:${effective.toISOString().slice(0, 10)}`;
+    if (!groups.has(key)) groups.set(key, { cand, realDate: effective, lines: [], remaining: 0, invoiced: 0, hasEvents: false });
+    const g = groups.get(key);
+    g.lines.push({ ProductName: line.ProductName || '', RemainingQty: round3(remaining), Quantity: num(line.Quantity) });
+    g.remaining = round3(g.remaining + remaining);
+    g.invoiced = round3(g.invoiced + num(line.Quantity));
+    if (accepted > QTY_EPSILON) g.hasEvents = true;
+  }
+
+  const today = dates.todayOnly();
+  const sheet = [];
+  for (const g of groups.values()) {
+    const display = dates.displayDate(g.realDate, g.cand.TransactionDate, seesReal, buffer);
+    const isReturned = String(g.cand.DeliveredNotes || '').startsWith('مرتجع:');
+    const overdue = !isReturned && dates.isLineOverdue(display, g.remaining);
+    const status = isReturned ? 'returned' : overdue ? 'overdue' : g.hasEvents ? 'partial' : 'pending';
+    sheet.push({
+      TransactionID: Number(g.cand.TransactionID),
+      ReferenceNumber: g.cand.ReferenceNumber,
+      PartyName: g.cand.PartyName,
+      Phone: g.cand.Phone,
+      Address: g.cand.Address,
+      TransactionDate: g.cand.TransactionDate,
+      DueDate: display,
+      DaysRemaining: display ? dates.diffDays(display, today) : null,
+      DeliveryStatus: status,
+      DeliveryEmployeeName: g.cand.DeliveryEmployeeName,
+      IsPartial: g.hasEvents && !isReturned,
+      TotalInvoicedQty: g.invoiced,
+      TotalRemainingQty: g.remaining,
+      DueLinesSummary: g.lines.map((l) => `${l.ProductName} × ${fmtQty(l.RemainingQty)}`).join('، '),
+      DueLineCount: g.lines.length,
+      DueLines: g.lines,
+    });
+  }
+  sheet.sort((a, b) => {
+    if (!a.DueDate) return 1;
+    if (!b.DueDate) return -1;
+    return (a.DueDate - b.DueDate) || (a.TransactionID - b.TransactionID);
+  });
+  return sheet.slice(0, 200);
 }
 
 
@@ -1957,6 +2101,650 @@ async function getHomeUpcomingDeliveries(auth) {
   return { appointments: page, total, windowDays: HOME_UPCOMING_WINDOW_DAYS };
 }
 
+
+// ════════════════════════════════════════════════════════════════════
+// Local role/claim predicates mirroring Blazor DeliveryPermissions.cs
+// for maintenance + schedule-change (shared policy file is not edited
+// by this cluster; these mirror exactly):
+//  CanViewMaintenance        DeliveryPermissions.cs — Admin/AccountManager/
+//                            ProductionManager/FactoryManager/DeliveryOfficer
+//                            or claim frmDeliveryMaintenance:View
+//  CanTransitionMaintenance  Admin/ProductionManager/FactoryManager or :Edit
+//  CanCloseByReplacement     transition roles + AccountManager
+//  CanCloseByCredit          Admin/AccountManager only (also gates Cancel)
+//  CanReclassifyMaintenance  Admin/AccountManager/ProductionManager
+//  CanSeeRepairCost          Admin/AccountManager/ProductionManager/FactoryManager
+//  CanRequestScheduleChange  DeliveryOfficer/ProductionManager ONLY (roles)
+//  CanDecideScheduleChange   Admin/AccountManager only
+// ════════════════════════════════════════════════════════════════════
+function _normRole(value) { return String(value || '').toLowerCase().replace(/[\s_-]+/g, ''); }
+function _isRole(auth, ...roles) { const c = _normRole(auth?.role); return roles.some((r) => c === _normRole(r)); }
+function _hasClaim(auth, claim) { return auth?.claims instanceof Set && auth.claims.has(claim); }
+const maintPerms = {
+  canView: (a) => _isRole(a, 'Admin', 'AccountManager', 'ProductionManager', 'FactoryManager', 'DeliveryOfficer') || _hasClaim(a, 'frmDeliveryMaintenance:View'),
+  canTransition: (a) => _isRole(a, 'Admin', 'ProductionManager', 'FactoryManager') || _hasClaim(a, 'frmDeliveryMaintenance:Edit'),
+  canCloseByReplacement: (a) => maintPerms.canTransition(a) || _isRole(a, 'AccountManager'),
+  canCloseByCredit: (a) => _isRole(a, 'Admin', 'AccountManager'),
+  canReclassify: (a) => _isRole(a, 'Admin', 'AccountManager', 'ProductionManager'),
+  canSeeRepairCost: (a) => _isRole(a, 'Admin', 'AccountManager', 'ProductionManager', 'FactoryManager'),
+  canRequestSchedule: (a) => _isRole(a, 'DeliveryOfficer', 'ProductionManager'),
+  canDecideSchedule: (a) => _isRole(a, 'Admin', 'AccountManager'),
+};
+const MAINT_TERMINAL = ['Redelivered', 'ClosedByReplacement', 'ClosedByCredit', 'Cancelled'];
+const MISSING_SCHEDULE_MSG = 'جداول طلبات تعديل المواعيد غير مهيأة بعد — برجاء تشغيل سكربت delivery-schedule-requests.sql أولًا.';
+function isMissingStorageError(error) {
+  return Boolean(error) && (error.number === 208 || error.number === 207 || /Invalid object name|Invalid column name/i.test(String(error.message || '')));
+}
+async function insertAuditFor(transaction, { table, key, action, username, oldData = null, newData = null }) {
+  await transaction.request()
+    .input('tbl', sql.NVarChar(100), table)
+    .input('key', sql.NVarChar(200), String(key))
+    .input('action', sql.NVarChar(100), action)
+    .input('username', sql.NVarChar(100), username)
+    .input('oldData', sql.NVarChar(sql.MAX), oldData == null ? null : JSON.stringify(oldData))
+    .input('newData', sql.NVarChar(sql.MAX), newData == null ? null : JSON.stringify(newData))
+    .query(`
+      INSERT INTO [dbo].[Audit_Log] (TableName, ActionType, PrimaryKeyValue, OldData, NewData, ActionDate, LoginName, AppName, AccessUserName)
+      VALUES (@tbl, @action, @key, @oldData, @newData, GETDATE(), @username, N'COCOBOLO Flutter', @username)
+    `);
+}
+
+// ── Item 5 (Pkg2): delivery maintenance queue — mirror of Blazor
+// DeliveryMaintenanceService.GetQueueAsync (Services/DeliveryMaintenanceService.cs:55):
+// non-voided, in-loop only unless includeTerminal, ordered in-loop first
+// (oldest first) then terminal by ClosedAt desc, cap 500. Repair cost is
+// nulled for roles outside CanSeeRepairCost; charge amount is nulled for
+// users without CanSeeAmounts (app amount rule).
+async function getMaintenanceQueue(filters = {}, auth = null) {
+  const pool = await connectDB();
+  try {
+    const request = pool.request();
+    const clauses = ['m.IsVoided = 0'];
+    if (!filters.includeTerminal) {
+      clauses.push(`m.Status IN (${MAINTENANCE_IN_LOOP.map((x) => `N'${x}'`).join(', ')})`);
+    }
+    if (filters.status) { request.input('mStatus', sql.NVarChar(30), String(filters.status)); clauses.push('m.Status = @mStatus'); }
+    if (filters.reasonClass) { request.input('mReason', sql.NVarChar(30), String(filters.reasonClass)); clauses.push('m.ReasonClass = @mReason'); }
+    if (filters.search && String(filters.search).trim()) {
+      request.input('mSearch', sql.NVarChar(200), `%${String(filters.search).trim()}%`);
+      clauses.push('(t.ReferenceNumber LIKE @mSearch OR p.PartyName LIKE @mSearch OR pr.ProductName LIKE @mSearch)');
+    }
+    const result = await request.query(`
+      SELECT TOP 1000 m.MaintenanceId, m.DeliveryItemId, m.DeliveryId, m.TransactionId, m.TransactionDetailId,
+             m.Quantity, m.ReasonClass, m.IssueDescription, m.Status, m.Billable, m.AdditionalChargeId,
+             m.RepairCost, m.RepairCostNotes, m.HandledByEmployeeId, m.CreatedAt, m.StartedAt, m.ReadyAt,
+             m.ClosedAt, m.StatusBy, m.ResolutionNotes, m.IsVoided,
+             t.ReferenceNumber AS TransactionRef, p.PartyName,
+             pr.ProductName, e.FullName AS HandledByEmployeeName,
+             ac.Status AS ChargeStatus, ac.ChargeAmount
+      FROM DeliveryMaintenanceItems m
+      INNER JOIN Transactions t ON t.TransactionID = m.TransactionId
+      LEFT JOIN Parties p ON p.PartyID = t.PartyID
+      LEFT JOIN TransactionDetails td ON td.DetailID = m.TransactionDetailId
+      LEFT JOIN Products pr ON pr.ProductID = td.ProductID
+      LEFT JOIN Employees e ON e.EmployeeID = m.HandledByEmployeeId
+      LEFT JOIN AdditionalCharges ac ON ac.ChargeID = m.AdditionalChargeId
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY m.CreatedAt
+    `);
+    const canCost = auth ? maintPerms.canSeeRepairCost(auth) : false;
+    const canAmounts = auth ? policy.delivery.canSeeAmounts(auth) : false;
+    const rows = result.recordset.map((r) => {
+      const copy = { ...r };
+      if (!canCost) { copy.RepairCost = null; copy.RepairCostNotes = null; }
+      if (!canAmounts) copy.ChargeAmount = null;
+      copy.IsTerminal = MAINT_TERMINAL.includes(copy.Status);
+      copy.IsInLoop = MAINTENANCE_IN_LOOP.includes(copy.Status);
+      copy.AgeDays = copy.CreatedAt ? Math.max(0, Math.floor((dates.todayOnly() - dates.dateOnly(copy.CreatedAt)) / 86400000)) : 0;
+      return copy;
+    });
+    rows.sort((a, b) => {
+      const ta = a.IsTerminal ? 1 : 0; const tb = b.IsTerminal ? 1 : 0;
+      if (ta !== tb) return ta - tb;
+      if (!a.IsTerminal) return new Date(a.CreatedAt) - new Date(b.CreatedAt);
+      return new Date(b.ClosedAt || 0) - new Date(a.ClosedAt || 0);
+    });
+    return rows.slice(0, 500);
+  } catch (error) {
+    if (isMissingStorageError(error)) return [];
+    throw error;
+  }
+}
+
+// Mirror of DeliveryMaintenanceService transitions (StartAsync:214,
+// MarkReadyAsync:237, MarkUnrepairableAsync:268, CloseByReplacementAsync:288,
+// CloseByCreditAsync:312, CancelAsync:359, ReclassifyAsync:383).
+async function transitionMaintenance(maintenanceId, action, data = {}, auth) {
+  const id = assertId(maintenanceId, 'معرّف سجل الصيانة');
+  const username = auth?.username || 'System';
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+  const factory = () => transaction.request();
+  try {
+    const cur = await factory().input('mid', sql.Int, id).query(`
+      SELECT MaintenanceId, TransactionId, TransactionDetailId, Quantity, ReasonClass, Status, Billable, IsVoided
+      FROM DeliveryMaintenanceItems WITH (UPDLOCK, HOLDLOCK) WHERE MaintenanceId = @mid
+    `);
+    const rec = cur.recordset[0];
+    if (!rec) throw Object.assign(new Error('سجل الصيانة غير موجود.'), { statusCode: 404 });
+    if (rec.IsVoided) throw Object.assign(new Error('سجل الصيانة ملغي.'), { statusCode: 409 });
+    if (MAINT_TERMINAL.includes(rec.Status)) {
+      throw Object.assign(new Error(`سجل الصيانة منتهٍ بحالة «${rec.Status}» — لا انتقالات بعدها.`), { statusCode: 409 });
+    }
+    const oldStatus = rec.Status;
+    const oldClass = rec.ReasonClass;
+    let newStatus = oldStatus;
+    let auditAction = 'MaintenanceStatusChanged';
+    const sets = ['StatusBy = @user'];
+    const req = factory();
+    req.input('mid', sql.Int, id).input('user', sql.NVarChar(100), username);
+
+    if (action === 'start') {
+      if (!maintPerms.canTransition(auth)) throw Object.assign(new Error('بدء الصيانة متاح لمدير الإنتاج ومدير المصنع والمدير.'), { statusCode: 403 });
+      if (oldStatus !== 'Pending') throw Object.assign(new Error('بدء الصيانة من حالة «بانتظار الصيانة» فقط.'), { statusCode: 409 });
+      newStatus = 'InProgress'; sets.push('Status = @newStatus', 'StartedAt = GETDATE()');
+      if (data.handledByEmployeeId) { req.input('handledBy', sql.Int, assertId(data.handledByEmployeeId, 'معرّف العامل')); sets.push('HandledByEmployeeId = @handledBy'); }
+    } else if (action === 'ready') {
+      if (!maintPerms.canTransition(auth)) throw Object.assign(new Error('تعليم الجاهزية متاح لمدير الإنتاج ومدير المصنع والمدير.'), { statusCode: 403 });
+      if (!['Pending', 'InProgress'].includes(oldStatus)) throw Object.assign(new Error('الجاهزية من «بانتظار الصيانة» أو «قيد الصيانة» فقط.'), { statusCode: 409 });
+      if (data.repairCost != null) {
+        if (!maintPerms.canSeeRepairCost(auth)) throw Object.assign(new Error('إدخال تكلفة الإصلاح متاح لأدوار الإدارة والحسابات والإنتاج والمصنع فقط.'), { statusCode: 403 });
+        if (num(data.repairCost) < 0) throw Object.assign(new Error('تكلفة الإصلاح لا يمكن أن تكون سالبة.'), { statusCode: 400 });
+        req.input('repairCost', sql.Decimal(18, 2), num(data.repairCost)); sets.push('RepairCost = @repairCost');
+      }
+      if (data.repairCostNotes) { req.input('repairNotes', sql.NVarChar(500), String(data.repairCostNotes).slice(0, 500)); sets.push('RepairCostNotes = @repairNotes'); }
+      if (data.handledByEmployeeId) { req.input('handledBy', sql.Int, assertId(data.handledByEmployeeId, 'معرّف العامل')); sets.push('HandledByEmployeeId = @handledBy'); }
+      newStatus = 'ReadyForRedelivery'; sets.push('Status = @newStatus', 'ReadyAt = GETDATE()');
+    } else if (action === 'unrepairable') {
+      if (!maintPerms.canTransition(auth)) throw Object.assign(new Error('تعليم التعذّر متاح لمدير الإنتاج ومدير المصنع والمدير.'), { statusCode: 403 });
+      newStatus = 'Unrepairable'; sets.push('Status = @newStatus');
+      if (data.notes) { req.input('resNotes', sql.NVarChar(500), String(data.notes).slice(0, 500)); sets.push('ResolutionNotes = @resNotes'); }
+    } else if (action === 'close-replacement') {
+      if (!maintPerms.canCloseByReplacement(auth)) throw Object.assign(new Error('الإغلاق باستبدال متاح للمصنع/الإنتاج/المدير ومدير الحسابات.'), { statusCode: 403 });
+      if (oldStatus !== 'Unrepairable') throw Object.assign(new Error('الإغلاق باستبدال يأتي بعد تعليم «تعذّر إصلاحه» (قرار لكل حالة — D11).'), { statusCode: 409 });
+      newStatus = 'ClosedByReplacement'; sets.push('Status = @newStatus', 'ClosedAt = GETDATE()'); auditAction = 'MaintenanceClosed';
+      if (data.notes) { req.input('resNotes', sql.NVarChar(500), String(data.notes).slice(0, 500)); sets.push('ResolutionNotes = @resNotes'); }
+    } else if (action === 'close-credit') {
+      if (!maintPerms.canCloseByCredit(auth)) throw Object.assign(new Error('الإغلاق بردّ نهائي/رصيد متاح للمدير ومدير الحسابات فقط (قرار مالي الأثر).'), { statusCode: 403 });
+      if (oldStatus !== 'Unrepairable') throw Object.assign(new Error('الإغلاق بردّ نهائي يأتي بعد تعليم «تعذّر إصلاحه» (قرار لكل حالة — D11).'), { statusCode: 409 });
+      newStatus = 'ClosedByCredit'; sets.push('Status = @newStatus', 'ClosedAt = GETDATE()'); auditAction = 'MaintenanceClosed';
+      if (data.notes) { req.input('resNotes', sql.NVarChar(500), String(data.notes).slice(0, 500)); sets.push('ResolutionNotes = @resNotes'); }
+    } else if (action === 'cancel') {
+      if (!maintPerms.canCloseByCredit(auth)) throw Object.assign(new Error('إلغاء طلب الصيانة متاح للمدير ومدير الحسابات.'), { statusCode: 403 });
+      const reason = String(data.reason || '').trim();
+      if (!reason) throw Object.assign(new Error('سبب الإلغاء إلزامي.'), { statusCode: 400 });
+      newStatus = 'Cancelled'; sets.push('Status = @newStatus', 'ClosedAt = GETDATE()');
+      req.input('resNotes', sql.NVarChar(500), reason.slice(0, 500)); sets.push('ResolutionNotes = @resNotes');
+    } else if (action === 'reclassify') {
+      if (!maintPerms.canReclassify(auth)) throw Object.assign(new Error('إعادة تصنيف العيب متاحة للمدير ومدير الحسابات ومدير الإنتاج فقط (D12).'), { statusCode: 403 });
+      const reason = String(data.reason || '').trim();
+      if (!reason) throw Object.assign(new Error('سبب إعادة التصنيف إلزامي — التصنيف يوزّع المسؤولية بين المصنع وعمالة التسليم.'), { statusCode: 400 });
+      const newClass = String(data.newClass || data.reasonClass || '');
+      if (!['ManufacturingDefect', 'HandlingDamage', 'CustomerModification'].includes(newClass)) throw Object.assign(new Error('تصنيف غير معروف.'), { statusCode: 400 });
+      if (oldClass === newClass) throw Object.assign(new Error('السجل مصنّف بهذا التصنيف أصلًا.'), { statusCode: 409 });
+      req.input('newClass', sql.NVarChar(30), newClass);
+      req.input('billable', sql.Bit, newClass === 'CustomerModification' ? 1 : 0);
+      sets.push('ReasonClass = @newClass', 'Billable = @billable');
+      await req.query(`UPDATE DeliveryMaintenanceItems SET ${sets.join(', ')} WHERE MaintenanceId = @mid`);
+      // D12: before/after audit with mandatory reason
+      await insertAuditFor(transaction, {
+        table: 'DeliveryMaintenanceItems', key: id, action: 'MaintenanceReclassified', username,
+        oldData: { ReasonClass: oldClass },
+        newData: { ReasonClass: newClass, Reason: reason, TransactionId: rec.TransactionId, Quantity: rec.Quantity },
+      });
+      await transaction.commit();
+      return { success: true, message: `أُعيد تصنيف الرجوع من «${oldClass}» إلى «${newClass}» ووثّق السبب في التدقيق.`, MaintenanceId: id, TransactionId: rec.TransactionId, Status: oldStatus, ReasonClass: newClass };
+    } else {
+      throw Object.assign(new Error('إجراء صيانة غير معروف.'), { statusCode: 400 });
+    }
+
+    req.input('newStatus', sql.NVarChar(30), newStatus);
+    await req.query(`UPDATE DeliveryMaintenanceItems SET ${sets.join(', ')} WHERE MaintenanceId = @mid`);
+    if (action === 'close-credit') {
+      await recomputeDeliveryProjection(factory, rec.TransactionId);
+    }
+    await insertAuditFor(transaction, {
+      table: 'DeliveryMaintenanceItems', key: id, action: auditAction, username,
+      oldData: { Status: oldStatus },
+      newData: { Status: newStatus, Quantity: rec.Quantity, ReasonClass: rec.ReasonClass, TransactionId: rec.TransactionId },
+    });
+    await transaction.commit();
+    return { success: true, message: 'تم تحديث سجل الصيانة.', MaintenanceId: id, TransactionId: rec.TransactionId, Status: newStatus, PreviousStatus: oldStatus };
+  } catch (error) {
+    try { await transaction.rollback(); } catch (_) {}
+    if (isMissingStorageError(error)) throw Object.assign(new Error('تخزين نتائج التسليم غير مهيأ بعد — برجاء تشغيل سكربت delivery-outcomes.sql.'), { statusCode: 400 });
+    throw error;
+  }
+}
+
+// ── Item 6 (Pkg2): schedule-change requests — mirror of Blazor patch
+// delivery-schedule-requests (SalesDeliveryStatusService Create/Decide/
+// Withdraw/Get + DeliveryPermissions CanRequest/CanDecide). Reads degrade
+// to empty on missing tables (208/207); writes throw the SQL-need message.
+async function getScheduleChangeRequests(value, auth = null) {
+  const id = assertId(value, 'معرّف الفاتورة');
+  const pool = await connectDB();
+  try {
+    const result = await pool.request().input('id', sql.Int, id).query(`
+      SELECT r.Id, r.TransactionId, r.RequesterUserName, r.RequesterName, r.Reason, r.ProposedDueDate,
+             r.Status, r.CreatedAt, r.DecidedBy, r.DecidedAt, r.DecisionNote
+      FROM DeliveryScheduleChangeRequests r WHERE r.TransactionId = @id
+      ORDER BY r.CreatedAt DESC, r.Id DESC
+    `);
+    const requests = result.recordset;
+    if (!requests.length) return [];
+    const reqIds = requests.map((r) => Number(r.Id));
+    const linesRequest = pool.request();
+    const linesIn = bindIdList(linesRequest, 'scl', reqIds);
+    const linesResult = await linesRequest.query(`
+      SELECT l.Id, l.RequestId, l.TransactionDetailId, l.ProposedDate, l.ProposedIsCustom, pr.ProductName
+      FROM DeliveryScheduleChangeRequestLines l
+      LEFT JOIN TransactionDetails td ON td.DetailID = l.TransactionDetailId
+      LEFT JOIN Products pr ON pr.ProductID = td.ProductID
+      WHERE l.RequestId IN ${linesIn} ORDER BY l.Id
+    `);
+    const byReq = new Map();
+    for (const line of linesResult.recordset) {
+      const k = Number(line.RequestId);
+      if (!byReq.has(k)) byReq.set(k, []);
+      byReq.get(k).push(line);
+    }
+    for (const r of requests) r.Lines = byReq.get(Number(r.Id)) || [];
+    return requests;
+  } catch (error) {
+    if (isMissingStorageError(error)) return [];
+    throw error;
+  }
+}
+
+async function createScheduleChangeRequest(value, data = {}, auth) {
+  if (!maintPerms.canRequestSchedule(auth)) {
+    throw Object.assign(new Error('طلب تعديل مواعيد التسليم متاح لمسئول التسليمات ومدير الإنتاج فقط.'), { statusCode: 403 });
+  }
+  const id = assertId(value, 'معرّف الفاتورة');
+  const reason = String(data.reason || '').trim();
+  if (!reason) throw Object.assign(new Error('سبب طلب تعديل المواعيد إلزامي.'), { statusCode: 400 });
+  const rawLines = Array.isArray(data.lines) ? data.lines : [];
+  const lineMap = new Map();
+  for (const l of rawLines) {
+    const detailId = intValue(l.transactionDetailId ?? l.TransactionDetailId);
+    if (detailId > 0) lineMap.set(detailId, l);
+  }
+  const inputLines = [...lineMap.values()].map((l) => {
+    const norm = dates.normalizeLineDate(l.proposedDate ?? l.ProposedDate, Boolean(l.proposedIsCustom ?? l.ProposedIsCustom));
+    return { transactionDetailId: intValue(l.transactionDetailId ?? l.TransactionDetailId), proposedDate: norm.date, proposedIsCustom: norm.isCustom };
+  });
+  const proposedDueDate = data.proposedDueDate ? dates.dateOnly(data.proposedDueDate) : null;
+  if (!proposedDueDate && inputLines.length === 0) {
+    throw Object.assign(new Error('برجاء إدخال تعديل واحد على الأقل: تاريخ كلي جديد للفاتورة أو موعد جديد لبند.'), { statusCode: 400 });
+  }
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+  const factory = () => transaction.request();
+  try {
+    const txResult = await factory().input('id', sql.Int, id).query(`
+      SELECT TransactionID, ReferenceNumber, TransactionType, InvoiceStatus, IsDelivered, PartyID
+      FROM Transactions WITH (UPDLOCK, HOLDLOCK) WHERE TransactionID = @id
+    `);
+    const inv = txResult.recordset[0];
+    if (!inv) throw Object.assign(new Error('الفاتورة غير موجودة.'), { statusCode: 404 });
+    if (inv.InvoiceStatus === 'Cancelled') throw Object.assign(new Error('لا يمكن طلب تعديل مواعيد لفاتورة ملغية.'), { statusCode: 409 });
+    if (inv.TransactionType !== 'Sale') throw Object.assign(new Error('طلبات تعديل المواعيد متاحة لفواتير البيع فقط.'), { statusCode: 400 });
+    if (inv.IsDelivered) throw Object.assign(new Error('الفاتورة مكتملة التسليم — لا حاجة لتعديل مواعيدها.'), { statusCode: 409 });
+
+    const pending = await factory().input('id', sql.Int, id).query(`
+      SELECT TOP 1 Id FROM DeliveryScheduleChangeRequests WHERE TransactionId = @id AND Status = 'Pending'
+    `);
+    if (pending.recordset[0]) throw Object.assign(new Error('يوجد طلب تعديل مواعيد معلّق بالفعل لهذه الفاتورة — بانتظار قرار المدير أو مدير الحسابات.'), { statusCode: 409 });
+
+    const detailsResult = await factory().input('id', sql.Int, id).query(`
+      SELECT DetailID FROM TransactionDetails WHERE TransactionID = @id
+    `);
+    const detailIds = new Set(detailsResult.recordset.map((d) => Number(d.DetailID)));
+    if (inputLines.some((l) => !detailIds.has(l.transactionDetailId))) {
+      throw Object.assign(new Error('أحد البنود المقترحة لا يخص هذه الفاتورة.'), { statusCode: 400 });
+    }
+    // Completed lines cannot be rescheduled (open = invoiced - accepted - settled)
+    try {
+      const state = await loadDeliveryState(factory, id);
+      for (const l of inputLines) {
+        const detail = state.details.find((d) => Number(d.DetailID) === l.transactionDetailId);
+        if (!detail) continue;
+        const open = num(detail.InvoicedQty) - (state.acceptedByDetail.get(l.transactionDetailId) || 0) - (state.settledByDetail.get(l.transactionDetailId) || 0);
+        if (open <= QTY_EPSILON) throw Object.assign(new Error(`البند «${detail.ProductName}» اكتمل تسليمه — لا يمكن تعديل موعده.`), { statusCode: 409 });
+      }
+      if (state.eventCount > 0) {
+        const totalOpen = state.details.reduce((sum, d) => sum + num(d.InvoicedQty) - (state.acceptedByDetail.get(Number(d.DetailID)) || 0) - (state.settledByDetail.get(Number(d.DetailID)) || 0), 0);
+        if (totalOpen <= QTY_EPSILON) throw Object.assign(new Error('الفاتورة مكتملة التسليم — لا حاجة لتعديل مواعيدها.'), { statusCode: 409 });
+      }
+    } catch (error) {
+      if (!isMissingStorageError(error)) throw error;
+    }
+
+    const requesterName = auth.fullName || auth.username;
+    const insertResult = await factory()
+      .input('id', sql.Int, id)
+      .input('user', sql.NVarChar(100), auth.username)
+      .input('name', sql.NVarChar(150), requesterName)
+      .input('reason', sql.NVarChar(1000), reason.slice(0, 1000))
+      .input('due', sql.Date, proposedDueDate)
+      .query(`
+        INSERT INTO DeliveryScheduleChangeRequests (TransactionId, RequesterUserName, RequesterName, Reason, ProposedDueDate, Status, CreatedAt)
+        OUTPUT INSERTED.Id
+        VALUES (@id, @user, @name, @reason, @due, 'Pending', GETDATE())
+      `);
+    const requestId = insertResult.recordset[0].Id;
+    for (const l of inputLines) {
+      await factory()
+        .input('rid', sql.Int, requestId)
+        .input('detailId', sql.Int, l.transactionDetailId)
+        .input('pdate', sql.Date, l.proposedDate)
+        .input('pcustom', sql.Bit, l.proposedIsCustom ? 1 : 0)
+        .query(`
+          INSERT INTO DeliveryScheduleChangeRequestLines (RequestId, TransactionDetailId, ProposedDate, ProposedIsCustom)
+          VALUES (@rid, @detailId, @pdate, @pcustom)
+        `);
+    }
+    await insertAudit(transaction, {
+      id, action: 'DeliveryScheduleChangeRequested', username: auth.username,
+      newData: { RequestId: requestId, Reason: reason, ProposedDueDate: proposedDueDate, Lines: inputLines },
+    });
+    await transaction.commit();
+    return { success: true, message: 'تم إرسال طلب تعديل المواعيد للمدير ومدير الحسابات — سيصلك إشعار عند البتّ فيه.', RequestId: requestId, TransactionID: id, ReferenceNumber: inv.ReferenceNumber };
+  } catch (error) {
+    try { await transaction.rollback(); } catch (_) {}
+    if (isMissingStorageError(error)) throw Object.assign(new Error(MISSING_SCHEDULE_MSG), { statusCode: 400 });
+    throw error;
+  }
+}
+
+async function withdrawScheduleChangeRequest(requestId, auth) {
+  const rid = assertId(requestId, 'معرّف الطلب');
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+  const factory = () => transaction.request();
+  try {
+    const result = await factory().input('rid', sql.Int, rid).query(`
+      SELECT Id, TransactionId, RequesterUserName, Status FROM DeliveryScheduleChangeRequests WITH (UPDLOCK, HOLDLOCK) WHERE Id = @rid
+    `);
+    const reqRow = result.recordset[0];
+    if (!reqRow) throw Object.assign(new Error('الطلب غير موجود.'), { statusCode: 404 });
+    if (String(reqRow.RequesterUserName).toLowerCase() !== String(auth.username).toLowerCase()) {
+      throw Object.assign(new Error('سحب الطلب متاح لصاحبه فقط.'), { statusCode: 403 });
+    }
+    if (reqRow.Status !== 'Pending') throw Object.assign(new Error('لا يمكن سحب طلب سبق البتّ فيه.'), { statusCode: 409 });
+    await factory().input('rid', sql.Int, rid).query(`UPDATE DeliveryScheduleChangeRequests SET Status = 'Withdrawn' WHERE Id = @rid`);
+    await insertAudit(transaction, { id: reqRow.TransactionId, action: 'DeliveryScheduleChangeWithdrawn', username: auth.username, newData: { RequestId: rid } });
+    await transaction.commit();
+    return { success: true, message: 'تم سحب طلب تعديل المواعيد.', RequestId: rid, TransactionID: reqRow.TransactionId };
+  } catch (error) {
+    try { await transaction.rollback(); } catch (_) {}
+    if (isMissingStorageError(error)) throw Object.assign(new Error(MISSING_SCHEDULE_MSG), { statusCode: 400 });
+    throw error;
+  }
+}
+
+async function getScheduleChangeApprovalData(requestId, auth) {
+  if (!maintPerms.canDecideSchedule(auth)) {
+    throw Object.assign(new Error('شاشة الاعتماد متاحة للمدير ومدير الحسابات فقط.'), { statusCode: 403 });
+  }
+  const rid = assertId(requestId, 'معرّف الطلب');
+  const pool = await connectDB();
+  try {
+    const reqResult = await pool.request().input('rid', sql.Int, rid).query(`
+      SELECT r.Id, r.TransactionId, r.RequesterUserName, r.RequesterName, r.Reason, r.ProposedDueDate,
+             r.Status, r.CreatedAt, r.DecidedBy, r.DecidedAt, r.DecisionNote,
+             t.ReferenceNumber, t.DueDate AS CurrentDueDate, t.TransactionDate, p.PartyName
+      FROM DeliveryScheduleChangeRequests r
+      INNER JOIN Transactions t ON t.TransactionID = r.TransactionId
+      LEFT JOIN Parties p ON p.PartyID = t.PartyID
+      WHERE r.Id = @rid
+    `);
+    const reqRow = reqResult.recordset[0];
+    if (!reqRow) return null;
+    const linesResult = await pool.request().input('rid', sql.Int, rid).query(`
+      SELECT l.TransactionDetailId, l.ProposedDate, l.ProposedIsCustom, pr.ProductName
+      FROM DeliveryScheduleChangeRequestLines l
+      LEFT JOIN TransactionDetails td ON td.DetailID = l.TransactionDetailId
+      LEFT JOIN Products pr ON pr.ProductID = td.ProductID
+      WHERE l.RequestId = @rid ORDER BY l.Id
+    `);
+    reqRow.Lines = linesResult.recordset;
+    const detailsResult = await pool.request().input('id', sql.Int, reqRow.TransactionId).query(`
+      SELECT td.DetailID, td.Quantity, td.DeliveryDate, td.DeliveryDateIsCustom, pr.ProductName
+      FROM TransactionDetails td LEFT JOIN Products pr ON pr.ProductID = td.ProductID
+      WHERE td.TransactionID = @id ORDER BY td.DetailID
+    `);
+    let state = null;
+    try { state = await loadDeliveryState(() => pool.request(), reqRow.TransactionId); } catch (error) { if (!isMissingStorageError(error)) throw error; }
+    // Approval screen shows REAL current schedule (deciders see real dates)
+    reqRow.CurrentLines = detailsResult.recordset.map((d) => {
+      const isCustom = Boolean(d.DeliveryDateIsCustom) && Boolean(d.DeliveryDate);
+      const open = state ? num(d.Quantity) - (state.acceptedByDetail.get(Number(d.DetailID)) || 0) - (state.settledByDetail.get(Number(d.DetailID)) || 0) : num(d.Quantity);
+      return {
+        TransactionDetailId: Number(d.DetailID), ProductName: d.ProductName || '',
+        CurrentDate: dates.effectiveLineDate(d.DeliveryDate, isCustom, reqRow.CurrentDueDate),
+        CurrentIsCustom: isCustom, RemainingQty: round3(open),
+      };
+    });
+    return { Request: reqRow, PartyName: reqRow.PartyName, ReferenceNumber: reqRow.ReferenceNumber, CurrentDueDate: reqRow.CurrentDueDate, CurrentLines: reqRow.CurrentLines };
+  } catch (error) {
+    if (isMissingStorageError(error)) throw Object.assign(new Error(MISSING_SCHEDULE_MSG), { statusCode: 400 });
+    throw error;
+  }
+}
+
+async function decideScheduleChangeRequest(requestId, data = {}, auth) {
+  if (!maintPerms.canDecideSchedule(auth)) {
+    throw Object.assign(new Error('البتّ في طلبات تعديل المواعيد متاح للمدير ومدير الحسابات فقط.'), { statusCode: 403 });
+  }
+  const rid = assertId(requestId, 'معرّف الطلب');
+  const approve = data.approve === true;
+  const note = data.note ? String(data.note).trim() : null;
+  if (!approve && !note) throw Object.assign(new Error('سبب الرفض إلزامي عند رفض طلب تعديل المواعيد.'), { statusCode: 400 });
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+  const factory = () => transaction.request();
+  try {
+    const reqResult = await factory().input('rid', sql.Int, rid).query(`
+      SELECT Id, TransactionId, RequesterUserName, Status FROM DeliveryScheduleChangeRequests WITH (UPDLOCK, HOLDLOCK) WHERE Id = @rid
+    `);
+    const reqRow = reqResult.recordset[0];
+    if (!reqRow) throw Object.assign(new Error('الطلب غير موجود.'), { statusCode: 404 });
+    if (reqRow.Status !== 'Pending') throw Object.assign(new Error('هذا الطلب سبق البتّ فيه — لا يمكن اعتماده أو رفضه مرة أخرى.'), { statusCode: 409 });
+    const invResult = await factory().input('id', sql.Int, reqRow.TransactionId).query(`
+      SELECT TransactionID, ReferenceNumber, InvoiceStatus, DueDate, EmpId FROM Transactions WITH (UPDLOCK, HOLDLOCK) WHERE TransactionID = @id
+    `);
+    const invoice = invResult.recordset[0];
+    if (!invoice) throw Object.assign(new Error('الفاتورة غير موجودة.'), { statusCode: 404 });
+    if (invoice.InvoiceStatus === 'Cancelled') throw Object.assign(new Error('الفاتورة أُلغيت بعد تقديم الطلب — لا يمكن البتّ في الطلب الآن؛ يمكن لصاحبه سحبه.'), { statusCode: 409 });
+
+    if (!approve) {
+      await factory().input('rid', sql.Int, rid).input('user', sql.NVarChar(100), auth.username).input('note', sql.NVarChar(1000), note.slice(0, 1000)).query(`
+        UPDATE DeliveryScheduleChangeRequests SET Status = 'Rejected', DecidedBy = @user, DecidedAt = GETDATE(), DecisionNote = @note WHERE Id = @rid
+      `);
+      await insertAudit(transaction, { id: reqRow.TransactionId, action: 'DeliveryScheduleChangeRejected', username: auth.username, newData: { RequestId: rid, Reason: note } });
+      await transaction.commit();
+      return { success: true, message: 'تم رفض طلب تعديل المواعيد وإشعار صاحبه بسبب الرفض.', RequestId: rid, TransactionID: reqRow.TransactionId, ReferenceNumber: invoice.ReferenceNumber, RequesterUserName: reqRow.RequesterUserName, DecisionNote: note, Approved: false };
+    }
+
+    const proposalLines = await factory().input('rid', sql.Int, rid).query(`
+      SELECT TransactionDetailId, ProposedDate, ProposedIsCustom FROM DeliveryScheduleChangeRequestLines WHERE RequestId = @rid
+    `);
+    const proposalIds = new Set(proposalLines.recordset.map((l) => Number(l.TransactionDetailId)));
+    const finalMap = new Map();
+    for (const l of (Array.isArray(data.finalLines) ? data.finalLines : [])) {
+      const detailId = intValue(l.transactionDetailId ?? l.TransactionDetailId);
+      if (detailId > 0) finalMap.set(detailId, l);
+    }
+    // Default finals = proposal when the decider sent none for a line
+    if (finalMap.size === 0 && !data.finalDueDate) {
+      for (const p of proposalLines.recordset) {
+        finalMap.set(Number(p.TransactionDetailId), { finalDate: p.ProposedDate, finalIsCustom: p.ProposedIsCustom });
+      }
+    }
+    const finals = [...finalMap.entries()].map(([detailId, l]) => ({ transactionDetailId: detailId, ...dates.normalizeLineDate(l.finalDate ?? l.FinalDate, Boolean(l.finalIsCustom ?? l.FinalIsCustom)) }));
+    // normalizeLineDate returns {date, isCustom}; adapt keys
+    const finalLinesNorm = finals.map((f) => ({ transactionDetailId: f.transactionDetailId, date: f.date, isCustom: f.isCustom }));
+    if (finalLinesNorm.some((l) => !proposalIds.has(l.transactionDetailId))) {
+      throw Object.assign(new Error('أحد بنود القرار لم يكن ضمن بنود الطلب الأصلي — أعد فتح الطلب.'), { statusCode: 400 });
+    }
+    const finalDueDate = data.finalDueDate ? dates.dateOnly(data.finalDueDate) : null;
+    if (!finalDueDate && finalLinesNorm.length === 0) {
+      throw Object.assign(new Error('لا توجد قيم نهائية لتطبيقها — حدّد تاريخًا كليًا أو بندًا واحدًا على الأقل.'), { statusCode: 400 });
+    }
+    const detailsResult = await factory().input('id', sql.Int, reqRow.TransactionId).query(`
+      SELECT DetailID, DeliveryDate, DeliveryDateIsCustom FROM TransactionDetails WHERE TransactionID = @id
+    `);
+    const detailById = new Map(detailsResult.recordset.map((d) => [Number(d.DetailID), d]));
+    if (finalLinesNorm.some((l) => !detailById.has(l.transactionDetailId))) {
+      throw Object.assign(new Error('أحد بنود الطلب لم يعد ضمن بنود الفاتورة الحالية — لا يمكن تطبيق القرار.'), { statusCode: 400 });
+    }
+    const headerBefore = invoice.DueDate;
+    const lineChanges = [];
+    if (finalDueDate) {
+      await factory().input('id', sql.Int, reqRow.TransactionId).input('due', sql.Date, finalDueDate).query(`
+        UPDATE Transactions SET DueDate = @due WHERE TransactionID = @id
+      `);
+    }
+    for (const f of finalLinesNorm) {
+      const d = detailById.get(f.transactionDetailId);
+      if (dates.dateOnly(d.DeliveryDate)?.getTime() === (f.date ? f.date.getTime() : undefined) && Boolean(d.DeliveryDateIsCustom) === f.isCustom) continue;
+      lineChanges.push({ DetailId: f.transactionDetailId, BeforeDate: d.DeliveryDate, BeforeCustom: Boolean(d.DeliveryDateIsCustom), AfterDate: f.date, AfterCustom: f.isCustom });
+      await factory().input('detailId', sql.Int, f.transactionDetailId).input('ddate', sql.Date, f.date).input('dcustom', sql.Bit, f.isCustom ? 1 : 0).query(`
+        UPDATE TransactionDetails SET DeliveryDate = @ddate, DeliveryDateIsCustom = @dcustom WHERE DetailID = @detailId
+      `);
+    }
+    await factory().input('rid', sql.Int, rid).input('user', sql.NVarChar(100), auth.username).input('note', sql.NVarChar(1000), note ? note.slice(0, 1000) : null).query(`
+      UPDATE DeliveryScheduleChangeRequests SET Status = 'Approved', DecidedBy = @user, DecidedAt = GETDATE(), DecisionNote = @note WHERE Id = @rid
+    `);
+    await insertAudit(transaction, {
+      id: reqRow.TransactionId, action: 'DeliveryScheduleChangeApproved', username: auth.username,
+      oldData: { DueDate: headerBefore, Lines: lineChanges.map((c) => ({ DetailId: c.DetailId, Date: c.BeforeDate, IsCustom: c.BeforeCustom })) },
+      newData: { RequestId: rid, DueDate: finalDueDate || headerBefore, Lines: lineChanges.map((c) => ({ DetailId: c.DetailId, Date: c.AfterDate, IsCustom: c.AfterCustom })) },
+    });
+    await transaction.commit();
+    let salesUsername = null;
+    if (invoice.EmpId) {
+      try {
+        const su = await pool.request().input('empId', sql.Int, invoice.EmpId).query('SELECT TOP 1 Username FROM Users WHERE employeeID = @empId AND IsActive = 1 ORDER BY UserID');
+        salesUsername = su.recordset[0]?.Username || null;
+      } catch (_) { salesUsername = null; }
+    }
+    return { success: true, message: 'تم اعتماد الطلب وتطبيق المواعيد النهائية على الفاتورة وبنودها.', RequestId: rid, TransactionID: reqRow.TransactionId, ReferenceNumber: invoice.ReferenceNumber, RequesterUserName: reqRow.RequesterUserName, DecisionNote: note, Approved: true, salesUsername };
+  } catch (error) {
+    try { await transaction.rollback(); } catch (_) {}
+    if (isMissingStorageError(error)) throw Object.assign(new Error(MISSING_SCHEDULE_MSG), { statusCode: 400 });
+    throw error;
+  }
+}
+
+// Attach pending schedule-change chip state to list rows (batch, degrades
+// to no chip when the schedule-request tables are missing).
+async function attachSchedulePending(pool, rows) {
+  if (!rows.length) return;
+  try {
+    const ids = rows.map((r) => Number(r.TransactionID));
+    const request = pool.request();
+    const inList = bindIdList(request, 'scp', ids);
+    const result = await request.query(`
+      SELECT Id, TransactionId, RequesterUserName, RequesterName, CreatedAt
+      FROM DeliveryScheduleChangeRequests
+      WHERE Status = 'Pending' AND TransactionId IN ${inList}
+      ORDER BY CreatedAt DESC, Id DESC
+    `);
+    const byTx = new Map();
+    for (const row of result.recordset) {
+      const k = Number(row.TransactionId);
+      if (!byTx.has(k)) byTx.set(k, row);
+    }
+    for (const row of rows) {
+      const pending = byTx.get(Number(row.TransactionID));
+      row.HasPendingScheduleChangeRequest = Boolean(pending);
+      row.ScheduleChangeRequestId = pending ? Number(pending.Id) : null;
+      row.ScheduleChangeRequestedBy = pending ? (pending.RequesterName || pending.RequesterUserName) : null;
+      row.ScheduleChangeRequestedAt = pending ? pending.CreatedAt : null;
+    }
+  } catch (error) {
+    if (!isMissingStorageError(error)) throw error;
+    for (const row of rows) { row.HasPendingScheduleChangeRequest = false; row.ScheduleChangeRequestId = null; }
+  }
+}
+
+// Mirror of Blazor GetAppointmentsDueOnAsync (SalesDeliveryStatusService.cs:893):
+// open appointments whose DISPLAY date for the given class equals target.
+async function getAppointmentsDueOn(targetDisplayedDate, seesRealDate) {
+  const pool = await connectDB();
+  const target = dates.dateOnly(targetDisplayedDate);
+  if (!target) return [];
+  const buffer = dates.dateBufferDays();
+  const windowFrom = dates.addDays(target, -1);
+  const windowTo = dates.addDays(target, buffer + 2);
+  const candResult = await pool.request().input('from', sql.Date, windowFrom).input('to', sql.Date, windowTo).query(`
+    SELECT t.TransactionID, t.ReferenceNumber, t.TransactionDate, t.DueDate, t.PartyID, p.PartyName AS ClientName
+    FROM Transactions t INNER JOIN Parties p ON t.PartyID = p.PartyID
+    WHERE t.TransactionType = 'Sale' AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')
+      AND ISNULL(t.IsDelivered, 0) = 0 AND (t.DeliveredNotes IS NULL OR t.DeliveredNotes NOT LIKE N'مرتجع:%')
+      AND ((t.DueDate IS NOT NULL AND CAST(t.DueDate AS DATE) BETWEEN @from AND @to)
+        OR EXISTS (SELECT 1 FROM TransactionDetails td WHERE td.TransactionID = t.TransactionID
+          AND td.DeliveryDateIsCustom = 1 AND td.DeliveryDate IS NOT NULL AND CAST(td.DeliveryDate AS DATE) BETWEEN @from AND @to))
+  `);
+  const candidates = candResult.recordset;
+  if (!candidates.length) return [];
+  const ids = candidates.map((c) => Number(c.TransactionID));
+  const candById = new Map(candidates.map((c) => [Number(c.TransactionID), c]));
+  const linesRequest = pool.request();
+  const linesIn = bindIdList(linesRequest, 'duo', ids);
+  const linesResult = await linesRequest.query(`
+    SELECT TransactionID, DetailID, Quantity, DeliveryDate, DeliveryDateIsCustom FROM TransactionDetails WHERE TransactionID IN ${linesIn}
+  `);
+  const acceptedByDetail = new Map(); const settledByDetail = new Map();
+  try {
+    const accRequest = pool.request(); const accIn = bindIdList(accRequest, 'dua', ids);
+    const accResult = await accRequest.query(`
+      SELECT idl.TransactionId, idi.TransactionDetailId, COALESCE(SUM(idi.AcceptedQty), 0) AS AcceptedQty
+      FROM InvoiceDeliveryItems idi JOIN InvoiceDeliveries idl ON idl.DeliveryId = idi.DeliveryId
+      WHERE idl.IsVoided = 0 AND idl.TransactionId IN ${accIn} GROUP BY idl.TransactionId, idi.TransactionDetailId
+    `);
+    for (const row of accResult.recordset) acceptedByDetail.set(`${row.TransactionId}:${row.TransactionDetailId}`, num(row.AcceptedQty));
+    const setRequest = pool.request(); const setIn = bindIdList(setRequest, 'dus', ids);
+    const setResult = await setRequest.query(`
+      SELECT TransactionId, TransactionDetailId, COALESCE(SUM(Quantity), 0) AS SettledQty FROM DeliveryMaintenanceItems
+      WHERE IsVoided = 0 AND Status = '${MAINTENANCE_SETTLED}' AND TransactionId IN ${setIn} GROUP BY TransactionId, TransactionDetailId
+    `);
+    for (const row of setResult.recordset) settledByDetail.set(`${row.TransactionId}:${row.TransactionDetailId}`, num(row.SettledQty));
+  } catch (error) { if (!isMissingTableError(error)) throw error; }
+  const groups = new Map();
+  for (const line of linesResult.recordset) {
+    const txId = Number(line.TransactionID); const cand = candById.get(txId); if (!cand) continue;
+    const remaining = num(line.Quantity) - (acceptedByDetail.get(`${txId}:${line.DetailID}`) || 0) - (settledByDetail.get(`${txId}:${line.DetailID}`) || 0);
+    if (remaining <= QTY_EPSILON) continue;
+    const isCustom = Boolean(line.DeliveryDateIsCustom) && Boolean(line.DeliveryDate);
+    const effective = dates.effectiveLineDate(line.DeliveryDate, isCustom, cand.DueDate);
+    if (!effective || effective < windowFrom || effective > windowTo) continue;
+    const key = `${txId}:${effective.toISOString().slice(0, 10)}`;
+    if (!groups.has(key)) groups.set(key, { cand, realDate: effective, lineCount: 0, remainingQty: 0 });
+    const g = groups.get(key); g.lineCount += 1; g.remainingQty = round3(g.remainingQty + remaining);
+  }
+  const out = [];
+  for (const g of groups.values()) {
+    const shown = dates.displayDate(g.realDate, g.cand.TransactionDate, seesRealDate, buffer);
+    if (!shown || shown.getTime() !== target.getTime()) continue;
+    out.push({
+      TransactionID: Number(g.cand.TransactionID), ReferenceNumber: g.cand.ReferenceNumber,
+      PartyName: g.cand.ClientName, RealDate: g.realDate, DisplayDate: shown,
+      DueLineCount: g.lineCount, RemainingQty: g.remainingQty,
+    });
+  }
+  out.sort((a, b) => String(a.PartyName || '').localeCompare(String(b.PartyName || '')));
+  return out;
+}
+
+
 module.exports = {
   ACTION_PERMISSION_REQUEST,
   ACTION_PERMISSION_GRANTED,
@@ -1977,4 +2765,13 @@ module.exports = {
   getDailySheet,
   getUpcomingDeliveries,
   getHomeUpcomingDeliveries,
+  maintPerms,
+  getMaintenanceQueue,
+  transitionMaintenance,
+  getScheduleChangeRequests,
+  createScheduleChangeRequest,
+  withdrawScheduleChangeRequest,
+  getScheduleChangeApprovalData,
+  decideScheduleChangeRequest,
+  getAppointmentsDueOn,
 };

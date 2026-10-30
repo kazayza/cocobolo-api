@@ -15,6 +15,12 @@ function capabilities(auth) {
     canVoidDelivery: policy.delivery.canOverrideRemaining(auth),
     canOverrideRemaining: policy.delivery.canOverrideRemaining(auth),
     canPrint: policy.delivery.canPrint(auth),
+    canViewMaintenance: queries.maintPerms.canView(auth),
+    canTransitionMaintenance: queries.maintPerms.canTransition(auth),
+    canCloseMaintenanceByCredit: queries.maintPerms.canCloseByCredit(auth),
+    canReclassifyMaintenance: queries.maintPerms.canReclassify(auth),
+    canRequestScheduleChange: queries.maintPerms.canRequestSchedule(auth),
+    canDecideScheduleChange: queries.maintPerms.canDecideSchedule(auth),
     canViewPurchaseReceipts: policy.purchaseReceipts.canView(auth),
   };
 }
@@ -251,10 +257,12 @@ async function getDailySheet(req, res) {
       dateFrom: range.dateFrom,
       dateTo: range.dateTo,
       search: req.query.search,
-    });
-    // الكشف بتواريخ الاستحقاق — تُعرض مخفية لغير المستثنين كالقائمة
-    const masked = rows.map((row) => dates.maskRowDueDate({ ...row }, req.auth));
-    return res.json({ success: true, data: masked });
+    }, req.auth);
+    // Item 10: line-based sheet — DueDate in each row is already the
+    // per-viewer display date computed in getDailySheetByLines, so no
+    // second masking pass here (masking an already-displayed date would
+    // subtract the buffer twice).
+    return res.json({ success: true, data: rows });
   } catch (error) {
     console.error('delivery.getDailySheet:', error);
     return errorResponse(res, 'فشل تحميل كشف التسليمات', 500, error.message);
@@ -386,6 +394,133 @@ async function voidEvent(req, res) {
   }
 }
 
+
+// ── Item 5 (Pkg2): delivery maintenance queue + transitions ──────────
+async function getMaintenanceQueue(req, res) {
+  try {
+    const rows = await queries.getMaintenanceQueue({
+      status: req.query.status,
+      reasonClass: req.query.reasonClass,
+      search: req.query.search,
+      includeTerminal: req.query.includeTerminal === 'true' || req.query.includeTerminal === '1',
+    }, req.auth);
+    return res.json({ success: true, data: { rows, capabilities: capabilities(req.auth) } });
+  } catch (error) {
+    console.error('delivery.getMaintenanceQueue:', error);
+    return errorResponse(res, 'فشل تحميل قائمة صيانة التسليمات', error.statusCode || 500, error.message);
+  }
+}
+
+function maintenanceTransition(action) {
+  return async (req, res) => {
+    try {
+      const row = await queries.transitionMaintenance(req.params.maintenanceId, action, req.body || {}, req.auth);
+      if (action === 'ready') {
+        await notifyRoles({
+          title: '🔧 بند جاهز لإعادة التسليم',
+          message: `سجل صيانة #${row.MaintenanceId} (فاتورة #${row.TransactionID}) أصبح جاهزًا لإعادة التسليم بواسطة ${req.auth.username}`,
+          createdBy: req.auth.username,
+          formName: 'delivery-maintenance',
+          relatedTable: 'Transactions',
+          relatedId: row.TransactionID,
+        }, ['DeliveryOfficer']);
+      }
+      return res.json({ success: true, message: row.message, data: row });
+    } catch (error) {
+      console.error(`delivery.maintenance.${action}:`, error);
+      return errorResponse(res, error.message || 'فشل تحديث سجل الصيانة', error.statusCode || 500, error.code || error.message);
+    }
+  };
+}
+
+// ── Item 6 (Pkg2): schedule-change requests ──────────────────────────
+async function getScheduleRequests(req, res) {
+  try {
+    const rows = await queries.getScheduleChangeRequests(req.params.id, req.auth);
+    return res.json({ success: true, data: { rows, capabilities: capabilities(req.auth) } });
+  } catch (error) {
+    console.error('delivery.getScheduleRequests:', error);
+    return errorResponse(res, 'فشل تحميل طلبات تعديل المواعيد', error.statusCode || 500, error.message);
+  }
+}
+
+async function createScheduleRequest(req, res) {
+  try {
+    const row = await queries.createScheduleChangeRequest(req.params.id, req.body || {}, req.auth);
+    await notifyRoles({
+      title: 'طلب تعديل مواعيد تسليم',
+      message: `طلب تعديل مواعيد تسليم الفاتورة ${row.ReferenceNumber || `#${row.TransactionID}`} — مقدّم الطلب: ${req.auth.username}. السبب: ${(req.body || {}).reason || ''}`,
+      createdBy: req.auth.username,
+      formName: 'sales-delivery-status',
+      relatedTable: 'Transactions',
+      relatedId: row.TransactionID,
+    }, ['Admin', 'AccountManager']);
+    return res.json({ success: true, message: row.message, data: row });
+  } catch (error) {
+    console.error('delivery.createScheduleRequest:', error);
+    return errorResponse(res, error.message || 'فشل إنشاء طلب تعديل المواعيد', error.statusCode || 500, error.code || error.message);
+  }
+}
+
+async function withdrawScheduleRequest(req, res) {
+  try {
+    const row = await queries.withdrawScheduleChangeRequest(req.params.requestId, req.auth);
+    return res.json({ success: true, message: row.message, data: row });
+  } catch (error) {
+    console.error('delivery.withdrawScheduleRequest:', error);
+    return errorResponse(res, error.message || 'فشل سحب الطلب', error.statusCode || 500, error.code || error.message);
+  }
+}
+
+async function getScheduleApproval(req, res) {
+  try {
+    const data = await queries.getScheduleChangeApprovalData(req.params.requestId, req.auth);
+    if (!data) return notFoundResponse(res, 'الطلب غير موجود');
+    return res.json({ success: true, data });
+  } catch (error) {
+    console.error('delivery.getScheduleApproval:', error);
+    return errorResponse(res, error.message || 'فشل تحميل بيانات الاعتماد', error.statusCode || 500, error.code || error.message);
+  }
+}
+
+async function decideScheduleRequest(req, res) {
+  try {
+    const row = await queries.decideScheduleChangeRequest(req.params.requestId, req.body || {}, req.auth);
+    if (row.RequesterUserName) {
+      try {
+        await notifications.createNotification({
+          title: row.Approved ? 'اعتُمد طلب تعديل مواعيد تسليم' : 'رُفض طلب تعديل مواعيد تسليم',
+          message: row.Approved
+            ? `اعتُمد طلبك لتعديل مواعيد الفاتورة ${row.ReferenceNumber || `#${row.TransactionID}`} بواسطة ${req.auth.username} وطُبّقت المواعيد النهائية على الفاتورة.${row.DecisionNote ? ` ملاحظة: ${row.DecisionNote}` : ''}`
+            : `رُفض طلبك لتعديل مواعيد الفاتورة ${row.ReferenceNumber || `#${row.TransactionID}`} بواسطة ${req.auth.username}. سبب الرفض: ${row.DecisionNote || ''}`,
+          recipientUser: row.RequesterUserName,
+          createdBy: req.auth.username,
+          formName: 'sales-delivery-status',
+          relatedTable: 'Transactions',
+          relatedId: row.TransactionID,
+        });
+      } catch (error) { console.error('schedule decide requester notification:', error.message); }
+    }
+    if (row.Approved && row.salesUsername && row.salesUsername !== row.RequesterUserName && row.salesUsername !== req.auth.username) {
+      try {
+        await notifications.createNotification({
+          title: 'تم تعديل مواعيد تسليم فاتورة',
+          message: `اعتُمد طلب تعديل مواعيد الفاتورة ${row.ReferenceNumber || `#${row.TransactionID}`} وطُبّقت المواعيد النهائية بواسطة ${req.auth.username}. برجاء مراجعة جدولة الفاتورة.`,
+          recipientUser: row.salesUsername,
+          createdBy: req.auth.username,
+          formName: 'sales-delivery-status',
+          relatedTable: 'Transactions',
+          relatedId: row.TransactionID,
+        });
+      } catch (error) { console.error('schedule decide sales notification:', error.message); }
+    }
+    return res.json({ success: true, message: row.message, data: row });
+  } catch (error) {
+    console.error('delivery.decideScheduleRequest:', error);
+    return errorResponse(res, error.message || 'فشل البتّ في الطلب', error.statusCode || 500, error.code || error.message);
+  }
+}
+
 module.exports = {
   getDeliveries,
   getDeliveryStats,
@@ -402,4 +537,11 @@ module.exports = {
   getCoverage,
   recordEvent,
   voidEvent,
+  getMaintenanceQueue,
+  maintenanceTransition,
+  getScheduleRequests,
+  createScheduleRequest,
+  withdrawScheduleRequest,
+  getScheduleApproval,
+  decideScheduleRequest,
 };

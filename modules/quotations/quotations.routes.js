@@ -67,11 +67,19 @@ router.put(
   requirePolicy(quotationPolicy.canEdit, 'غير مصرح لك بتعديل عرض السعر'),
   quotationsController.update,
 );
+// بوابة المسار canView فقط: قاعدة تسجيل رد العميل داخل المتحكم تسمح للمدير
+// العام (بلا ادعاء تعديل) بالوصول لفحص المنشئ/الأدوار — Item 23.
 router.put(
   '/:id/status',
   authenticate,
-  requirePolicy(quotationPolicy.canEdit, 'غير مصرح لك بتغيير حالة عرض السعر'),
+  requirePolicy(quotationPolicy.canView, 'غير مصرح لك بتغيير حالة عرض السعر'),
   quotationsController.changeStatus,
+);
+router.post(
+  '/:id/share-link',
+  authenticate,
+  requirePolicy(quotationPolicy.canView, 'غير مصرح لك بإنشاء رابط مشاركة'),
+  quotationsController.createShareLink,
 );
 router.delete(
   '/:id',

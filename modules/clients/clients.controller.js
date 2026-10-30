@@ -92,8 +92,8 @@ async function create(req, res) {
       return res.json({ success: false, message: 'اسم العميل موجود مسبقاً' });
     }
 
-    // إضافة العميل
-    const partyId = await clientsQueries.createClient(req.body);
+    // إضافة العميل — المنشئ هو مستخدم التوكن (أي createdBy في الجسم يُتجاهل)
+    const partyId = await clientsQueries.createClient({ ...req.body, createdBy: req.auth?.username || req.body.createdBy });
 
     return res.json({
       success: true,
@@ -123,8 +123,8 @@ async function update(req, res) {
       return res.json({ success: false, message: 'اسم العميل موجود مسبقاً' });
     }
 
-    // تعديل العميل
-    await clientsQueries.updateClient(id, req.body);
+    // تعديل العميل — آخر معدِّل هو مستخدم التوكن (LastUpdatedBy في بلازور)
+    await clientsQueries.updateClient(id, { ...req.body, updatedBy: req.auth?.username || req.body.updatedBy });
 
     return res.json({
       success: true,
@@ -203,6 +203,34 @@ async function checkPhone(req, res) {
   }
 }
 
+// قوائم مرجعية لنموذج العميل (أنواع الطرف/مراحل المبيعات/مصادر التواصل)
+async function getPartyTypes(req, res) {
+  try {
+    return res.json(await clientsQueries.getPartyTypes());
+  } catch (err) {
+    console.error('خطأ في جلب أنواع الطرف:', err);
+    return errorResponse(res, 'فشل تحميل أنواع الطرف', 500, err.message);
+  }
+}
+
+async function getSalesStages(req, res) {
+  try {
+    return res.json(await clientsQueries.getSalesStages());
+  } catch (err) {
+    console.error('خطأ في جلب مراحل المبيعات:', err);
+    return errorResponse(res, 'فشل تحميل مراحل المبيعات', 500, err.message);
+  }
+}
+
+async function getContactSources(req, res) {
+  try {
+    return res.json(await clientsQueries.getContactSources());
+  } catch (err) {
+    console.error('خطأ في جلب مصادر التواصل:', err);
+    return errorResponse(res, 'فشل تحميل مصادر التواصل', 500, err.message);
+  }
+}
+
 // تصدير الدوال
 module.exports = {
   getAll,
@@ -214,5 +242,8 @@ module.exports = {
   update,
   remove,
   getReferralSources,
+  getPartyTypes,
+  getSalesStages,
+  getContactSources,
   checkPhone
 };

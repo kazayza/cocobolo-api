@@ -83,7 +83,7 @@ async function create(req, res) {
 
   } catch (err) {
     console.error('خطأ في إضافة المصروف:', err);
-    return errorResponse(res, 'فشل إضافة المصروف', 500, err.message);
+    return errorResponse(res, err.message || 'فشل إضافة المصروف', err.statusCode || 400, err.message);
   }
 }
 
@@ -110,7 +110,7 @@ async function update(req, res) {
     });
   } catch (err) {
     console.error('خطأ في تعديل المصروف:', err);
-    return errorResponse(res, 'فشل تعديل المصروف', 500, err.message);
+    return errorResponse(res, err.message || 'فشل تعديل المصروف', err.statusCode || 400, err.message);
   }
 }
 
@@ -127,7 +127,7 @@ async function remove(req, res) {
     });
   } catch (err) {
     console.error('خطأ في حذف المصروف:', err);
-    return errorResponse(res, 'فشل حذف المصروف', 500, err.message);
+    return errorResponse(res, err.message || 'فشل حذف المصروف', err.statusCode || 400, err.message);
   }
 }
 

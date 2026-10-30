@@ -1,4 +1,5 @@
 const cashboxQueries = require('./cashbox.queries');
+const cashboxReviewQueries = require('./cashbox-review.queries');
 const { successResponse, errorResponse, notFoundResponse } = require('../../shared/response.helper');
 
 // جلب كل الخزائن
@@ -49,8 +50,10 @@ async function getById(req, res) {
 // ملخص الخزينة
 async function getSummary(req, res) {
   try {
-    const { cashboxId } = req.query;
-    const summary = await cashboxQueries.getCashboxSummary(cashboxId);
+    const { cashboxId, from, startDate, to, endDate } = req.query;
+    const summary = await cashboxQueries.getCashboxSummary(
+      cashboxId, from || startDate || null, to || endDate || null,
+    );
     return res.json(summary);
   } catch (err) {
     console.error('خطأ في جلب الملخص:', err);
@@ -90,7 +93,7 @@ async function create(req, res) {
     });
   } catch (err) {
     console.error('خطأ في إنشاء الخزينة:', err);
-    return errorResponse(res, 'فشل إنشاء الخزينة', 500, err.message);
+    return errorResponse(res, err.message || 'فشل إنشاء الخزينة', err.statusCode || 500, err.message);
   }
 }
 
@@ -112,7 +115,7 @@ async function update(req, res) {
     });
   } catch (err) {
     console.error('خطأ في تعديل الخزينة:', err);
-    return errorResponse(res, 'فشل تعديل الخزينة', 500, err.message);
+    return errorResponse(res, err.message || 'فشل تعديل الخزينة', err.statusCode || 500, err.message);
   }
 }
 
@@ -134,7 +137,7 @@ async function createTransaction(req, res) {
     });
   } catch (err) {
     console.error('خطأ في إضافة الحركة:', err);
-    return errorResponse(res, 'فشل إضافة الحركة', 500, err.message);
+    return errorResponse(res, err.message || 'فشل إضافة الحركة', err.statusCode || 500, err.message);
   }
 }
 
@@ -164,7 +167,7 @@ async function transfer(req, res) {
     });
   } catch (err) {
     console.error('خطأ في التحويل:', err);
-    return errorResponse(res, 'فشل التحويل', 500, err.message);
+    return errorResponse(res, err.message || 'فشل التحويل', err.statusCode || 500, err.message);
   }
 }
 
@@ -255,8 +258,63 @@ async function getFullDashboard(req, res) {
   }
 }
 
+// عملية يدوية (الأنواع الستة) — POST /api/cashbox/manual
+async function createManual(req, res) {
+  try {
+    const result = await cashboxQueries.createManualOperation({
+      ...req.body,
+      createdBy: req.auth?.username || req.body.createdBy,
+    });
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('خطأ في العملية اليدوية:', err);
+    return errorResponse(res, err.message || 'فشل تنفيذ العملية اليدوية', err.statusCode || 500, err.message);
+  }
+}
+
+// ══════════════════════════════════════════
+// مراجعة الخزينة (Item 27) — البوابة في المسارات (canReview)
+// ══════════════════════════════════════════
+async function getReview(req, res) {
+  try {
+    const review = await cashboxReviewQueries.getReview(
+      req.query.cashboxId, req.query.from, req.query.to,
+    );
+    return res.json({ success: true, data: review });
+  } catch (err) {
+    console.error('خطأ في مراجعة الخزينة:', err);
+    return errorResponse(res, err.message || 'فشل تحميل مراجعة الخزينة', err.statusCode || 500, err.message);
+  }
+}
+
+async function getReviewRecent(req, res) {
+  try {
+    const recent = await cashboxReviewQueries.getRecentStamps();
+    return res.json({ success: true, data: recent });
+  } catch (err) {
+    console.error('خطأ في أختام المراجعة:', err);
+    return errorResponse(res, err.message || 'فشل تحميل أختام المراجعة', err.statusCode || 500, err.message);
+  }
+}
+
+async function stampReview(req, res) {
+  try {
+    const result = await cashboxReviewQueries.stampReview(
+      req.body.cashboxId, req.body.from, req.body.to, req.body.note, req.auth,
+    );
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('خطأ في ختم المراجعة:', err);
+    return errorResponse(res, err.message || 'فشل حفظ ختم المراجعة', err.statusCode || 400, err.message);
+  }
+}
+
 // تصدير الدوال
 module.exports = {
+  getReview,
+  getReviewRecent,
+  stampReview,
+  createManual,
   getFullDashboard,
   getAll,
   getActive,

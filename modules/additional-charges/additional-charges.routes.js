@@ -23,6 +23,22 @@ router.post(
   controller.markNonRefundable,
 );
 router.get('/:id/receipt', requirePolicy(additionalCharges.canView), controller.getReceipt);
+// دورة رسوم تعديل التسليم — الأدوار الدقيقة داخل الاستعلامات بمرآة بلازور
+router.post(
+  '/:id/approve-modification',
+  requirePolicy(additionalCharges.canEdit, 'غير مصرح لك باعتماد رسوم التعديل'),
+  controller.approveModification,
+);
+router.post(
+  '/:id/reject-modification',
+  requirePolicy(additionalCharges.canEdit, 'غير مصرح لك برفض رسوم التعديل'),
+  controller.rejectModification,
+);
+router.post(
+  '/:id/collect-modification',
+  requirePolicy(additionalCharges.canEdit, 'غير مصرح لك بتحصيل رسوم التعديل'),
+  controller.collectModification,
+);
 router.put(
   '/:id',
   requirePolicy(additionalCharges.canEdit, 'غير مصرح لك بتعديل الرسوم'),

@@ -91,16 +91,19 @@ async function getTransactions(req, res) {
   }
 }
 
-// إضافة حركة مخزون
+// إضافة حركة مخزون — المنفّذ من التوكن حصرًا؛ أي createdBy في الجسم يُتجاهل
 async function createTransaction(req, res) {
   try {
-    const { productId, warehouseId, transactionType, quantity, createdBy } = req.body;
+    const { productId, warehouseId, transactionType, quantity } = req.body;
 
     if (!productId || !warehouseId || !transactionType || !quantity) {
       return errorResponse(res, 'البيانات غير مكتملة', 400);
     }
 
-    const transactionId = await inventoryQueries.createStockTransaction(req.body);
+    const transactionId = await inventoryQueries.createStockTransaction({
+      ...req.body,
+      createdBy: req.auth.username,
+    });
 
     return res.json({
       success: true,
@@ -109,11 +112,11 @@ async function createTransaction(req, res) {
     });
   } catch (err) {
     console.error('خطأ في إضافة الحركة:', err);
-    return errorResponse(res, 'فشل إضافة الحركة', 500, err.message);
+    return errorResponse(res, err.message || 'فشل إضافة الحركة', err.statusCode || 500, err.message);
   }
 }
 
-// إضافة مخزن
+// إضافة مخزن — المنفّذ من التوكن حصرًا
 async function createWarehouse(req, res) {
   try {
     const { warehouseName } = req.body;
@@ -122,7 +125,10 @@ async function createWarehouse(req, res) {
       return errorResponse(res, 'اسم المخزن مطلوب', 400);
     }
 
-    const warehouseId = await inventoryQueries.createWarehouse(req.body);
+    const warehouseId = await inventoryQueries.createWarehouse({
+      ...req.body,
+      createdBy: req.auth.username,
+    });
 
     return res.json({
       success: true,
@@ -164,13 +170,16 @@ async function transferStock(req, res) {
       toWarehouseId: parseInt(toWarehouseId),
       productId: parseInt(productId),
       quantity: parseInt(quantity),
+      fromBranchId: req.body.fromBranchId ? parseInt(req.body.fromBranchId) : null,
+      toBranchId: req.body.toBranchId ? parseInt(req.body.toBranchId) : null,
       notes: req.body.notes,
-      createdBy: req.body.createdBy || req.body.userName || 'System',
+      // المنفّذ من التوكن حصرًا — يُتجاهل أي createdBy/userName في الجسم
+      createdBy: req.auth.username,
     });
     return res.json(result);
   } catch (err) {
     console.error('transferStock:', err.message);
-    return errorResponse(res, err.message || 'فشل التحويل', 500, err.message);
+    return errorResponse(res, err.message || 'فشل التحويل', err.statusCode || 500, err.message);
   }
 }
 
@@ -186,6 +195,92 @@ async function getCurrentStock(req, res) {
   }
 }
 
+// ══════════════════════════════════════════════════════════════
+// الجرد المخزني — خلف سياسة requireCountStock في المسارات
+// ══════════════════════════════════════════════════════════════
+
+// مساحة عمل جرد لمخزن (أو مستند قائم عند تمرير stockCountId)
+async function getStockCountWorkspace(req, res) {
+  try {
+    const warehouseId = req.query.warehouseId ? parseInt(req.query.warehouseId, 10) : null;
+    const stockCountId = req.query.stockCountId ? parseInt(req.query.stockCountId, 10) : null;
+    if (!stockCountId && !warehouseId) {
+      return errorResponse(res, 'warehouseId مطلوب', 400);
+    }
+    const workspace = await inventoryQueries.getStockCountWorkspace(warehouseId, stockCountId);
+    if (!workspace) return errorResponse(res, 'المخزن غير موجود أو غير نشط أو غير مرتبط بفرع', 404);
+    return res.json({ success: true, data: workspace });
+  } catch (err) {
+    console.error('getStockCountWorkspace:', err);
+    return errorResponse(res, 'فشل تحميل مساحة عمل الجرد', 500, err.message);
+  }
+}
+
+// قائمة مستندات الجرد
+async function getStockCounts(req, res) {
+  try {
+    const counts = await inventoryQueries.getStockCounts({
+      branchId: req.query.branchId ? parseInt(req.query.branchId, 10) : null,
+      warehouseId: req.query.warehouseId ? parseInt(req.query.warehouseId, 10) : null,
+    });
+    return res.json({ success: true, data: counts });
+  } catch (err) {
+    console.error('getStockCounts:', err);
+    return errorResponse(res, 'فشل تحميل الجردات', 500, err.message);
+  }
+}
+
+// حفظ مسودة جرد — المنفّذ من التوكن حصرًا
+async function saveStockCountDraft(req, res) {
+  try {
+    const body = req.body || {};
+    const stockCountId = await inventoryQueries.saveStockCountDraft({
+      stockCountId: body.stockCountId || body.StockCountId || null,
+      branchId: body.branchId ?? body.BranchId,
+      warehouseId: body.warehouseId ?? body.WarehouseId,
+      countDate: body.countDate ?? body.CountDate ?? null,
+      notes: body.notes ?? body.Notes ?? null,
+      lines: (body.lines || body.Lines || []).map((l) => ({
+        productId: l.productId ?? l.ProductId,
+        systemQty: l.systemQty ?? l.SystemQty ?? 0,
+        actualQty: l.actualQty ?? l.ActualQty ?? 0,
+        notes: l.notes ?? l.Notes ?? null,
+      })),
+    }, req.auth.username);
+    return res.json({ success: true, stockCountId, message: 'تم حفظ مسودة الجرد بنجاح.' });
+  } catch (err) {
+    console.error('saveStockCountDraft:', err);
+    return errorResponse(res, err.message || 'فشل حفظ مسودة الجرد', err.statusCode || 500, err.message);
+  }
+}
+
+// اعتماد جرد وتنفيذ تسوياته ذرّيًا
+async function finalizeStockCount(req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    await inventoryQueries.finalizeStockCount(id, req.auth.username);
+    return res.json({ success: true, message: 'تم اعتماد الجرد وتنفيذ التسويات المخزنية بنجاح.' });
+  } catch (err) {
+    console.error('finalizeStockCount:', err);
+    return errorResponse(res, err.message || 'فشل اعتماد الجرد', err.statusCode || 500, err.message);
+  }
+}
+
+// قيمة المخزون — خلف سياسة canViewStockValue في المسارات
+async function getStockValue(req, res) {
+  try {
+    const result = await inventoryQueries.getStockValue({
+      branchId: req.query.branchId ? parseInt(req.query.branchId, 10) : null,
+      warehouseId: req.query.warehouseId ? parseInt(req.query.warehouseId, 10) : null,
+      priceTier: req.query.priceTier || null,
+    });
+    return res.json({ success: true, data: result });
+  } catch (err) {
+    console.error('getStockValue:', err);
+    return errorResponse(res, 'فشل تحميل قيمة المخزون', 500, err.message);
+  }
+}
+
 // تصدير الدوال
 module.exports = {
   getWarehouses,
@@ -198,5 +293,10 @@ module.exports = {
   createTransaction,
   transferStock,
   createWarehouse,
-  updateWarehouse
+  updateWarehouse,
+  getStockCountWorkspace,
+  getStockCounts,
+  saveStockCountDraft,
+  finalizeStockCount,
+  getStockValue
 };

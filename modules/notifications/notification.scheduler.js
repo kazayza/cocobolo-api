@@ -23,6 +23,7 @@ function startNotificationScheduler() {
       try {
         await checkCrmFollowUps();
         await checkShiftReminders();
+        await checkDeliveryAdvanceReminders();
         await checkNewLeadsWithoutNotify(); // safety net for Meta leads
       } catch (err) {
         console.error('❌ خطأ في تشغيل جدول الإشعارات التلقائية:', err);
@@ -611,8 +612,88 @@ async function checkDeliveryReminders() {
   }
 }
 
+
+// ═══════════════════════════════════════════════════════════
+// Item 7 (Pkg2): 7-day advance delivery reminder — mirror of Blazor
+// DeliveryReminderService (Services/DeliveryReminderService.cs):
+// daily after 08:00 Cairo; DeliveryOfficer is reminded on realDate-7
+// (sees real date), ProductionManager on displayedDate-7 (displayed =
+// real - buffer days, default 4). Dedupe: audit marker in Audit_Log
+// with key "{TransactionId}:{RealDate yyyyMMdd}:{Real|Masked}" and
+// ActionType 'DeliveryAdvanceReminder' — checked before, written after.
+let _lastAdvanceRunDate = null;
+
+async function checkDeliveryAdvanceReminders() {
+  try {
+    const egypt = getEgyptNowParts();
+    if (egypt.hour < 8) return;
+    if (_lastAdvanceRunDate === egypt.dateStr) return;
+    _lastAdvanceRunDate = egypt.dateStr;
+
+    // Lazy require avoids a load cycle (delivery queries do not import notifications)
+    const deliveryQueries = require('../delivery/delivery.queries');
+    const pool = await connectDB();
+    const target = new Date(`${egypt.dateStr}T00:00:00.000Z`);
+    target.setUTCDate(target.getUTCDate() + 7);
+
+    const classes = [
+      { role: 'DeliveryOfficer', seesReal: true, classKey: 'Real' },
+      { role: 'ProductionManager', seesReal: false, classKey: 'Masked' },
+    ];
+    for (const cls of classes) {
+      const appointments = await deliveryQueries.getAppointmentsDueOn(target, cls.seesReal);
+      for (const appt of appointments) {
+        const real = appt.RealDate instanceof Date ? appt.RealDate : new Date(appt.RealDate);
+        const realKey = `${real.getUTCFullYear()}${String(real.getUTCMonth() + 1).padStart(2, '0')}${String(real.getUTCDate()).padStart(2, '0')}`;
+        const marker = `${appt.TransactionID}:${realKey}:${cls.classKey}`;
+        const existing = await pool.request()
+          .input('marker', sql.NVarChar(200), marker)
+          .query(`
+            SELECT TOP 1 AuditID FROM [dbo].[Audit_Log]
+            WHERE TableName = N'Transactions' AND ActionType = N'DeliveryAdvanceReminder' AND PrimaryKeyValue = @marker
+          `);
+        if (existing.recordset.length > 0) continue;
+
+        const display = appt.DisplayDate instanceof Date ? appt.DisplayDate : new Date(appt.DisplayDate);
+        const displayStr = `${display.getUTCFullYear()}/${String(display.getUTCMonth() + 1).padStart(2, '0')}/${String(display.getUTCDate()).padStart(2, '0')}`;
+        const qty = Number(appt.RemainingQty || 0);
+        const message = `فاتورة ${appt.ReferenceNumber || `#${appt.TransactionID}`} — العميل: ${appt.PartyName || ''}. موعد التسليم كما يظهر لك: ${displayStr} (بعد 7 أيام). بنود مستحقة في هذا الموعد: ${appt.DueLineCount} — كمية متبقية: ${qty % 1 === 0 ? qty.toFixed(0) : qty}.`;
+        await notifyRolesUsers(
+          [cls.role],
+          '⏰ تسليم بعد أسبوع',
+          message,
+          'Transactions',
+          appt.TransactionID,
+          'sales-delivery-status',
+          'system'
+        );
+        await pool.request()
+          .input('marker', sql.NVarChar(200), marker)
+          .input('newData', sql.NVarChar(sql.MAX), JSON.stringify({
+            TransactionId: appt.TransactionID,
+            Reference: appt.ReferenceNumber,
+            PartyName: appt.PartyName,
+            RealDate: real.toISOString().slice(0, 10),
+            DisplayDate: display.toISOString().slice(0, 10),
+            Class: cls.classKey,
+            Role: cls.role,
+            DueLineCount: appt.DueLineCount,
+            RemainingQty: appt.RemainingQty,
+          }))
+          .query(`
+            INSERT INTO [dbo].[Audit_Log] (TableName, ActionType, PrimaryKeyValue, OldData, NewData, ActionDate, LoginName, AppName, AccessUserName)
+            VALUES (N'Transactions', N'DeliveryAdvanceReminder', @marker, NULL, @newData, GETDATE(), N'system', N'COCOBOLO API Scheduler', N'system')
+          `);
+      }
+    }
+  } catch (err) {
+    console.error('checkDeliveryAdvanceReminders:', err.message);
+  }
+}
+
 module.exports = {
   checkDeliveryReminders,
+  checkDeliveryAdvanceReminders,
   startNotificationScheduler,
   checkShiftReminders,
   checkCrmFollowUps,

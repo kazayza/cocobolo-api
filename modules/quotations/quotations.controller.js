@@ -3,6 +3,17 @@ const notificationsQueries = require('../notifications/notifications.queries');
 const policy = require('../../shared/authorization.policy');
 const { errorResponse, notFoundResponse } = require('../../shared/response.helper');
 const { sql, connectDB } = require('../../core/database');
+const { generateShareToken } = require('../../shared/share-token');
+
+// رابط عام موقّع — مرآة Endpoints/QuotationEndpoints.cs:63 وQuotationForm.razor:
+// {PUBLIC_WEB_BASE_URL}/q/{token} بتوكن ShareTokenService (لا رقم خام).
+function buildPublicUrl(quotation) {
+  const base = process.env.PUBLIC_WEB_BASE_URL;
+  if (!base || !quotation) return null;
+  const generated = generateShareToken('quotation', quotation.QuotationID, 30);
+  if (!generated) return null;
+  return `${String(base).replace(/\/$/, '')}/q/${generated.token}`;
+}
 
 function capabilities(auth) {
   return {
@@ -62,9 +73,7 @@ function scopeQuotation(quotation, auth) {
   const canSale = policy.quotations.canViewSalePrices(auth);
   scoped.PricesMasked = !canSale;
   scoped.capabilities = capabilities(auth);
-  scoped.publicUrl = process.env.PUBLIC_WEB_BASE_URL
-    ? `${String(process.env.PUBLIC_WEB_BASE_URL).replace(/\/$/, '')}/q/quotation/${quotation.QuotationID}`
-    : null;
+  scoped.publicUrl = buildPublicUrl(quotation);
 
   scoped.details = (quotation.details || []).map((raw) => {
     const detail = { ...raw };
@@ -276,7 +285,31 @@ async function update(req, res) {
     const id = parseInt(req.params.id, 10);
     await assertQuotationAccess(id, req.auth);
     const result = await quotationsQueries.saveQuotation(id, req.body || {}, req.auth);
-    return res.json({ success: true, data: result, message: 'تم تحديث عرض السعر بنجاح' });
+    let message = 'تم تحديث عرض السعر بنجاح';
+    // ⭐ (دفعة 2 — 2-3) إبطال قبول بتعديل مالي: تنبيه المنشئ إن عدّل غيره
+    // (QuotationService.cs UpdateQuotationAsync — نصوص بلازور حرفيًا)
+    if (result.acceptanceVoided) {
+      message = 'تم تحديث عرض السعر بنجاح. تنبيه: كان العرض «مقبولًا» والتعديل مالي، فأُعيد إلى «مسودة» وأُلغي قبول العميل السابق — أعد إرساله وانتظر قبولًا جديدًا قبل التحويل لفاتورة.';
+      const creator = result.createdBy;
+      if (creator && String(creator).toLowerCase() !== String(req.auth.username).toLowerCase()) {
+        const year = result.quotationDate ? new Date(result.quotationDate).getFullYear() : new Date().getFullYear();
+        const reference = result.referenceNumber || `QT-${year}-${String(id).padStart(5, '0')}`;
+        try {
+          await notificationsQueries.createNotification({
+            title: '↩️ أُلغي قبول عرض سعر — تعديل مالي',
+            message: `تم تعديل بنود/أسعار/خصم عرض السعر ${reference} وهو بحالة «مقبول» بواسطة ${req.auth.username}، فأُعيد تلقائيًا إلى «مسودة» وأُلغي قبول العميل السابق. يلزم إعادة الإرسال وقبول العميل من جديد قبل التحويل لفاتورة.`,
+            recipientUser: creator,
+            createdBy: req.auth.username,
+            formName: 'quotations',
+            relatedTable: 'Quotations',
+            relatedId: id,
+          });
+        } catch (notifyError) {
+          console.error('quotation void-accept notify:', notifyError.message);
+        }
+      }
+    }
+    return res.json({ success: true, data: result, message });
   } catch (error) {
     console.error('quotations.update:', error);
     if (error.code) {
@@ -294,7 +327,28 @@ async function update(req, res) {
 async function changeStatus(req, res) {
   try {
     const id = parseInt(req.params.id, 10);
-    await assertQuotationAccess(id, req.auth);
+    const quotation = await assertQuotationAccess(id, req.auth);
+    const target = String(req.body.status || '');
+    // ⭐ قاعدة تسجيل رد العميل — QuotationService.cs CanRecordCustomerResponse
+    // (:1311): الانتقال إلى Accepted/Rejected لمنشئ العرض أو Admin أو مدير
+    // الحسابات أو المدير العام فقط؛ بقية الانتقالات بصلاحية التعديل العامة،
+    // ومشاهدو التكلفة المقيّدون لا يغيّرون الحالة أبدًا (ChangeStatusAsync).
+    if (policy.quotations.isCostOnlyViewer(req.auth)) {
+      return errorResponse(res, 'ليس لديك صلاحية تغيير حالة عرض السعر.', 403);
+    }
+    if (target === 'Accepted' || target === 'Rejected') {
+      const isCreator = Boolean(quotation.CreatedBy)
+        && String(quotation.CreatedBy).toLowerCase() === String(req.auth.username).toLowerCase();
+      const allowed = isCreator
+        || policy.roles.admin(req.auth)
+        || policy.roles.accountManager(req.auth)
+        || policy.roles.generalManager(req.auth);
+      if (!allowed) {
+        return errorResponse(res, 'تسجيل موافقة/رفض العميل من صلاحية منشئ العرض أو الأدمن أو مدير الحسابات أو المدير العام فقط.', 403);
+      }
+    } else if (!policy.quotations.canEdit(req.auth)) {
+      return errorResponse(res, 'غير مصرح لك بتغيير حالة عرض السعر', 403);
+    }
     const result = await quotationsQueries.changeQuotationStatus(
       id,
       String(req.body.status || ''),
@@ -482,7 +536,39 @@ async function notifyManagement(quotationId, actor, action) {
   }
 }
 
+// توليد رابط مشاركة عام جديد — مرآة POST /api/quotations/{id}/share-link
+// في بلازور (Endpoints/QuotationEndpoints.cs:56-84): صلاحية الأيام 1..90
+// والافتراضي 30، والرابط {PUBLIC_WEB_BASE_URL}/q/{token}.
+async function createShareLink(req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const quotation = await assertQuotationAccess(id, req.auth);
+    const daysRaw = req.body?.days ?? req.query.days;
+    const generated = generateShareToken('quotation', quotation.QuotationID, daysRaw != null ? Number(daysRaw) : 30);
+    if (!generated) {
+      return errorResponse(res, 'روابط المشاركة غير مهيأة على الخادم', 500);
+    }
+    const base = process.env.PUBLIC_WEB_BASE_URL
+      ? String(process.env.PUBLIC_WEB_BASE_URL).replace(/\/$/, '')
+      : `${req.protocol}://${req.get('host')}`;
+    return res.json({
+      success: true,
+      data: {
+        token: generated.token,
+        publicUrl: `${base}/q/${generated.token}`,
+        expiresInDays: generated.expiresInDays,
+        expiresAt: new Date(generated.expiresAt * 1000).toISOString(),
+      },
+      message: 'تم إنشاء رابط المشاركة',
+    });
+  } catch (error) {
+    console.error('quotations.createShareLink:', error);
+    return errorResponse(res, error.message || 'فشل إنشاء رابط المشاركة', error.statusCode || 500, error.message);
+  }
+}
+
 module.exports = {
+  createShareLink,
   getAll,
   getById,
   getLookups,

@@ -2,7 +2,8 @@ const express = require('express');
 const router = express.Router();
 const cashboxController = require('./cashbox.controller');
 const { authenticate, requirePolicy } = require('../../core/auth.middleware');
-const { cashbox: cashboxPolicy } = require('../../shared/authorization.policy');
+const policy = require('../../shared/authorization.policy');
+const { cashbox: cashboxPolicy } = policy;
 
 // ===================================
 // 🏦 Cashbox Routes
@@ -15,6 +16,17 @@ const canView = requirePolicy(cashboxPolicy.canView, 'غير مصرح لك بع�
 const canCreateTransaction = requirePolicy(cashboxPolicy.canCreateTransaction, 'غير مصرح لك بتنفيذ هذا الإجراء على الخزينة');
 const canAddBox = requirePolicy(cashboxPolicy.canAddBox, 'غير مصرح لك بإنشاء خزينة');
 const canEditBox = requirePolicy(cashboxPolicy.canEditBox, 'غير مصرح لك بتعديل الخزينة');
+
+// مراجعة الخزينة — قاعدة بلازور (CashBoxReview.razor): Admin أو AccountManager
+// أو دور الحسابات أو حامل Claim frmCashBoxReview:View. تُسجَّل قبل /:id.
+const canReview = requirePolicy(
+  (a) => policy.roles.admin(a) || policy.roles.accountManager(a)
+    || policy.roles.account(a) || policy.hasClaim(a, 'frmCashBoxReview:View'),
+  'غير مصرح لك بمراجعة الخزينة',
+);
+router.get('/review', canReview, cashboxController.getReview);
+router.get('/review/recent', canReview, cashboxController.getReviewRecent);
+router.post('/review/stamp', canReview, cashboxController.stampReview);
 
 // الداشبورد الكامل (كل البيانات في استجابة واحدة)
 // GET /api/cashbox/dashboard/full
@@ -35,6 +47,10 @@ router.post('/transactions', canCreateTransaction, cashboxController.createTrans
 // تحويل بين خزينتين
 // POST /api/cashbox/transfer
 router.post('/transfer', canCreateTransaction, cashboxController.transfer);
+
+// عملية يدوية بالأنواع الستة (قبض/صرف/قرض وارد/تسديد قرض/تحويل/رصيد افتتاحي)
+// POST /api/cashbox/manual
+router.post('/manual', canCreateTransaction, cashboxController.createManual);
 
 // إحصائيات الداشبورد
 // GET /api/cashbox/dashboard/stats?period=today|week|month|year

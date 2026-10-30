@@ -81,6 +81,45 @@ async function createShift(data) {
   return result.recordset[0].EmployeeShiftID;
 }
 
+// تعديل شيفت — مرآة EmployeeShiftService.UpdateShiftAsync:295:
+// تحديث في المكان نفسه (النوع والأوقات والسريان وأيام الراحة وكود
+// البصمة عند إرساله) دون إغلاق أي شيفتات أخرى ودون إنشاء سجل جديد.
+async function updateShift(shiftId, data) {
+  const pool = await connectDB();
+  const existingRes = await pool.request()
+    .input('id', sql.Int, shiftId)
+    .query(`SELECT EmployeeShiftID FROM EmployeeShifts WHERE EmployeeShiftID = @id`);
+  if (existingRes.recordset.length === 0) {
+    const err = new Error('الشيفت غير موجود.');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  await pool.request()
+    .input('id', sql.Int, shiftId)
+    .input('shiftType', sql.VarChar(20), data.shiftType)
+    .input('startTime', sql.VarChar(8), data.startTime)
+    .input('endTime', sql.VarChar(8), data.endTime)
+    .input('effectiveFrom', sql.DateTime, data.effectiveFrom)
+    .input('effectiveTo', sql.DateTime, data.effectiveTo || null)
+    .input('offDay1', sql.Int, data.offDay1 ?? null)
+    .input('offDay2', sql.Int, data.offDay2 ?? null)
+    .input('biometricCode', sql.Int, data.biometricCode ?? null)
+    .query(`
+      UPDATE EmployeeShifts
+      SET ShiftType = @shiftType,
+          StartTime = CAST(@startTime AS TIME),
+          EndTime = CAST(@endTime AS TIME),
+          EffectiveFrom = @effectiveFrom,
+          EffectiveTo = @effectiveTo,
+          OffDay1 = ISNULL(@offDay1, OffDay1),
+          OffDay2 = ISNULL(@offDay2, OffDay2),
+          BiometricCode = ISNULL(@biometricCode, BiometricCode)
+      WHERE EmployeeShiftID = @id
+    `);
+  return true;
+}
+
 // حذف شيفت (لو أضيف بالخطأ)
 async function deleteShift(shiftId) {
   const pool = await connectDB();
@@ -219,6 +258,7 @@ module.exports = {
   getShiftsByEmployee,
   getCurrentShift,
   createShift,
+  updateShift,
   deleteShift,
   getEmployeesWithCurrentShift,
   searchShifts,

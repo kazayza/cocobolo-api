@@ -7,6 +7,7 @@ async function getAllCashboxes() {
     .query(`
       SELECT 
         c.CashBoxID, c.CashBoxName, c.Description,
+        c.BranchID, c.OpeningBalance, c.OpeningDate,
         c.CashBoxKind, c.Icon, c.Color, c.IsActive, c.IsDefault,
         c.CreatedBy, c.CreatedAt,
         ISNULL(c.OpeningBalance, 0) + ISNULL((
@@ -28,6 +29,7 @@ async function getActiveCashboxes() {
     .query(`
       SELECT 
         c.CashBoxID, c.CashBoxName, c.Description,
+        c.BranchID, c.OpeningBalance, c.OpeningDate,
         c.CashBoxKind, c.Icon, c.Color, c.IsActive, c.IsDefault,
         c.CreatedBy, c.CreatedAt,
         ISNULL(c.OpeningBalance, 0) + ISNULL((
@@ -379,76 +381,452 @@ async function getCashboxTransactions(cashboxId = null, startDate = null, endDat
   };
 }
 
-// ملخص الخزينة
-async function getCashboxSummary(cashboxId = null) {
+// ملخص الخزينة بمعالجة فترة — مرآة CashBoxService.GetSummaryAsync:958
+// وتركيب صفحة بلازور: لكل خزينة الرصيد الافتتاحي المخزّن، ورصيد أول الفترة
+// (المخزّن + صافي ما قبل بدايتها)، ووارد/صادر وعدد الفترة، ورصيد إغلاق
+// الفترة، والرصيد الحالي الحقيقي لكل الأوقات بالتعريف الموحد.
+async function getCashboxSummary(cashboxId = null, from = null, to = null) {
   const pool = await connectDB();
   const request = pool.request();
-
-  let whereClause = '';
-  let openingWhere = '';
   const parsedId = Number(cashboxId);
-  if (cashboxId != null && cashboxId !== '' && Number.isInteger(parsedId) && parsedId > 0) {
-    whereClause = 'WHERE CashBoxID = @cashboxId';
-    openingWhere = 'WHERE CashBoxID = @cashboxId';
-    request.input('cashboxId', sql.Int, parsedId);
-  }
-
+  const hasBox = cashboxId != null && cashboxId !== '' && Number.isInteger(parsedId) && parsedId > 0;
+  if (hasBox) request.input('cashboxId', sql.Int, parsedId);
+  const fromDate = from ? new Date(from) : null;
+  const toDate = to ? new Date(to) : null;
+  request.input('fromDate', sql.Date, fromDate);
+  request.input('toDate', sql.Date, toDate);
+  const boxFilter = hasBox ? 'WHERE c.CashBoxID = @cashboxId' : '';
   const result = await request.query(`
-    SELECT 
-      ISNULL(SUM(CASE WHEN TransactionType = N'قبض' THEN Amount ELSE 0 END), 0) AS TotalIn,
-      ISNULL(SUM(CASE WHEN TransactionType = N'صرف' THEN Amount ELSE 0 END), 0) AS TotalOut,
-      ISNULL((SELECT SUM(ISNULL(OpeningBalance, 0)) FROM CashBoxes ${openingWhere}), 0)
-        + ISNULL(SUM(CASE WHEN TransactionType = N'قبض' THEN Amount WHEN TransactionType = N'صرف' THEN -Amount ELSE 0 END), 0) AS Balance
-    FROM CashboxTransactions
-    ${whereClause}
+    SELECT
+      c.CashBoxID, c.CashBoxName, c.CashBoxKind, c.Color, c.IsActive,
+      ISNULL(c.OpeningBalance, 0) AS StoredOpeningBalance,
+      ISNULL(SUM(CASE WHEN @fromDate IS NOT NULL AND CAST(t.TransactionDate AS DATE) < @fromDate
+                      THEN CASE WHEN t.TransactionType = N'قبض' THEN t.Amount
+                                WHEN t.TransactionType = N'صرف' THEN -t.Amount ELSE 0 END
+                      ELSE 0 END), 0) AS NetBeforePeriod,
+      ISNULL(SUM(CASE WHEN (@fromDate IS NULL OR CAST(t.TransactionDate AS DATE) >= @fromDate)
+                       AND (@toDate IS NULL OR CAST(t.TransactionDate AS DATE) <= @toDate)
+                       AND t.TransactionType = N'قبض' THEN t.Amount ELSE 0 END), 0) AS TotalIn,
+      ISNULL(SUM(CASE WHEN (@fromDate IS NULL OR CAST(t.TransactionDate AS DATE) >= @fromDate)
+                       AND (@toDate IS NULL OR CAST(t.TransactionDate AS DATE) <= @toDate)
+                       AND t.TransactionType = N'صرف' THEN t.Amount ELSE 0 END), 0) AS TotalOut,
+      ISNULL(SUM(CASE WHEN (@fromDate IS NULL OR CAST(t.TransactionDate AS DATE) >= @fromDate)
+                       AND (@toDate IS NULL OR CAST(t.TransactionDate AS DATE) <= @toDate)
+                       AND t.TransactionType = N'قبض' THEN 1 ELSE 0 END), 0) AS InCount,
+      ISNULL(SUM(CASE WHEN (@fromDate IS NULL OR CAST(t.TransactionDate AS DATE) >= @fromDate)
+                       AND (@toDate IS NULL OR CAST(t.TransactionDate AS DATE) <= @toDate)
+                       AND t.TransactionType = N'صرف' THEN 1 ELSE 0 END), 0) AS OutCount,
+      ISNULL(SUM(CASE WHEN t.TransactionType = N'قبض' THEN t.Amount
+                      WHEN t.TransactionType = N'صرف' THEN -t.Amount ELSE 0 END), 0) AS NetAllTime
+    FROM CashBoxes c
+    LEFT JOIN CashboxTransactions t ON t.CashBoxID = c.CashBoxID
+    ${boxFilter}
+    GROUP BY c.CashBoxID, c.CashBoxName, c.CashBoxKind, c.Color, c.IsActive, c.OpeningBalance
+    ORDER BY c.IsActive DESC, c.CashBoxName
   `);
-  return result.recordset[0];
+  const boxes = result.recordset.map((row) => {
+    const stored = Number(row.StoredOpeningBalance || 0);
+    const periodOpening = stored + Number(row.NetBeforePeriod || 0);
+    const totalIn = Number(row.TotalIn || 0);
+    const totalOut = Number(row.TotalOut || 0);
+    return {
+      CashBoxId: row.CashBoxID,
+      CashBoxID: row.CashBoxID,
+      CashBoxName: row.CashBoxName,
+      CashBoxKind: row.CashBoxKind,
+      Color: row.Color,
+      IsActive: Boolean(row.IsActive),
+      StoredOpeningBalance: stored,
+      OpeningBalance: stored,
+      PeriodOpeningBalance: periodOpening,
+      TotalIn: totalIn,
+      TotalOut: totalOut,
+      InCount: Number(row.InCount || 0),
+      OutCount: Number(row.OutCount || 0),
+      ClosingBalance: periodOpening + totalIn - totalOut,
+      CurrentBalance: stored + Number(row.NetAllTime || 0),
+    };
+  });
+  const sum = (key) => Math.round(boxes.reduce((acc, b) => acc + Number(b[key] || 0), 0) * 100) / 100;
+  return {
+    // حقول الإرث للمستهلكين القدامى (إجماليات الفترة على النطاق المطلوب)
+    TotalIn: sum('TotalIn'),
+    TotalOut: sum('TotalOut'),
+    Balance: sum('ClosingBalance'),
+    StoredOpeningBalance: sum('StoredOpeningBalance'),
+    PeriodOpeningBalance: sum('PeriodOpeningBalance'),
+    ClosingBalance: sum('ClosingBalance'),
+    CurrentBalance: sum('CurrentBalance'),
+    From: fromDate,
+    To: toDate,
+    Boxes: boxes,
+    boxes,
+  };
 }
 
-// إنشاء خزينة جديدة
+// ═══════════════════════════════════════════════════════════
+// إدارة الخزن — مرآة CashBoxService.SaveCashBoxAsync:112
+// (الأصناف من DTOS/CashBoxDto.cs CashBoxKinds)
+// ═══════════════════════════════════════════════════════════
+const CASHBOX_KINDS = {
+  Cash: { icon: 'AttachMoney', color: '#10b981' },
+  Bank: { icon: 'AccountBalance', color: '#3b82f6' },
+  Wallet: { icon: 'PhoneAndroid', color: '#f59e0b' },
+  Other: { icon: 'Wallet', color: '#94a3b8' },
+};
+
+function cashboxFields(data, current = null) {
+  const kind = String(data.cashBoxKind ?? data.CashBoxKind ?? current?.CashBoxKind ?? 'Cash');
+  const safeKind = CASHBOX_KINDS[kind] ? kind : 'Other';
+  return {
+    cashBoxName: String(data.cashBoxName ?? data.CashBoxName ?? current?.CashBoxName ?? '').trim(),
+    description: data.description ?? data.Description ?? current?.Description ?? null,
+    // ⚠️ انحراف موثّق (Item 15): BranchID يُحفظ ويُتحقق منه عند إرساله،
+    // لكنه ليس إلزاميًا خادميًا هنا خلافًا لبلازور («الفرع مطلوب»).
+    branchId: data.branchId ?? data.BranchID ?? data.BranchId ?? current?.BranchID ?? null,
+    cashBoxKind: safeKind,
+    icon: data.icon ?? data.Icon ?? current?.Icon ?? CASHBOX_KINDS[safeKind].icon,
+    color: data.color ?? data.Color ?? current?.Color ?? CASHBOX_KINDS[safeKind].color,
+    openingBalance: Number(data.openingBalance ?? data.OpeningBalance ?? current?.OpeningBalance ?? 0) || 0,
+    openingDate: data.openingDate ?? data.OpeningDate ?? current?.OpeningDate ?? null,
+    isActive: data.isActive ?? data.IsActive ?? current?.IsActive ?? true,
+    isDefault: Boolean(data.isDefault ?? data.IsDefault ?? current?.IsDefault ?? false),
+  };
+}
+
+async function assertBranchActive(transaction, branchId) {
+  if (branchId == null || branchId === '') return null;
+  const parsed = Number(branchId);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw Object.assign(new Error('الفرع المحدد غير موجود أو غير نشط'), { statusCode: 400 });
+  }
+  const result = await transaction.request()
+    .input('branchId', sql.Int, parsed)
+    .query(`SELECT BranchID FROM Branches WHERE BranchID = @branchId AND ISNULL(IsActive, 0) = 1`);
+  if (!result.recordset[0]) {
+    throw Object.assign(new Error('الفرع المحدد غير موجود أو غير نشط'), { statusCode: 400 });
+  }
+  return parsed;
+}
+
+// إنشاء خزينة جديدة — الرصيد الافتتاحي يُخزّن على الخزينة فقط، بلا حركة
+// (SaveCashBoxAsync:112 — مصدر حقيقة واحد حتى لا يُحتسب مرتين)
 async function createCashbox(data) {
+  const fields = cashboxFields(data);
+  if (!fields.cashBoxName) {
+    throw Object.assign(new Error('اسم الخزينة مطلوب'), { statusCode: 400 });
+  }
   const pool = await connectDB();
-  const result = await pool.request()
-    .input('cashBoxName', sql.NVarChar(100), data.cashBoxName)
-    .input('description', sql.NVarChar(255), data.description || null)
-    .input('createdBy', sql.NVarChar(50), data.createdBy)
-    .query(`
-      INSERT INTO CashBoxes (CashBoxName, Description, CreatedBy, CreatedAt)
-      OUTPUT INSERTED.CashBoxID
-      VALUES (@cashBoxName, @description, @createdBy, GETDATE())
-    `);
-  return result.recordset[0].CashBoxID;
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
+  try {
+    const branchId = await assertBranchActive(transaction, fields.branchId);
+    if (fields.isDefault) {
+      await transaction.request().query(`UPDATE CashBoxes SET IsDefault = 0 WHERE ISNULL(IsDefault, 0) = 1`);
+    }
+    const result = await transaction.request()
+      .input('cashBoxName', sql.NVarChar(100), fields.cashBoxName)
+      .input('description', sql.NVarChar(255), fields.description)
+      .input('branchId', sql.Int, branchId)
+      .input('cashBoxKind', sql.NVarChar(50), fields.cashBoxKind)
+      .input('icon', sql.NVarChar(100), fields.icon)
+      .input('color', sql.NVarChar(50), fields.color)
+      .input('openingBalance', sql.Decimal(18, 2), fields.openingBalance)
+      .input('openingDate', sql.DateTime, fields.openingDate ? new Date(fields.openingDate) : new Date())
+      .input('isActive', sql.Bit, fields.isActive ? 1 : 0)
+      .input('isDefault', sql.Bit, fields.isDefault ? 1 : 0)
+      .input('createdBy', sql.NVarChar(50), data.createdBy || data.username || null)
+      .query(`
+        INSERT INTO CashBoxes (
+          CashBoxName, Description, BranchID, CashBoxKind, Icon, Color,
+          OpeningBalance, OpeningDate, IsActive, IsDefault, CreatedBy, CreatedAt
+        )
+        OUTPUT INSERTED.CashBoxID
+        VALUES (
+          @cashBoxName, @description, @branchId, @cashBoxKind, @icon, @color,
+          @openingBalance, @openingDate, @isActive, @isDefault, @createdBy, GETDATE()
+        )
+      `);
+    await transaction.commit();
+    return result.recordset[0].CashBoxID;
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) {}
+    throw err;
+  }
 }
 
-// تعديل خزينة
+// تعديل خزينة — تغيير الفرع ممنوع عند وجود حركات (CashBoxService.cs:145-154)
 async function updateCashbox(id, data) {
+  const parsedId = Number(id);
+  if (!Number.isInteger(parsedId) || parsedId <= 0) {
+    throw Object.assign(new Error('معرّف الخزينة غير صالح'), { statusCode: 400 });
+  }
   const pool = await connectDB();
-  await pool.request()
-    .input('id', sql.Int, id)
-    .input('cashBoxName', sql.NVarChar(100), data.cashBoxName)
-    .input('description', sql.NVarChar(255), data.description || null)
-    .input('lastUpdatedBy', sql.NVarChar(50), data.lastUpdatedBy)
-    .query(`
-      UPDATE CashBoxes SET
-        CashBoxName = @cashBoxName, Description = @description,
-        LastUpdatedBy = @lastUpdatedBy, LastUpdatedAt = GETDATE()
-      WHERE CashBoxID = @id
-    `);
-  return true;
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
+  try {
+    const currentResult = await transaction.request()
+      .input('id', sql.Int, parsedId)
+      .query(`SELECT * FROM CashBoxes WITH (UPDLOCK, HOLDLOCK) WHERE CashBoxID = @id`);
+    const current = currentResult.recordset[0];
+    if (!current) throw Object.assign(new Error('الخزينة غير موجودة'), { statusCode: 404 });
+    const fields = cashboxFields(data, current);
+    if (!fields.cashBoxName) {
+      throw Object.assign(new Error('اسم الخزينة مطلوب'), { statusCode: 400 });
+    }
+    const branchId = await assertBranchActive(transaction, fields.branchId);
+    if (branchId != null && current.BranchID != null && Number(current.BranchID) !== branchId) {
+      const movements = await transaction.request()
+        .input('id', sql.Int, parsedId)
+        .query(`SELECT TOP 1 1 AS Has FROM CashboxTransactions WHERE CashBoxID = @id`);
+      if (movements.recordset.length) {
+        throw Object.assign(new Error('لا يمكن تغيير فرع خزينة عليها حركات سابقة. أنشئ خزينة جديدة للفرع الصحيح.'), { statusCode: 409 });
+      }
+    }
+    if (fields.isDefault) {
+      await transaction.request()
+        .input('id', sql.Int, parsedId)
+        .query(`UPDATE CashBoxes SET IsDefault = 0 WHERE ISNULL(IsDefault, 0) = 1 AND CashBoxID <> @id`);
+    }
+    await transaction.request()
+      .input('id', sql.Int, parsedId)
+      .input('cashBoxName', sql.NVarChar(100), fields.cashBoxName)
+      .input('description', sql.NVarChar(255), fields.description)
+      .input('branchId', sql.Int, branchId)
+      .input('cashBoxKind', sql.NVarChar(50), fields.cashBoxKind)
+      .input('icon', sql.NVarChar(100), fields.icon)
+      .input('color', sql.NVarChar(50), fields.color)
+      .input('openingBalance', sql.Decimal(18, 2), fields.openingBalance)
+      .input('openingDate', sql.DateTime, fields.openingDate ? new Date(fields.openingDate) : null)
+      .input('isActive', sql.Bit, fields.isActive ? 1 : 0)
+      .input('isDefault', sql.Bit, fields.isDefault ? 1 : 0)
+      .input('lastUpdatedBy', sql.NVarChar(50), data.lastUpdatedBy || data.createdBy || data.username || null)
+      .query(`
+        UPDATE CashBoxes SET
+          CashBoxName = @cashBoxName, Description = @description,
+          BranchID = @branchId, CashBoxKind = @cashBoxKind,
+          Icon = @icon, Color = @color,
+          OpeningBalance = @openingBalance, OpeningDate = @openingDate,
+          IsActive = @isActive, IsDefault = @isDefault,
+          LastUpdatedBy = @lastUpdatedBy, LastUpdatedAt = GETDATE()
+        WHERE CashBoxID = @id
+      `);
+    await transaction.commit();
+    return true;
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) {}
+    throw err;
+  }
 }
 
-// إضافة حركة خزينة
+// ═══════════════════════════════════════════════════════════
+// الحركات اليدوية — مرآة CashBoxService.CreateManualOperationAsync:691
+// والأنواع الستة من DTOS/CashBoxDto.cs:218 (ManualOperationTypes)
+// ═══════════════════════════════════════════════════════════
+const MANUAL_OPERATION_LABELS = {
+  ManualReceipt: 'سند قبض يدوي',
+  ManualPayment: 'سند صرف يدوي',
+  LoanIn: 'قرض دخل من شخص',
+  LoanRepayment: 'تسديد قرض لشخص',
+  Transfer: 'تحويل بين خزن',
+  OpeningBalance: 'رصيد افتتاحي',
+};
+
+function buildManualNote(title, recipient, notes) {
+  const parts = [title];
+  if (recipient && String(recipient).trim()) parts.push(`المستلم: ${String(recipient).trim()}`);
+  if (notes && String(notes).trim()) parts.push(String(notes).trim());
+  return parts.join(' - ');
+}
+
+async function insertManualTransaction(transaction, { cashBoxId, transactionType, referenceType, referenceId, amount, date, notes, createdBy }) {
+  const result = await transaction.request()
+    .input('cashBoxId', sql.Int, cashBoxId)
+    .input('referenceId', sql.Int, referenceId ?? null)
+    .input('referenceType', sql.NVarChar(50), referenceType)
+    .input('transactionType', sql.NVarChar(20), transactionType)
+    .input('amount', sql.Decimal(18, 2), amount)
+    .input('transactionDate', sql.DateTime, date)
+    .input('notes', sql.NVarChar(sql.MAX), notes || null)
+    .input('createdBy', sql.NVarChar(50), createdBy || null)
+    .query(`
+      INSERT INTO CashboxTransactions (
+        CashBoxID, ReferenceID, ReferenceType, TransactionType,
+        Amount, TransactionDate, Notes, CreatedBy, CreatedAt
+      )
+      OUTPUT INSERTED.CashboxTransactionID
+      VALUES (
+        @cashBoxId, @referenceId, @referenceType, @transactionType,
+        @amount, @transactionDate, @notes, @createdBy, GETDATE()
+      )
+    `);
+  return result.recordset[0].CashboxTransactionID;
+}
+
+// الرصيد بالتعريف الموحد داخل معاملة: OpeningBalance + قبض − صرف
+async function cashboxBalanceInTx(transaction, cashBoxId) {
+  const result = await transaction.request()
+    .input('cashBoxId', sql.Int, cashBoxId)
+    .query(`
+      SELECT ISNULL((SELECT ISNULL(OpeningBalance, 0) FROM CashBoxes WHERE CashBoxID = @cashBoxId), 0)
+        + ISNULL(SUM(CASE WHEN TransactionType = N'قبض' THEN Amount
+                          WHEN TransactionType = N'صرف' THEN -Amount ELSE 0 END), 0) AS Balance
+      FROM CashboxTransactions WHERE CashBoxID = @cashBoxId
+    `);
+  return Number(result.recordset[0]?.Balance || 0);
+}
+
+async function assertSufficientBalance(transaction, cashBoxId, amount) {
+  const balance = await cashboxBalanceInTx(transaction, cashBoxId);
+  if (balance < amount) {
+    throw Object.assign(new Error(`الرصيد غير كافي. المتاح: ${balance.toFixed(2)}`), { statusCode: 400 });
+  }
+}
+
+async function createManualOperation(data) {
+  const operationType = String(data.operationType || '');
+  if (!MANUAL_OPERATION_LABELS[operationType]) {
+    throw Object.assign(new Error('نوع العملية غير صحيح'), { statusCode: 400 });
+  }
+  const amount = Number(data.amount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw Object.assign(new Error('المبلغ يجب أن يكون أكبر من صفر'), { statusCode: 400 });
+  }
+  const cashBoxId = Number(data.cashBoxId);
+  if (!Number.isInteger(cashBoxId) || cashBoxId <= 0) {
+    throw Object.assign(new Error('الخزينة مطلوبة'), { statusCode: 400 });
+  }
+  const date = data.transactionDate ? new Date(data.transactionDate) : new Date();
+  if (Number.isNaN(date.getTime())) {
+    throw Object.assign(new Error('تاريخ الحركة غير صحيح'), { statusCode: 400 });
+  }
+  const createdBy = data.createdBy || data.username || null;
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
+  try {
+    let id = null;
+    let transferOutId = null;
+    let transferInId = null;
+    const base = { cashBoxId, amount, date, createdBy };
+    switch (operationType) {
+      case 'ManualReceipt':
+        id = await insertManualTransaction(transaction, {
+          ...base, transactionType: 'قبض', referenceType: 'ManualReceipt', referenceId: null,
+          notes: buildManualNote('سند قبض يدوي', data.recipient, data.notes),
+        });
+        break;
+      case 'ManualPayment':
+        await assertSufficientBalance(transaction, cashBoxId, amount);
+        id = await insertManualTransaction(transaction, {
+          ...base, transactionType: 'صرف', referenceType: 'ManualPayment', referenceId: null,
+          notes: buildManualNote('سند صرف يدوي', data.recipient, data.notes),
+        });
+        break;
+      case 'LoanIn': {
+        const personalAccountId = Number(data.personalAccountId);
+        if (!Number.isInteger(personalAccountId) || personalAccountId <= 0) {
+          throw Object.assign(new Error('يرجى اختيار الحساب الشخصي'), { statusCode: 400 });
+        }
+        id = await insertManualTransaction(transaction, {
+          ...base, transactionType: 'قبض', referenceType: 'Loan', referenceId: personalAccountId,
+          notes: buildManualNote('قرض دخل', null, data.notes),
+        });
+        break;
+      }
+      case 'LoanRepayment': {
+        const personalAccountId = Number(data.personalAccountId);
+        if (!Number.isInteger(personalAccountId) || personalAccountId <= 0) {
+          throw Object.assign(new Error('يرجى اختيار الحساب الشخصي'), { statusCode: 400 });
+        }
+        await assertSufficientBalance(transaction, cashBoxId, amount);
+        id = await insertManualTransaction(transaction, {
+          ...base, transactionType: 'صرف', referenceType: 'Loan', referenceId: personalAccountId,
+          notes: buildManualNote('تسديد قرض', null, data.notes),
+        });
+        break;
+      }
+      case 'Transfer': {
+        const toCashBoxId = Number(data.toCashBoxId);
+        if (!Number.isInteger(toCashBoxId) || toCashBoxId <= 0) {
+          throw Object.assign(new Error('يرجى اختيار الخزينة المستقبلة'), { statusCode: 400 });
+        }
+        if (toCashBoxId === cashBoxId) {
+          throw Object.assign(new Error('لا يمكن التحويل لنفس الخزينة'), { statusCode: 400 });
+        }
+        await assertSufficientBalance(transaction, cashBoxId, amount);
+        // زوج مرتبط: الصادر مرجعه الخزينة المستقبلة والوارد مرجعه المصدر
+        transferOutId = await insertManualTransaction(transaction, {
+          ...base, transactionType: 'صرف', referenceType: 'TransferOut', referenceId: toCashBoxId,
+          notes: buildManualNote('تحويل صادر', null, data.notes),
+        });
+        transferInId = await insertManualTransaction(transaction, {
+          ...base, cashBoxId: toCashBoxId, transactionType: 'قبض', referenceType: 'TransferIn', referenceId: cashBoxId,
+          notes: buildManualNote('تحويل وارد', null, data.notes),
+        });
+        id = transferInId;
+        break;
+      }
+      case 'OpeningBalance': {
+        // يُضاف لحقل الرصيد الافتتاحي نفسه (بأدنى تاريخ) — بلا أي حركة
+        const boxResult = await transaction.request()
+          .input('cashBoxId', sql.Int, cashBoxId)
+          .query(`SELECT OpeningBalance, OpeningDate FROM CashBoxes WITH (UPDLOCK, HOLDLOCK) WHERE CashBoxID = @cashBoxId`);
+        const box = boxResult.recordset[0];
+        if (!box) throw Object.assign(new Error('الخزينة غير موجودة'), { statusCode: 404 });
+        const newOpeningDate = !box.OpeningDate || date < new Date(box.OpeningDate) ? date : box.OpeningDate;
+        await transaction.request()
+          .input('cashBoxId', sql.Int, cashBoxId)
+          .input('amount', sql.Decimal(18, 2), amount)
+          .input('openingDate', sql.DateTime, newOpeningDate)
+          .query(`
+            UPDATE CashBoxes
+            SET OpeningBalance = ISNULL(OpeningBalance, 0) + @amount, OpeningDate = @openingDate
+            WHERE CashBoxID = @cashBoxId
+          `);
+        id = cashBoxId;
+        break;
+      }
+      default:
+        throw Object.assign(new Error('نوع العملية غير صحيح'), { statusCode: 400 });
+    }
+    await transaction.commit();
+    return {
+      id,
+      transactionId: id,
+      transferOutId,
+      transferInId,
+      operationType,
+      message: `تم تسجيل ${MANUAL_OPERATION_LABELS[operationType]} بنجاح`,
+    };
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) {}
+    throw err;
+  }
+}
+
+// إضافة حركة خزينة — مسار الإرث: بلا operationType تُشتق العملية اليدوية
+// القياسية من اتجاه الحركة، وتُطبَّع أنواع المرجع 'Manual'/الغائبة إلى
+// ManualReceipt/ManualPayment، ويُحترم التاريخ المختار.
 async function createTransaction(data) {
+  if (data.operationType) {
+    return createManualOperation(data);
+  }
+  const derivedType = data.transactionType === 'صرف' ? 'ManualPayment' : 'ManualReceipt';
+  const referenceType = !data.referenceType || data.referenceType === 'Manual'
+    ? derivedType
+    : data.referenceType;
   const pool = await connectDB();
   const result = await pool.request()
     .input('cashBoxId', sql.Int, data.cashBoxId)
     .input('paymentId', sql.Int, data.paymentId || null)
     .input('referenceId', sql.Int, data.referenceId || null)
-    .input('referenceType', sql.NVarChar(20), data.referenceType || null)
+    .input('referenceType', sql.NVarChar(50), referenceType)
     .input('transactionType', sql.NVarChar(20), data.transactionType)
     .input('amount', sql.Decimal(18, 2), data.amount)
+    .input('transactionDate', sql.DateTime, data.transactionDate ? new Date(data.transactionDate) : new Date())
     .input('notes', sql.NVarChar(sql.MAX), data.notes || null)
-    .input('createdBy', sql.NVarChar(50), data.createdBy)
+    .input('createdBy', sql.NVarChar(50), data.createdBy || data.username || null)
     .query(`
       INSERT INTO CashboxTransactions (
         CashBoxID, PaymentID, ReferenceID, ReferenceType,
@@ -458,72 +836,28 @@ async function createTransaction(data) {
       OUTPUT INSERTED.CashboxTransactionID
       VALUES (
         @cashBoxId, @paymentId, @referenceId, @referenceType,
-        @transactionType, @amount, GETDATE(), @notes,
+        @transactionType, @amount, @transactionDate, @notes,
         @createdBy, GETDATE()
       )
     `);
   return result.recordset[0].CashboxTransactionID;
 }
 
-// تحويل بين خزينتين
+// تحويل بين خزينتين — يفوّض لعملية Transfer اليدوية (زوج TransferOut/TransferIn)
 async function createTransfer(data) {
-  const pool = await connectDB();
-  const transaction = pool.transaction();
-  
-  try {
-    await transaction.begin();
-    
-    // صرف من الخزنة المصدر
-    const result1 = await transaction.request()
-      .input('cashBoxIdFrom', sql.Int, data.cashBoxIdFrom)
-      .input('referenceType', sql.NVarChar(20), 'Transfer')
-      .input('transactionType', sql.NVarChar(20), 'صرف')
-      .input('amount', sql.Decimal(18, 2), data.amount)
-      .input('notesFrom', sql.NVarChar(sql.MAX), data.notes + ' (تحويل إلى خزنة: ' + data.cashBoxToName + ')')
-      .input('createdBy', sql.NVarChar(50), data.createdBy)
-      .query(`
-        INSERT INTO CashboxTransactions (
-          CashBoxID, ReferenceType, TransactionType, Amount, 
-          TransactionDate, Notes, CreatedBy, CreatedAt
-        )
-        OUTPUT INSERTED.CashboxTransactionID
-        VALUES (
-          @cashBoxIdFrom, @referenceType, @transactionType, @amount,
-          GETDATE(), @notesFrom, @createdBy, GETDATE()
-        )
-      `);
-    
-    // قبض في الخزنة المستقبلة
-    const result2 = await transaction.request()
-      .input('cashBoxIdTo', sql.Int, data.cashBoxIdTo)
-      .input('referenceType', sql.NVarChar(20), 'Transfer')
-      .input('transactionType', sql.NVarChar(20), 'قبض')
-      .input('amount', sql.Decimal(18, 2), data.amount)
-      .input('notesTo', sql.NVarChar(sql.MAX), data.notes + ' (تحويل من خزنة: ' + data.cashBoxFromName + ')')
-      .input('createdBy', sql.NVarChar(50), data.createdBy)
-      .query(`
-        INSERT INTO CashboxTransactions (
-          CashBoxID, ReferenceType, TransactionType, Amount,
-          TransactionDate, Notes, CreatedBy, CreatedAt
-        )
-        OUTPUT INSERTED.CashboxTransactionID
-        VALUES (
-          @cashBoxIdTo, @referenceType, @transactionType, @amount,
-          GETDATE(), @notesTo, @createdBy, GETDATE()
-        )
-      `);
-    
-    await transaction.commit();
-    
-    return {
-      transactionIdFrom: result1.recordset[0].CashboxTransactionID,
-      transactionIdTo: result2.recordset[0].CashboxTransactionID
-    };
-    
-  } catch (err) {
-    await transaction.rollback();
-    throw err;
-  }
+  const result = await createManualOperation({
+    operationType: 'Transfer',
+    cashBoxId: data.cashBoxIdFrom,
+    toCashBoxId: data.cashBoxIdTo,
+    amount: data.amount,
+    notes: data.notes,
+    transactionDate: data.transactionDate || data.date,
+    createdBy: data.createdBy || data.username,
+  });
+  return {
+    transactionIdFrom: result.transferOutId,
+    transactionIdTo: result.transferInId,
+  };
 }
 
 // ══════════════════════════════════════════
@@ -851,6 +1185,7 @@ module.exports = {
   createCashbox,
   updateCashbox,
   createTransaction,
+  createManualOperation,
   createTransfer,
    getDashboardStats,
   getChartData,

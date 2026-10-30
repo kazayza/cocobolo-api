@@ -25,6 +25,20 @@ try {
   throw err;
 }
 
+// ═══════════════════════════════════════════════════════════
+// إبطال الجلسات عند تغيير كلمة المرور (البند 49) — بلا أي مخطط جديد:
+// جدول Users لا يحمل TokenVersion ولا PasswordChangedAt
+// (Models/User.cs)، فالبصمة هي SHA-256 للمادة المخزنة نفسها
+// (HashedPassword أو Password القديم عند غياب الهاش). تُضمَّن في
+// التوكن عند الإصدار (claim: pwd) وتُقارن عند كل مصادقة؛ أي إعادة
+// كتابة للهاش — من هذا الـ API أو من بلازور/الإدارة — تُبطل كل
+// الجلسات القائمة تلقائيًا بـ 401 SESSION_REVOKED.
+// ═══════════════════════════════════════════════════════════
+function passwordFingerprint(user) {
+  const material = user?.HashedPassword || user?.Password || '';
+  return crypto.createHash('sha256').update(String(material)).digest('hex');
+}
+
 function issueAccessToken(user, { rememberMe = false } = {}) {
   const expiresIn = rememberMe ? '30d' : '12h';
   return jwt.sign(
@@ -33,6 +47,7 @@ function issueAccessToken(user, { rememberMe = false } = {}) {
       username: user.Username,
       role: user.Role || '',
       employeeId: user.employeeID || null,
+      pwd: passwordFingerprint(user),
       type: 'access',
     },
     getJwtSecret(),
@@ -56,13 +71,20 @@ async function loadAuthenticatedUser(userId) {
   const userResult = await pool.request()
     .input('userId', sql.Int, userId)
     .query(`
-      SELECT UserID, Username, FullName, Email, employeeID, Role, IsActive
+      SELECT UserID, Username, FullName, Email, employeeID, Role, IsActive,
+             Password, HashedPassword
       FROM Users
       WHERE UserID = @userId AND IsActive = 1
     `);
 
   const user = userResult.recordset[0];
   if (!user) return null;
+
+  // بصمة كلمة المرور الحالية لمقارنة ادعاء التوكن، ثم تُجرَّد حقول
+  // كلمة المرور من صف المستخدم قبل إرجاعه لأي مستهلك.
+  const pwdFingerprint = passwordFingerprint(user);
+  delete user.Password;
+  delete user.HashedPassword;
 
   const permissionsResult = await pool.request()
     .input('userId', sql.Int, userId)
@@ -103,6 +125,7 @@ async function loadAuthenticatedUser(userId) {
     email: user.Email,
     employeeId: user.employeeID,
     role: user.Role || '',
+    pwdFingerprint,
     permissions,
     claims,
     user,
@@ -140,6 +163,16 @@ async function authenticate(req, res, next) {
     const auth = await loadAuthenticatedUser(userId);
     if (!auth) {
       return res.status(401).json({ success: false, message: 'المستخدم غير نشط أو غير موجود.' });
+    }
+
+    // إبطال الجلسة عند تغيّر بصمة كلمة المرور منذ إصدار التوكن (البند 49).
+    // توكن بلا ادعاء pwd (صدر قبل هذه الآلية) لا يمكن التحقق منه فيُرفض أيضًا.
+    if (!decoded.pwd || decoded.pwd !== auth.pwdFingerprint) {
+      return res.status(401).json({
+        success: false,
+        code: 'SESSION_REVOKED',
+        message: 'انتهت الجلسة بسبب تغيير كلمة المرور. سجل الدخول مرة أخرى.',
+      });
     }
 
     req.auth = auth;
@@ -224,6 +257,7 @@ module.exports = {
   serviceTokenOrAuthenticate,
   requirePolicy,
   issueAccessToken,
+  passwordFingerprint,
   loadAuthenticatedUser,
   extractBearerToken,
 };

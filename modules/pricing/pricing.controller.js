@@ -32,11 +32,12 @@ async function getMarginsHistory(req, res) {
 // تحديث النسب (Admin / AccountManager فقط)
 async function updateMargins(req, res) {
   try {
-    const { premiumMargin, eliteMargin, reason, createdBy, clientTime } = req.body;
+    const { cClassMargin, premiumMargin, eliteMargin, reason, createdBy, clientTime } = req.body;
 
-    // التحقق من البيانات
-    if (!premiumMargin || !eliteMargin) {
-      return errorResponse(res, 'نسبة Premium و Elite مطلوبتين', 400);
+    // التحقق من البيانات — النسب الثلاث كلها أكبر من صفر
+    // (PricingMargins.razor:692 «يجب أن تكون جميع النسب أكبر من صفر»)
+    if (!(Number(cClassMargin) > 0) || !(Number(premiumMargin) > 0) || !(Number(eliteMargin) > 0)) {
+      return errorResponse(res, 'يجب أن تكون جميع النسب أكبر من صفر', 400);
     }
     if (!createdBy) {
       return errorResponse(res, 'اسم المستخدم مطلوب', 400);
@@ -44,14 +45,14 @@ async function updateMargins(req, res) {
 
     // تحديث النسب
     const marginId = await pricingQueries.updateMargins(
-      premiumMargin, eliteMargin, reason, createdBy, clientTime
+      cClassMargin, premiumMargin, eliteMargin, reason, createdBy, clientTime
     );
 
     // 🔔 إشعار لـ Factory + SalesManager
     try {
       await notificationsQueries.createNotificationSmart({
         title: 'تحديث نسب الربح',
-        message: `تم تحديث نسب الربح: Premium ${premiumMargin}% | Elite ${eliteMargin}%`,
+        message: `تم تحديث نسب الربح: القياسية ${cClassMargin}% | Premium ${premiumMargin}% | Elite ${eliteMargin}%`,
         createdBy: createdBy,
         relatedId: marginId,
         formName: 'frm_PricingMargins'
@@ -59,7 +60,7 @@ async function updateMargins(req, res) {
 
       await notificationsQueries.createNotificationSmart({
         title: 'تحديث نسب الربح',
-        message: `تم تحديث نسب الربح: Premium ${premiumMargin}% | Elite ${eliteMargin}%`,
+        message: `تم تحديث نسب الربح: القياسية ${cClassMargin}% | Premium ${premiumMargin}% | Elite ${eliteMargin}%`,
         createdBy: createdBy,
         relatedId: marginId,
         formName: 'frm_PricingMargins'

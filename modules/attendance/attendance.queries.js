@@ -250,26 +250,180 @@ async function getDailyExemptions(biometricCode, startDate, endDate) {
   return result.recordset;
 }
 
+// تصنيف سبب الإعفاء بالكلمات المفتاحية — مرآة ExemptionReasonCodes
+// (DTOS/AttendanceDtos.cs:51-104): مأمورية وانصراف مبكر بلا خصم افتراضيًا،
+// وما عداهما (إذن) يُخصم افتراضيًا.
+function classifyExemptionReason(reasonCode) {
+  const text = String(reasonCode || '').trim();
+  const isErrand = text.includes('مأمورية') || text.includes('مهمة رسمية')
+    || text.includes('مهمة') || text.includes('عمل');
+  const isEarlyLeave = text.includes('انصراف مبكر') || text.includes('خروج مبكر');
+  const isPermission = text.includes('إذن') || text.includes('اذن');
+  return { isErrand, isEarlyLeave, isPermission };
+}
+
+function defaultIsDeducted(reasonCode) {
+  const { isErrand, isEarlyLeave } = classifyExemptionReason(reasonCode);
+  if (isErrand) return false;
+  if (isEarlyLeave) return false;
+  return true;
+}
+
+// حالة الإعفاء مع التوافق للصفوف القديمة — مرآة
+// ExemptionStatus.InferStatus (DTOS/AttendanceDtos.cs:179-185)
+function inferExemptionStatus(row) {
+  const status = row?.Status;
+  if (status && String(status).trim() !== '' && status !== 'Approved') return status;
+  return row?.ApprovedBy ? 'Approved' : 'Pending';
+}
+
+// إنشاء إعفاء — الحالة والمعتمِد يقررهما المتحكم من دور التوكن؛
+// أي approvedBy وارد من العميل يُتجاهل تمامًا (كان اعتمادًا ذاتيًا).
 async function createExemption(data) {
   const pool = await connectDB();
+  const isDeducted = data.isDeducted != null ? data.isDeducted : defaultIsDeducted(data.reasonCode);
+  const isFullDay = data.isFullDay !== false;
   const result = await pool.request()
     .input('bioEmployeeId', sql.Int, data.bioEmployeeId)
+    .input('employeeId', sql.Int, data.employeeId || null)
     .input('exemptionDate', sql.DateTime, data.exemptionDate)
-    .input('reasonCode', sql.VarChar(20), data.reasonCode)
-    .input('description', sql.Text, data.description || null)
-    .input('approvedBy', sql.VarChar(100), data.approvedBy)
+    .input('reasonCode', sql.NVarChar(100), data.reasonCode)
+    .input('description', sql.NVarChar(sql.MAX), data.description || null)
+    .input('isFullDay', sql.Bit, isFullDay)
+    .input('hours', sql.Decimal(5, 2), isFullDay ? null : (data.hours || null))
+    .input('isDeducted', sql.Bit, isDeducted)
+    .input('notes', sql.NVarChar(500), data.notes || null)
+    .input('createdBy', sql.NVarChar(100), data.createdBy || null)
+    .input('status', sql.NVarChar(20), data.status)
+    .input('approvedBy', sql.NVarChar(100), data.approvedBy || null)
     .query(`
       INSERT INTO DailyExemptions (
-        BioEmployeeID, ExemptionDate, ReasonCode,
-        Description, ApprovedBy, CreatedDate
+        BioEmployeeID, EmployeeID, ExemptionDate, ReasonCode,
+        Description, IsFullDay, Hours, IsDeducted, Notes,
+        CreatedBy, Status, ApprovedBy, CreatedDate
       )
       OUTPUT INSERTED.ExemptionID
       VALUES (
-        @bioEmployeeId, @exemptionDate, @reasonCode,
-        @description, @approvedBy, GETDATE()
+        @bioEmployeeId, @employeeId, @exemptionDate, @reasonCode,
+        @description, @isFullDay, @hours, @isDeducted, @notes,
+        @createdBy, @status, @approvedBy, GETDATE()
       )
     `);
-  return result.recordset[0].ExemptionID;
+  const exemptionId = result.recordset[0].ExemptionID;
+  return {
+    exemptionId,
+    exemption: {
+      ExemptionID: exemptionId,
+      BioEmployeeID: data.bioEmployeeId,
+      ExemptionDate: data.exemptionDate,
+      ReasonCode: data.reasonCode,
+      IsDeducted: isDeducted,
+      Status: data.status,
+    },
+  };
+}
+
+async function getExemptionById(id) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('id', sql.Int, id)
+    .query(`
+      SELECT ExemptionID, BioEmployeeID, EmployeeID, ExemptionDate, ReasonCode,
+             Description, IsFullDay, Hours, IsDeducted, Notes, CreatedBy,
+             Status, ApprovedBy, CreatedDate
+      FROM DailyExemptions
+      WHERE ExemptionID = @id
+    `);
+  return result.recordset[0] || null;
+}
+
+// قرار اعتماد/رفض — الرفض يلحق سببه بالملاحظات كما في
+// RejectExemptionAsync:2215 (تُحفظ داخل Notes بصيغة [سبب الرفض: ...])
+async function setExemptionDecision(id, { status, approvedBy, rejectionReason = null }) {
+  const pool = await connectDB();
+  await pool.request()
+    .input('id', sql.Int, id)
+    .input('status', sql.NVarChar(20), status)
+    .input('approvedBy', sql.NVarChar(100), approvedBy)
+    .input('rejectionReason', sql.NVarChar(500), rejectionReason || null)
+    .query(`
+      UPDATE DailyExemptions
+      SET Status = @status,
+          ApprovedBy = @approvedBy,
+          Notes = CASE
+            WHEN @rejectionReason IS NULL THEN Notes
+            WHEN Notes IS NULL OR LTRIM(RTRIM(Notes)) = '' THEN N'[سبب الرفض: ' + @rejectionReason + N']'
+            ELSE Notes + N' [سبب الرفض: ' + @rejectionReason + N']'
+          END
+      WHERE ExemptionID = @id
+    `);
+  return true;
+}
+
+// الانعكاس على الحضور — نسخة موثقة مبسطة من
+// CreateOrUpdateExemptionAttendanceAsync (AttendanceService.cs:2295):
+// التصنيف بالكلمات المفتاحية (مأمورية/إذن/انصراف مبكر)، وأوقات الوردية
+// السارية أو الافتراضي 08:00–17:00. سجل بصمة قائم بوقت دخول يُعدَّل
+// في حالته فقط؛ وما عداه يُبنى سجل الإعفاء كاملًا.
+async function applyExemptionAttendance(exemption) {
+  const pool = await connectDB();
+  const bioCode = exemption.BioEmployeeID;
+  const date = exemption.ExemptionDate;
+  const { isErrand, isEarlyLeave, isPermission } = classifyExemptionReason(exemption.ReasonCode);
+  const isDeducted = exemption.IsDeducted !== false && exemption.IsDeducted !== 0;
+
+  const status = isErrand ? 'مأمورية'
+    : isEarlyLeave ? 'خروج مبكر'
+    : 'إذن';
+  // إذن مخصوم = بلا أوقات حضور؛ وما عداه بأوقات الوردية كاملة
+  const withTimes = isErrand || isEarlyLeave || (isPermission && !isDeducted) || !isPermission;
+
+  await pool.request()
+    .input('bioCode', sql.Int, bioCode)
+    .input('logDate', sql.Date, date)
+    .input('status', sql.NVarChar(50), status)
+    .input('withTimes', sql.Bit, withTimes)
+    .query(`
+      DECLARE @ShiftStart TIME = '08:00';
+      DECLARE @ShiftEnd TIME = '17:00';
+
+      SELECT TOP 1 @ShiftStart = s.StartTime, @ShiftEnd = s.EndTime
+      FROM EmployeeShifts s
+      JOIN Employees e ON s.EmployeeID = e.EmployeeID
+      WHERE e.BioEmployeeID = @bioCode
+        AND CAST(@logDate AS DATE) >= CAST(s.EffectiveFrom AS DATE)
+        AND (s.EffectiveTo IS NULL OR CAST(@logDate AS DATE) <= CAST(s.EffectiveTo AS DATE))
+      ORDER BY s.EffectiveFrom DESC;
+
+      IF EXISTS (SELECT 1 FROM Attendance WHERE BiometricCode = @bioCode AND CAST(LogDate AS DATE) = CAST(@logDate AS DATE))
+      BEGIN
+        UPDATE Attendance
+        SET Status = CASE
+              WHEN TimeIn IS NOT NULL AND @status = N'إذن' AND @withTimes = 1 THEN N'حاضر'
+              ELSE @status
+            END,
+            LateMinutes = CASE WHEN TimeIn IS NOT NULL THEN LateMinutes ELSE 0 END,
+            EarlyLeaveMinutes = CASE WHEN @status = N'خروج مبكر' THEN 0 ELSE EarlyLeaveMinutes END,
+            PenaltyHours = CASE WHEN TimeIn IS NULL THEN 0 ELSE PenaltyHours END,
+            TimeIn = CASE WHEN TimeIn IS NULL AND @withTimes = 1 THEN @ShiftStart ELSE TimeIn END,
+            TimeOut = CASE WHEN TimeIn IS NULL AND @withTimes = 1 THEN @ShiftEnd ELSE TimeOut END,
+            TotalHours = CASE WHEN TimeIn IS NULL AND @withTimes = 1
+              THEN DATEDIFF(MINUTE, @ShiftStart, @ShiftEnd) / 60.0 ELSE TotalHours END
+        WHERE BiometricCode = @bioCode AND CAST(LogDate AS DATE) = CAST(@logDate AS DATE);
+      END
+      ELSE
+      BEGIN
+        INSERT INTO Attendance (BiometricCode, LogDate, TimeIn, TimeOut, Status, LateMinutes, EarlyLeaveMinutes, PenaltyHours, TotalHours)
+        VALUES (
+          @bioCode, CAST(@logDate AS DATE),
+          CASE WHEN @withTimes = 1 THEN @ShiftStart ELSE NULL END,
+          CASE WHEN @withTimes = 1 THEN @ShiftEnd ELSE NULL END,
+          @status, 0, 0, 0,
+          CASE WHEN @withTimes = 1 THEN DATEDIFF(MINUTE, @ShiftStart, @ShiftEnd) / 60.0 ELSE NULL END
+        );
+      END
+    `);
+  return true;
 }
 
 async function getCalendar(year, month) {
@@ -308,6 +462,7 @@ async function getAllExemptions(filters = {}) {
   let query = `
     SELECT
       x.ExemptionID, x.ExemptionDate, x.ReasonCode, x.Description,
+      x.Status, x.ApprovedBy, x.CreatedBy, x.Notes, x.IsFullDay, x.Hours, x.IsDeducted,
       e.FullName as EmployeeName, e.Department
     FROM DailyExemptions x
     JOIN Employees e ON x.BioEmployeeID = e.BioEmployeeID
@@ -464,6 +619,101 @@ async function getAdvancedReport(filters) {
   return result.recordset;
 }
 
+// ══════════════════════════════════════════════════════════════
+// الحضور اليدوي للمعفيين من البصمة — مرآة PayrollService:
+// GetManualAttendanceAsync:1394 (المعفي الدائم يظهر دائمًا؛ وغياب
+// السجل = 26 يوم حضور + ملاحظة «معفى من البصمة») و
+// SaveManualAttendanceAsync:1457 (إدراج أو تحديث بمفتاح الموظف+الشهر).
+// مفتاح الموظف في الاستجابة EmployeeID موحّدًا بين الخادم والتطبيق.
+// ══════════════════════════════════════════════════════════════
+async function getManualAttendance(month) {
+  const pool = await connectDB();
+  const employeesRes = await pool.request().query(`
+    SELECT EmployeeID, FullName, Department
+    FROM Employees
+    WHERE (Status = N'نشط' OR Status = 'Active') AND IsPermanentlyExempt = 1
+    ORDER BY Department, FullName
+  `);
+  const employees = employeesRes.recordset;
+  if (employees.length === 0) return [];
+
+  const existingRes = await pool.request()
+    .input('month', sql.NVarChar(10), month)
+    .query(`
+      SELECT ManualId, EmployeeId, AttendanceMonth, PresentDays, AbsenceDays, LateMinutes, Notes
+      FROM AttendanceManual
+      WHERE AttendanceMonth = @month
+    `);
+  const existing = new Map(existingRes.recordset.map((r) => [r.EmployeeId, r]));
+
+  return employees.map((emp) => {
+    const rec = existing.get(emp.EmployeeID);
+    if (rec) {
+      return {
+        ManualID: rec.ManualId,
+        EmployeeID: emp.EmployeeID,
+        EmployeeName: emp.FullName,
+        Department: emp.Department,
+        AttendanceMonth: month,
+        PresentDays: rec.PresentDays,
+        AbsenceDays: rec.AbsenceDays,
+        LateMinutes: rec.LateMinutes,
+        Notes: rec.Notes,
+      };
+    }
+    return {
+      ManualID: 0,
+      EmployeeID: emp.EmployeeID,
+      EmployeeName: emp.FullName,
+      Department: emp.Department,
+      AttendanceMonth: month,
+      PresentDays: 26,
+      AbsenceDays: 0,
+      LateMinutes: 0,
+      Notes: 'معفى من البصمة',
+    };
+  });
+}
+
+async function saveManualAttendance(dto, currentUserName) {
+  const pool = await connectDB();
+  // الحضور اليدوي للمعفيين فقط — غير المعفي يُرفض (مرآة قاعدة بلازور)
+  const empRes = await pool.request()
+    .input('employeeId', sql.Int, dto.employeeId)
+    .query(`SELECT EmployeeID, IsPermanentlyExempt FROM Employees WHERE EmployeeID = @employeeId`);
+  const employee = empRes.recordset[0];
+  if (!employee) {
+    const err = new Error('الموظف غير موجود.');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (employee.IsPermanentlyExempt !== true && employee.IsPermanentlyExempt !== 1) {
+    const err = new Error('الحضور اليدوي متاح للمعفيين من البصمة فقط.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  await pool.request()
+    .input('employeeId', sql.Int, dto.employeeId)
+    .input('month', sql.NVarChar(10), dto.attendanceMonth)
+    .input('presentDays', sql.Int, dto.presentDays || 0)
+    .input('absenceDays', sql.Int, dto.absenceDays || 0)
+    .input('lateMinutes', sql.Int, dto.lateMinutes || 0)
+    .input('notes', sql.NVarChar(500), dto.notes || null)
+    .input('createdBy', sql.NVarChar(100), currentUserName)
+    .query(`
+      IF EXISTS (SELECT 1 FROM AttendanceManual WHERE EmployeeId = @employeeId AND AttendanceMonth = @month)
+        UPDATE AttendanceManual
+        SET PresentDays = @presentDays, AbsenceDays = @absenceDays,
+            LateMinutes = @lateMinutes, Notes = @notes
+        WHERE EmployeeId = @employeeId AND AttendanceMonth = @month
+      ELSE
+        INSERT INTO AttendanceManual (EmployeeId, AttendanceMonth, PresentDays, AbsenceDays, LateMinutes, Notes, CreatedBy, CreatedAt)
+        VALUES (@employeeId, @month, @presentDays, @absenceDays, @lateMinutes, @notes, @createdBy, GETDATE())
+    `);
+  return true;
+}
+
 module.exports = {
   logBiometric,
   getTodayAttendance,
@@ -476,11 +726,18 @@ module.exports = {
   getBiometricLogs,
   getDailyExemptions,
   createExemption,
+  getExemptionById,
+  setExemptionDecision,
+  applyExemptionAttendance,
+  inferExemptionStatus,
+  classifyExemptionReason,
   getCalendar,
   getEmployeeNameByUserId,
   getAllExemptions,
   deleteExemption,
   getActiveLocations,
   getEmployeeStatistics,
-  getAdvancedReport
+  getAdvancedReport,
+  getManualAttendance,
+  saveManualAttendance
 };

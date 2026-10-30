@@ -30,9 +30,37 @@ router.get('/stats', canView, payrollController.getStats);
 // GET /api/payroll/employee/:employeeId
 router.get('/employee/:employeeId', canView, payrollController.getByEmployee);
 
+// ══════════════════════════════════════════════════════════════
+// دورة الرواتب الشهرية (البند 34) — قبل /:id حتى لا تُلتقط كمعرّف
+// ══════════════════════════════════════════════════════════════
+
+// حساب جماعي بلا حفظ
+// POST /api/payroll/calculate
+router.post('/calculate', canView, payrollController.calculate);
+
+// حفظ تشغيل رواتب للمراجعة (PendingReview)
+// POST /api/payroll/runs
+router.post('/runs', canMutate, payrollController.createRun);
+
+// قائمة تشغيلات الرواتب
+// GET /api/payroll/runs?month=YYYY-MM
+router.get('/runs', canView, payrollController.getRuns);
+
 // جلب مرتب بالـ ID
 // GET /api/payroll/:id
 router.get('/:id', canView, payrollController.getById);
+
+// اعتماد مرتب (حارس المراجع الأضيق داخل المحرك)
+// POST /api/payroll/:id/approve
+router.post('/:id/approve', canMutate, payrollController.approve);
+
+// رفض مرتب
+// POST /api/payroll/:id/reject
+router.post('/:id/reject', canMutate, payrollController.reject);
+
+// صرف مرتب من خزينة
+// POST /api/payroll/:id/pay
+router.post('/:id/pay', canMutate, payrollController.pay);
 
 // إنشاء مرتب جديد
 // POST /api/payroll

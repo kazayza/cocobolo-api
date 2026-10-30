@@ -57,6 +57,10 @@ router.post('/:id/components', canEdit, productsController.saveComponents);
 // GET /api/products/:id/pdf
 router.get('/:id/pdf', productsController.getProductPdf);
 
+// رفع ملف PDF المنتج (JSON { pdfBase64 } أو multipart pdf) — بسياسة التعديل
+// POST /api/products/:id/pdf
+router.post('/:id/pdf', canEdit, productsController.uploadProductPdf, productsController.uploadPdf);
+
 // حذف منتج - يتطلب جلسة وصلاحية حذف المنتجات
 // DELETE /api/products/:id
 router.delete(

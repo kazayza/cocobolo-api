@@ -57,13 +57,18 @@ async function login(req, res) {
 
     const permissionsResult = await authQueries.getUserPermissions(user.UserID);
     const { permissions, claims } = serializePermissions(permissionsResult);
-    const accessToken = issueAccessToken(user, { rememberMe: rememberMe === true });
+    // إعادة جلب المستخدم الطازج قبل الإصدار: تسجيل الدخول قد يكون رحّل
+    // كلمة مرور نصية إلى bcrypt للتو (migration-on-login)، وبصمة التوكن
+    // (pwd) يجب أن تُحسب من المادة المخزنة الحالية لا من الصف القديم.
+    const freshUser = await authQueries.getUserById(user.UserID);
+    const tokenUser = freshUser || user;
+    const accessToken = issueAccessToken(tokenUser, { rememberMe: rememberMe === true });
 
     return res.json({
       success: true,
       accessToken,
       tokenType: 'Bearer',
-      user: safeUserFrom(user, accessToken),
+      user: safeUserFrom(tokenUser, accessToken),
       permissions,
       claims,
     });
@@ -90,10 +95,10 @@ async function me(req, res) {
   }
 }
 
-// حفظ FCM Token - المستخدم يؤخذ من الجلسة الموثوقة عند توفرها
+// حفظ FCM Token — المستخدم يؤخذ من الجلسة الموثوقة فقط (التوكن إلزامي على المسار)
 async function saveFcmToken(req, res) {
   try {
-    const userId = req.auth?.userId || req.body.userId;
+    const userId = req.auth?.userId;
     const { fcmToken } = req.body;
 
     if (!userId || !fcmToken) {
@@ -176,7 +181,9 @@ async function changePassword(req, res) {
     const hashedNew = await bcrypt.hash(newPassword, 10);
     await authQueries.updateUserPassword(userId, hashedNew);
 
-    return res.json({ success: true, message: 'تم تغيير كلمة المرور بنجاح' });
+    // تغيير الهاش يغيّر البصمة: كل الجلسات القائمة — بما فيها هذه —
+    // تُبطل عند طلبها التالي (401 SESSION_REVOKED)، فيعيد العميل الدخول.
+    return res.json({ success: true, sessionRevoked: true, message: 'تم تغيير كلمة المرور بنجاح' });
 
   } catch (err) {
     console.error('Change Password Error:', err);

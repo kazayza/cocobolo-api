@@ -25,6 +25,9 @@ router.get('/summary', clientsController.getSummary);
 router.get('/search', clientsController.search);
 router.get('/list', clientsController.getList);
 router.get('/referral-sources', clientsController.getReferralSources);
+router.get('/party-types', clientsController.getPartyTypes);
+router.get('/sales-stages', clientsController.getSalesStages);
+router.get('/contact-sources', clientsController.getContactSources);
 
 // الـ Route الرئيسي
 router.get('/', clientsController.getAll);

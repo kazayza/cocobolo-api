@@ -19,8 +19,23 @@ function capabilities(auth) {
     canView: policy.jobOrders.canView(auth),
     canSeeAmounts: policy.jobOrders.canSeeAmounts(auth),
     canEditDueDate: policy.jobOrders.canEditDueDate(auth),
+    canSeeRealDate: dates.canSeeRealDate(auth),
     canOpenInvoices: policy.jobOrders.canOpenInvoices(auth),
   };
+}
+
+// مرآة بلازور JobOrders.razor:679-681 + :1125 — التاريخ الحقيقي محفوظ
+// منفصلًا في RealDueDate (تستخدمه نافذة التعديل)، والمعروض DueDate هو
+// الحقيقي منقوصًا هامش الأيام. يُلتقط الخام قبل الإخفاء، ولا يُكشف
+// إلا لمن يملك تعديل التاريخ (JobOrders.razor:534-536: مدير/مدير مصنع/
+// frm_JobOrders:Edit — مدير الإنتاج مستبعد صراحة) أو رؤية التاريخ
+// الحقيقي؛ لغيرهما null تمامًا حتى لا يتسرب من أي سطح.
+function attachRealDueDate(row, auth) {
+  if (!row) return row;
+  const raw = row.DueDate ?? null;
+  const allowed = policy.jobOrders.canEditDueDate(auth) || dates.canSeeRealDate(auth);
+  row.RealDueDate = allowed ? raw : null;
+  return row;
 }
 
 async function getAll(req, res) {
@@ -54,6 +69,8 @@ async function getAll(req, res) {
       const row = { ...raw };
       delete row.TotalRows;
       if (!canSeeAmounts) delete row.GrandTotal;
+      // التاريخ الحقيقي يُلتقط قبل الإخفاء (RealDueDate منفصلًا — بلازور)
+      attachRealDueDate(row, req.auth);
       // تاريخ الاستحقاق المتفق عليه يُعرض مخفيًا لغير المستثنين (بلازور)
       dates.maskRowDueDate(row, req.auth);
       return row;
@@ -88,6 +105,7 @@ async function getById(req, res) {
       return errorResponse(res, 'أمر التشغيل محمي حسب نطاق صلاحيات الحسابات', 403);
     }
     if (!policy.jobOrders.canSeeAmounts(req.auth)) delete row.GrandTotal;
+    attachRealDueDate(row, req.auth);
     dates.maskRowDueDate(row, req.auth);
     row.capabilities = capabilities(req.auth);
     return res.json({ success: true, data: row });

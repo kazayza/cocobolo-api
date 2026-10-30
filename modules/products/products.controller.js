@@ -283,6 +283,93 @@ async function remove(req, res) {
   }
 }
 
+// ===================================
+// رفع ملف PDF المنتج — مرآة بلازور ProductForm.razor:4729 (UploadPdf)
+// وحد الحجم 10MB في :3061 (MaxPdfSize). الشكل الذي يتوقعه التطبيق:
+// JSON { pdfBase64 } أو multipart بحقل pdf. تخزين مزدوج كما قررت
+// الجولة الأولى: ملف uploads/pdf/<hex>.pdf (+ PdfPath) وعمود PDFFile
+// الذي تخدمه نقطة القراءة القائمة GET /:id/pdf.
+// ===================================
+const PRODUCT_PDF_FOLDER = 'uploads/pdf';
+const MAX_PDF_SIZE = 10 * 1024 * 1024; // 10 ميجا — ProductForm.razor:3061
+
+const uploadProductPdfFile = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_PDF_SIZE },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (ext !== '.pdf') {
+      return cb(new Error('صيغة الملف غير مدعومة — PDF فقط'));
+    }
+    cb(null, true);
+  }
+}).single('pdf');
+
+// يمرر multipart إلى multer ويترك JSON (pdfBase64) كما هو للمتحكم
+function uploadProductPdf(req, res, next) {
+  if (req.is('multipart/form-data')) {
+    return uploadProductPdfFile(req, res, next);
+  }
+  return next();
+}
+
+async function uploadPdf(req, res) {
+  try {
+    const productId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(productId) || productId <= 0) {
+      return errorResponse(res, 'رقم المنتج غير صالح', 400);
+    }
+
+    let buffer = null;
+    if (req.file) {
+      buffer = req.file.buffer;
+    } else if (req.body && req.body.pdfBase64) {
+      buffer = Buffer.from(String(req.body.pdfBase64), 'base64');
+    }
+    if (!buffer || buffer.length === 0) {
+      return errorResponse(res, 'ملف PDF مطلوب', 400);
+    }
+    if (buffer.length > MAX_PDF_SIZE) {
+      return errorResponse(res, 'حجم الملف يتجاوز 10 ميجا', 400);
+    }
+    // بصمة PDF السحرية %PDF-
+    if (!(buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46 && buffer[4] === 0x2D)) {
+      return errorResponse(res, 'الملف ليس PDF صالحًا', 400);
+    }
+
+    const pool = await connectDB();
+    const exists = await pool.request()
+      .input('id', sql.Int, productId)
+      .query('SELECT ProductID FROM Products WHERE ProductID = @id');
+    if (exists.recordset.length === 0) {
+      return notFoundResponse(res, 'المنتج غير موجود');
+    }
+
+    // 1) ملف على القرص تحت uploads/pdf باسم عشوائي آمن
+    const safeName = `${crypto.randomBytes(16).toString('hex')}.pdf`;
+    const pdfPath = `/${PRODUCT_PDF_FOLDER}/${safeName}`;
+    const localDir = path.join(process.cwd(), PRODUCT_PDF_FOLDER);
+    fs.mkdirSync(localDir, { recursive: true });
+    fs.writeFileSync(path.join(localDir, safeName), buffer);
+
+    // 2) عمود PDFFile (تخدمه نقطة القراءة) + PdfPath للمسار على القرص
+    await pool.request()
+      .input('id', sql.Int, productId)
+      .input('pdfFile', sql.VarBinary(sql.MAX), buffer)
+      .input('pdfPath', sql.NVarChar(500), pdfPath)
+      .query('UPDATE Products SET PDFFile = @pdfFile, PdfPath = @pdfPath WHERE ProductID = @id');
+
+    return res.json({
+      success: true,
+      message: 'تم رفع ملف PDF بنجاح',
+      pdfPath,
+    });
+  } catch (err) {
+    console.error('خطأ في رفع PDF المنتج:', err);
+    return errorResponse(res, err.message || 'فشل رفع ملف PDF', err.statusCode || 500, err.message);
+  }
+}
+
 // دالة لجلب ملف PDF المنتج
 async function getProductPdf(req, res) {
   try {
@@ -336,5 +423,7 @@ module.exports = {
   deleteImage,
   saveComponents,
   remove,
-  getProductPdf
+  getProductPdf,
+  uploadProductPdf,
+  uploadPdf
 };

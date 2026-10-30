@@ -9,8 +9,9 @@ async function getActiveMargins() {
   const pool = await connectDB();
   const result = await pool.request()
     .query(`
-      SELECT TOP 1 
-        MarginID, PremiumMargin, EliteMargin, 
+      SELECT TOP 1
+        MarginID, CClassMargin, PremiumMargin, EliteMargin,
+        PreviousCClass, PreviousPremium, PreviousElite,
         ChangedBy,
         FORMAT(ChangedAt, 'yyyy-MM-dd hh:mm tt') AS ChangedAt
       FROM PricingMargins 
@@ -25,9 +26,9 @@ async function getMarginsHistory() {
   const pool = await connectDB();
   const result = await pool.request()
     .query(`
-      SELECT 
-        MarginID, PremiumMargin, EliteMargin,
-        PreviousPremium, PreviousElite,
+      SELECT
+        MarginID, CClassMargin, PremiumMargin, EliteMargin,
+        PreviousCClass, PreviousPremium, PreviousElite,
         ChangeReason, ChangedBy,
         FORMAT(ChangedAt, 'yyyy-MM-dd hh:mm tt') AS ChangedAt
       FROM PricingMargins 
@@ -36,40 +37,43 @@ async function getMarginsHistory() {
   return result.recordset;
 }
 
-// تحديث النسب (الأقدم يصير غير فعال + إضافة جديد)
-async function updateMargins(premiumMargin, eliteMargin, reason, changedBy, clientTime) {
+// تحديث النسب (الأقدم يصير غير فعال + إضافة جديد) —
+// النسب الثلاث كاملة مع قيمها السابقة (Models/PricingMargin.cs:10-22)
+async function updateMargins(cClassMargin, premiumMargin, eliteMargin, reason, changedBy, clientTime) {
   const pool = await connectDB();
-  
+
   // جلب النسب الحالية
   const current = await getActiveMargins();
-  
+
   // إلغاء تفعيل الحالي
   await pool.request()
     .query(`UPDATE PricingMargins SET IsActive = 0 WHERE IsActive = 1`);
-  
+
   // إضافة النسب الجديدة
   const result = await pool.request()
+    .input('cClassMargin', sql.Decimal(8, 2), cClassMargin)
     .input('premiumMargin', sql.Decimal(8, 2), premiumMargin)
     .input('eliteMargin', sql.Decimal(8, 2), eliteMargin)
+    .input('previousCClass', sql.Decimal(8, 2), current ? current.CClassMargin : 0)
     .input('previousPremium', sql.Decimal(8, 2), current ? current.PremiumMargin : 0)
     .input('previousElite', sql.Decimal(8, 2), current ? current.EliteMargin : 0)
     .input('reason', sql.NVarChar(255), reason || null)
     .input('changedBy', sql.NVarChar(100), changedBy)
-    .input('clientTime', sql.DateTime, new Date(clientTime))
+    .input('clientTime', sql.DateTime, clientTime ? new Date(clientTime) : new Date())
     .query(`
       INSERT INTO PricingMargins (
-        PremiumMargin, EliteMargin, IsActive,
-        PreviousPremium, PreviousElite,
+        CClassMargin, PremiumMargin, EliteMargin, IsActive,
+        PreviousCClass, PreviousPremium, PreviousElite,
         ChangeReason, ChangedBy, ChangedAt
       )
       OUTPUT INSERTED.MarginID
       VALUES (
-        @premiumMargin, @eliteMargin, 1,
-        @previousPremium, @previousElite,
+        @cClassMargin, @premiumMargin, @eliteMargin, 1,
+        @previousCClass, @previousPremium, @previousElite,
         @reason, @changedBy, @clientTime
       )
     `);
-  
+
   return result.recordset[0].MarginID;
 }
 

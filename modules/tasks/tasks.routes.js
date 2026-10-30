@@ -19,6 +19,10 @@ router.get('/summary', tasksController.getSummary);
 // GET /api/tasks/my-mentions-count
 router.get('/my-mentions-count', tasksController.getMyMentionsCount);
 
+// «إشاراتي» — تكليفات عامة ذُكر فيها موظف التوكن (الأحدث ذكرًا أولًا)
+// GET /api/tasks/my-mentions
+router.get('/my-mentions', tasksController.getMyMentions);
+
 // مهام اليوم
 // GET /api/tasks/today?assignedTo=xxx
 router.get('/today', tasksController.getToday);
@@ -57,5 +61,20 @@ router.delete('/:id', tasksController.remove);
 
 router.post('/:id/start', tasksController.startTask);
 router.post('/:id/complete', tasksController.completeTask);
+
+// منصة التكليفات العامة — استلام/إرجاع/إلغاء موثّقة + خيط النقاش
+router.post('/:id/acknowledge', tasksController.acknowledgeTask);
+router.post('/:id/return', tasksController.returnTask);
+router.post('/:id/cancel', tasksController.cancelTask);
+router.get('/:id/comments', tasksController.getComments);
+router.post('/:id/comments', tasksController.addComment);
+
+// مجدول تذكيرات التكليفات العامة — يبدأ مع إقلاع الوحدة (مرآة
+// GeneralTaskReminderService في بلازور)؛ فشله لا يُسقط الخادم أبدًا.
+try {
+  require('./task-reminder.scheduler').startTaskReminderScheduler();
+} catch (e) {
+  console.error('task reminder scheduler:', e.message);
+}
 
 module.exports = router;

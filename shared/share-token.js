@@ -38,6 +38,27 @@ function base64UrlDecodeToBuffer(value) {
   return Buffer.from(s, 'base64');
 }
 
+function base64UrlEncode(buffer) {
+  return Buffer.from(buffer).toString('base64')
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// توليد توكن مشاركة — مطابق حرفيًا لـ Blazor Helpers/ShareTokenService.cs
+// (GenerateToken): payload JSON بترتيب المفاتيح Type/Id/ExpiresAt كما يسرّبه
+// System.Text.Json من خصائص TokenPayload بالترتيب نفسه، وExpiresAt بالثواني،
+// والتوقيع HMAC-SHA256 فوق Base64Url(payload) بمفتاح UTF8(SHARE_SECRET).
+// validityDays يُقيَّد 1..90 والافتراضي 30 — Endpoints/QuotationEndpoints.cs:63.
+function generateShareToken(type, id, validityDays) {
+  const secret = getShareSecret();
+  if (!secret) return null;
+  const days = Math.min(Math.max(Number(validityDays) || 30, 1), 90);
+  const expiresAt = Math.floor(Date.now() / 1000) + Math.round(days * 86400);
+  const payloadJson = JSON.stringify({ Type: String(type), Id: Number(id), ExpiresAt: expiresAt });
+  const payloadB64 = base64UrlEncode(Buffer.from(payloadJson, 'utf8'));
+  const sigB64 = base64UrlEncode(computeHmac(secret, payloadB64));
+  return { token: `${payloadB64}.${sigB64}`, expiresAt, expiresInDays: days };
+}
+
 function computeHmac(secret, payloadB64) {
   return crypto
     .createHmac('sha256', Buffer.from(secret, 'utf8'))
@@ -87,5 +108,6 @@ function validateShareToken(token) {
 
 module.exports = {
   validateShareToken,
+  generateShareToken,
   isShareTokenEnabled,
 };

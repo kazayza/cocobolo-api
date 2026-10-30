@@ -601,6 +601,7 @@ async function saveQuotation(id, data, auth) {
     const totals = calculateQuotationTotals(data, items, products, alternatives, auth);
     let quotationId = intValue(id);
     let oldHeader = null;
+    let acceptanceVoided = false;
     let status = String(data.status || 'Draft');
     if (!STATUSES.has(status)) status = 'Draft';
 
@@ -611,6 +612,41 @@ async function saveQuotation(id, data, auth) {
       oldHeader = currentResult.recordset[0];
       if (!oldHeader) throw Object.assign(new Error('عرض السعر غير موجود'), { statusCode: 404 });
       if (oldHeader.InvoiceID != null) throw Object.assign(new Error('لا يمكن تعديل عرض تم تحويله لفاتورة'), { statusCode: 400 });
+
+      // ⭐ بصمة مالية — مرآة QuotationService.cs UpdateQuotationAsync
+      // (:1113-1137): على عرض «مقبول» أي اختلاف في بصمة البنود
+      // (ProductId, Quantity, UnitPrice مقربًا لمنزلتين, SelectedAlternativeId ?? 0,
+      // الفئة بعد التطبيع) أو الخصم أو الإجمالي يُبطل القبول عند الحفظ.
+      acceptanceVoided = false;
+      if (String(oldHeader.Status || '') === 'Accepted') {
+        const storedResult = await transaction.request()
+          .input('qid', sql.Int, quotationId)
+          .query(`SELECT ProductID, Quantity, UnitPrice, SelectedAlternativeID, PricingTier
+                  FROM QuotationDetails WHERE QuotationID = @qid`);
+        const signature = (row) => [
+          intValue(row.productId),
+          numberValue(row.quantity),
+          money(row.unitPrice),
+          intValue(row.selectedAlternativeId) || 0,
+          normalizeTier(row.pricingTier),
+        ];
+        const sortSignatures = (list) => list.sort((a, b) =>
+          a[0] - b[0] || a[3] - b[3] || a[2] - b[2] || a[1] - b[1]
+          || String(a[4]).localeCompare(String(b[4])));
+        const incomingSignatures = sortSignatures(items.map((item) => signature({
+          productId: item.productId, quantity: item.quantity, unitPrice: item.unitPrice,
+          selectedAlternativeId: item.selectedAlternativeId, pricingTier: item.pricingTier,
+        })));
+        const storedSignatures = sortSignatures(storedResult.recordset.map((row) => signature({
+          productId: row.ProductID, quantity: row.Quantity, unitPrice: row.UnitPrice,
+          selectedAlternativeId: row.SelectedAlternativeID, pricingTier: row.PricingTier,
+        })));
+        const itemsChanged = JSON.stringify(incomingSignatures) !== JSON.stringify(storedSignatures);
+        const discountChanged = money(totals.discountAmount) !== money(oldHeader.DiscountAmount ?? 0);
+        const totalChanged = money(totals.totalAmount) !== money(oldHeader.TotalAmount);
+        acceptanceVoided = itemsChanged || discountChanged || totalChanged;
+        if (acceptanceVoided) status = 'Draft';
+      }
 
       await transaction.request()
         .input('id', sql.Int, quotationId)
@@ -634,6 +670,8 @@ async function saveQuotation(id, data, auth) {
             [pricingType] = @pricingType, TotalAmount = @total,
             DiscountAmount = @discount, GrandTotal = @grand,
             Notes = @notes, Status = @status
+            ${acceptanceVoided ? `, AcceptedAt = NULL, AcceptedBy = NULL,
+            RejectedAt = NULL, RejectedBy = NULL, RejectionReason = NULL` : ''}
           WHERE QuotationID = @id
         `);
     } else {
@@ -749,6 +787,14 @@ async function saveQuotation(id, data, auth) {
         `);
     }
 
+    if (acceptanceVoided) {
+      await writeAudit(
+        transaction, 'VoidAccept', quotationId,
+        { Status: 'Accepted' },
+        { Status: 'Draft', Reason: 'FinancialEdit' },
+        auth.username,
+      );
+    }
     await writeAudit(
       transaction,
       quotationId > 0 && oldHeader ? 'Update' : 'Insert',
@@ -758,7 +804,13 @@ async function saveQuotation(id, data, auth) {
       auth.username,
     );
     await transaction.commit();
-    return { quotationId, totals, created: !oldHeader };
+    return {
+      quotationId, totals, created: !oldHeader,
+      acceptanceVoided,
+      createdBy: oldHeader?.CreatedBy || null,
+      referenceNumber: oldHeader?.ReferenceNumber || null,
+      quotationDate: oldHeader?.QuotationDate || null,
+    };
   } catch (error) {
     try { await transaction.rollback(); } catch (_) {}
     throw error;

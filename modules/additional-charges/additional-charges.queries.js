@@ -1,7 +1,24 @@
 const { sql, connectDB } = require('../../core/database');
 
-const TYPES = new Set(['Inspection', 'Shipping', 'Installation', 'Advance', 'Other']);
-const STATUSES = new Set(['Paid', 'Applied', 'NonRefundable']);
+const policy = require('../../shared/authorization.policy');
+
+// الأنواع والحالات — DTOS/InvoiceDto.cs ChargeTypes:644 / ChargeStatuses:671
+const TYPES = new Set(['Inspection', 'Shipping', 'Installation', 'Advance', 'Other', 'Modification']);
+const STATUSES = new Set(['Paid', 'Applied', 'NonRefundable', 'PendingApproval', 'Approved', 'Rejected']);
+// الأنواع القابلة للإنشاء/التعديل اليدوي — Modification تُولد من التسليمات فقط
+const MANUAL_TYPES = new Set([...TYPES].filter((t) => t !== 'Modification'));
+// حالات الصيانة المنتهية — DTOS/DeliveryOutcomesDto.cs:64
+const MAINTENANCE_TERMINAL = ['Redelivered', 'ClosedByReplacement', 'ClosedByCredit', 'Cancelled'];
+
+function assertManualType(type) {
+  if (!MANUAL_TYPES.has(type)) {
+    throw Object.assign(new Error('رسوم التعديل تُنشأ من أحداث التسليم فقط ولا تُدار يدويًا'), { statusCode: 400 });
+  }
+}
+
+function isDeliveryModification(charge) {
+  return charge && charge.ChargeType === 'Modification' && charge.SourceDeliveryId != null;
+}
 const PAID_TYPES = new Set(['Inspection', 'Advance']);
 const SQL_INT_MAX = 2147483647;
 
@@ -88,6 +105,9 @@ async function getCharges(filters = {}) {
     SELECT
       c.ChargeID, c.ChargeType, c.ChargeDescription, c.ChargeAmount,
       c.Status, c.PartyID, p.PartyName, p.Phone AS PartyPhone,
+      c.QuotationID, c.SourceDeliveryId,
+      CASE WHEN c.ChargeType = N'Modification' AND c.SourceDeliveryId IS NOT NULL
+           THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END AS IsDeliveryModification,
       c.TransactionID, linked.ReferenceNumber AS TransactionRef,
       c.AppliedToTransactionId, applied.ReferenceNumber AS AppliedToTransactionRef,
       c.Notes, c.CreatedBy, c.CreatedAt,
@@ -119,7 +139,9 @@ async function getStats(filters = {}) {
       COALESCE(SUM(CASE WHEN c.Status = N'Paid' THEN ISNULL(c.ChargeAmount, 0) ELSE 0 END), 0) AS PaidAmount,
       COALESCE(SUM(CASE WHEN c.Status = N'Applied' THEN ISNULL(c.ChargeAmount, 0) ELSE 0 END), 0) AS AppliedAmount,
       COALESCE(SUM(CASE WHEN c.Status = N'NonRefundable' THEN ISNULL(c.ChargeAmount, 0) ELSE 0 END), 0) AS NonRefundableAmount,
-      COALESCE(SUM(CASE WHEN c.Status = N'Paid' AND c.TransactionID IS NULL AND c.AppliedToTransactionId IS NULL THEN ISNULL(c.ChargeAmount, 0) ELSE 0 END), 0) AS AvailableAmount
+      COALESCE(SUM(CASE WHEN c.Status = N'Paid' AND c.TransactionID IS NULL AND c.AppliedToTransactionId IS NULL THEN ISNULL(c.ChargeAmount, 0) ELSE 0 END), 0) AS AvailableAmount,
+      COALESCE(SUM(CASE WHEN c.Status = N'PendingApproval' THEN ISNULL(c.ChargeAmount, 0) ELSE 0 END), 0) AS PendingAmount,
+      COALESCE(SUM(CASE WHEN c.Status = N'Approved' THEN ISNULL(c.ChargeAmount, 0) ELSE 0 END), 0) AS ApprovedAmount
     ${baseFrom}
     WHERE ${where}
   `);
@@ -136,6 +158,9 @@ async function getCharge(value) {
         c.ChargeID, c.ChargeType, c.ChargeDescription, c.ChargeAmount,
         c.Status, c.PartyID, p.PartyName, p.Phone AS PartyPhone,
         p.Address AS PartyAddress, p.City AS PartyCity, p.Email AS PartyEmail,
+        c.QuotationID, c.SourceDeliveryId,
+        CASE WHEN c.ChargeType = N'Modification' AND c.SourceDeliveryId IS NOT NULL
+             THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END AS IsDeliveryModification,
         c.TransactionID, linked.ReferenceNumber AS TransactionRef,
         c.AppliedToTransactionId, applied.ReferenceNumber AS AppliedToTransactionRef,
         c.Notes, c.CreatedBy, c.CreatedAt,
@@ -284,6 +309,7 @@ async function validatePartyAndCashbox(transaction, partyId, cashBoxId) {
 async function createCharge(data, auth) {
   const partyId = assertId(data.partyId, 'معرّف العميل');
   const type = normalizeType(data.chargeType || 'Inspection');
+  assertManualType(type);
   const amount = money(data.chargeAmount);
   if (amount <= 0) throw Object.assign(new Error('المبلغ يجب أن يكون أكبر من صفر'), { statusCode: 400 });
   const description = String(data.chargeDescription || '').trim();
@@ -344,6 +370,7 @@ async function createCharge(data, auth) {
 async function updateCharge(value, data, auth) {
   const id = assertId(value, 'معرّف الرسوم');
   const type = normalizeType(data.chargeType);
+  assertManualType(type);
   const amount = money(data.chargeAmount);
   if (amount <= 0) throw Object.assign(new Error('المبلغ يجب أن يكون أكبر من صفر'), { statusCode: 400 });
   const description = String(data.chargeDescription || '').trim();
@@ -358,6 +385,9 @@ async function updateCharge(value, data, auth) {
       .query(`SELECT * FROM AdditionalCharges WITH (UPDLOCK, HOLDLOCK) WHERE ChargeID = @id`);
     const current = currentResult.recordset[0];
     if (!current) throw Object.assign(new Error('الرسوم غير موجودة'), { statusCode: 404 });
+    if (current.ChargeType === 'Modification') {
+      throw Object.assign(new Error('رسوم التعديل لا تُعدَّل يدويًا — تُدار من دورة الاعتماد والتحصيل'), { statusCode: 409 });
+    }
     if (current.TransactionID != null || current.AppliedToTransactionId != null
         || ['Applied', 'NonRefundable'].includes(current.Status)) {
       throw Object.assign(new Error('لا يمكن تعديل رسوم مرتبطة أو مطبقة أو غير مستردة'), { statusCode: 409 });
@@ -418,6 +448,9 @@ async function deleteCharge(value, auth) {
       .query(`SELECT * FROM AdditionalCharges WITH (UPDLOCK, HOLDLOCK) WHERE ChargeID = @id`);
     const current = currentResult.recordset[0];
     if (!current) throw Object.assign(new Error('الرسوم غير موجودة'), { statusCode: 404 });
+    if (current.ChargeType === 'Modification') {
+      throw Object.assign(new Error('رسوم التعديل لا تُحذف يدويًا — تُدار من دورة الاعتماد والتحصيل'), { statusCode: 409 });
+    }
     if (current.TransactionID != null || current.AppliedToTransactionId != null
         || ['Applied', 'NonRefundable'].includes(current.Status)) {
       throw Object.assign(new Error('لا يمكن حذف رسوم مرتبطة أو مطبقة أو غير مستردة'), { statusCode: 409 });
@@ -606,6 +639,174 @@ async function markNonRefundable(value, reason, auth) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════
+// رسوم تعديل التسليم المعلّقة — مرآة AdditionalChargeService.cs
+// (ApproveModificationChargeAsync:501 / Reject / Collect:599)
+// ═══════════════════════════════════════════════════════════
+async function loadChargeForModification(transaction, id) {
+  const result = await transaction.request()
+    .input('id', sql.Int, id)
+    .query(`SELECT * FROM AdditionalCharges WITH (UPDLOCK, HOLDLOCK) WHERE ChargeID = @id`);
+  const charge = result.recordset[0];
+  if (!charge) throw Object.assign(new Error('الرسوم غير موجودة.'), { statusCode: 404 });
+  if (!isDeliveryModification(charge)) {
+    throw Object.assign(new Error('هذا الإجراء خاص برسوم التعديل المولّدة من تسليمات فقط.'), { statusCode: 400 });
+  }
+  return charge;
+}
+
+async function approveModificationCharge(value, amount, auth) {
+  const id = assertId(value, 'معرّف الرسوم');
+  if (!(policy.roles.admin(auth) || policy.roles.accountManager(auth))) {
+    throw Object.assign(new Error('اعتماد رسوم التعديل متاح للمدير ومدير الحسابات فقط.'), { statusCode: 403 });
+  }
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+  try {
+    const charge = await loadChargeForModification(transaction, id);
+    if (charge.Status !== 'PendingApproval') {
+      throw Object.assign(new Error('الرسم ليس بانتظار الاعتماد.'), { statusCode: 409 });
+    }
+    const finalAmount = amount != null && amount !== '' ? money(amount) : money(charge.ChargeAmount);
+    if (!(finalAmount > 0)) {
+      throw Object.assign(new Error('لا يمكن الاعتماد بلا مبلغ نهائي — أدخل مبلغ التعديل.'), { statusCode: 400 });
+    }
+    await transaction.request()
+      .input('id', sql.Int, id)
+      .input('amount', sql.Decimal(18, 2), finalAmount)
+      .query(`UPDATE AdditionalCharges SET ChargeAmount = @amount, Status = N'Approved' WHERE ChargeID = @id`);
+    await insertAudit(transaction, 'AdditionalCharges', 'ModificationChargeApproved', id, auth.username,
+      { ChargeAmount: charge.ChargeAmount, Status: charge.Status },
+      { ChargeAmount: finalAmount, Status: 'Approved' });
+    await transaction.commit();
+    return {
+      chargeId: id, amount: finalAmount,
+      createdBy: charge.CreatedBy, transactionId: charge.TransactionID,
+      message: `تم اعتماد رسوم التعديل بمبلغ ${finalAmount.toFixed(2)} ج — بانتظار التحصيل.`,
+    };
+  } catch (error) {
+    try { await transaction.rollback(); } catch (_) {}
+    throw error;
+  }
+}
+
+async function rejectModificationCharge(value, reason, auth) {
+  const id = assertId(value, 'معرّف الرسوم');
+  if (!(policy.roles.admin(auth) || policy.roles.accountManager(auth))) {
+    throw Object.assign(new Error('رفض رسوم التعديل متاح للمدير ومدير الحسابات فقط.'), { statusCode: 403 });
+  }
+  const cleanReason = String(reason || '').trim();
+  if (!cleanReason) throw Object.assign(new Error('سبب الرفض إلزامي.'), { statusCode: 400 });
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+  try {
+    const charge = await loadChargeForModification(transaction, id);
+    if (charge.Status !== 'PendingApproval') {
+      throw Object.assign(new Error('الرسم ليس بانتظار الاعتماد.'), { statusCode: 409 });
+    }
+    const notes = [String(charge.Notes || '').trim(), `مرفوضة: ${cleanReason}`].filter(Boolean).join(' | ');
+    await transaction.request()
+      .input('id', sql.Int, id)
+      .input('notes', sql.NVarChar(1000), notes)
+      .query(`UPDATE AdditionalCharges SET Status = N'Rejected', Notes = @notes WHERE ChargeID = @id`);
+    // إلغاء سجلات صيانة التعديل المرتبطة غير المنتهية وغير الملغاة منطقيًا
+    const terminalList = MAINTENANCE_TERMINAL.map((t) => `N'${t}'`).join(', ');
+    const cancelled = await transaction.request()
+      .input('id', sql.Int, id)
+      .input('username', sql.NVarChar(100), auth.username)
+      .query(`
+        UPDATE DeliveryMaintenanceItems
+        SET Status = N'Cancelled', ClosedAt = GETDATE(), StatusBy = @username,
+            ResolutionNotes = N'أُلغي طلب التعديل — رُفض رسم التعديل'
+        WHERE AdditionalChargeId = @id AND ISNULL(IsVoided, 0) = 0
+          AND Status NOT IN (${terminalList});
+        SELECT @@ROWCOUNT AS CancelledCount;
+      `);
+    await insertAudit(transaction, 'AdditionalCharges', 'ModificationChargeRejected', id, auth.username,
+      { ChargeAmount: charge.ChargeAmount, Status: charge.Status },
+      { Status: 'Rejected', Reason: cleanReason, CancelledCount: cancelled.recordset[0]?.CancelledCount || 0 });
+    await transaction.commit();
+    return {
+      chargeId: id,
+      cancelledMaintenance: cancelled.recordset[0]?.CancelledCount || 0,
+      message: 'تم رفض رسوم التعديل وإلغاء طلب التعديل المرتبط — لم تُسجَّل أي حركة خزينة.',
+    };
+  } catch (error) {
+    try { await transaction.rollback(); } catch (_) {}
+    throw error;
+  }
+}
+
+async function collectModificationCharge(value, cashBoxId, auth) {
+  const id = assertId(value, 'معرّف الرسوم');
+  if (!(policy.roles.admin(auth) || policy.roles.accountManager(auth) || policy.roles.account(auth))) {
+    throw Object.assign(new Error('تحصيل رسوم التعديل متاح للإدارة ومدير الحسابات والحسابات.'), { statusCode: 403 });
+  }
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+  try {
+    const charge = await loadChargeForModification(transaction, id);
+    if (charge.Status !== 'Approved') {
+      throw Object.assign(new Error('التحصيل من حالة «معتمدة» فقط — الرسم لم يُعتمد بعد أو حُصّل/رُفض.'), { statusCode: 409 });
+    }
+    const amount = money(charge.ChargeAmount);
+    if (!(amount > 0)) {
+      throw Object.assign(new Error('لا يمكن تحصيل رسم بلا مبلغ نهائي معتمد.'), { statusCode: 400 });
+    }
+    const partyResult = await transaction.request()
+      .input('partyId', sql.Int, charge.PartyID || 0)
+      .query(`SELECT PartyName FROM Parties WHERE PartyID = @partyId`);
+    const partyName = partyResult.recordset[0]?.PartyName || 'غير محدد';
+    // الخزينة: المرسلة (نشطة) أو الافتراضية النشطة أولًا
+    let boxId = cashBoxId ? assertId(cashBoxId, 'معرّف الخزينة') : null;
+    if (boxId) {
+      const boxResult = await transaction.request()
+        .input('boxId', sql.Int, boxId)
+        .query(`SELECT CashBoxID FROM CashBoxes WHERE CashBoxID = @boxId AND ISNULL(IsActive, 1) = 1`);
+      if (!boxResult.recordset[0]) throw Object.assign(new Error('الخزينة غير موجودة أو غير نشطة'), { statusCode: 400 });
+    } else {
+      const boxResult = await transaction.request().query(`
+        SELECT TOP 1 CashBoxID FROM CashBoxes
+        WHERE ISNULL(IsActive, 1) = 1
+        ORDER BY ISNULL(IsDefault, 0) DESC, CashBoxID
+      `);
+      boxId = boxResult.recordset[0]?.CashBoxID || null;
+      if (!boxId) throw Object.assign(new Error('لا توجد خزينة نشطة لتسجيل التحصيل'), { statusCode: 409 });
+    }
+    await transaction.request()
+      .input('boxId', sql.Int, boxId)
+      .input('chargeId', sql.Int, id)
+      .input('amount', sql.Decimal(18, 2), amount)
+      .input('notes', sql.NVarChar(500), `تحصيل ${amount.toFixed(2)} ج - رسوم تعديل - ${partyName}`)
+      .input('username', sql.NVarChar(100), auth.username)
+      .query(`
+        INSERT INTO CashboxTransactions
+          (CashBoxID, ReferenceID, ReferenceType, TransactionType,
+           Amount, TransactionDate, Notes, CreatedBy, CreatedAt)
+        VALUES
+          (@boxId, @chargeId, N'Charge', N'قبض',
+           @amount, GETDATE(), @notes, @username, GETDATE())
+      `);
+    await transaction.request()
+      .input('id', sql.Int, id)
+      .query(`UPDATE AdditionalCharges SET Status = N'Paid' WHERE ChargeID = @id`);
+    await insertAudit(transaction, 'AdditionalCharges', 'ModificationChargeCollected', id, auth.username,
+      { Status: charge.Status },
+      { Status: 'Paid', ChargeAmount: amount, CashBoxID: boxId });
+    await transaction.commit();
+    return {
+      chargeId: id, amount, cashBoxId: boxId,
+      message: 'تم تحصيل رسوم التعديل وتسجيل القبض في الخزينة — يمكنك تطبيقها على الفاتورة الآن.',
+    };
+  } catch (error) {
+    try { await transaction.rollback(); } catch (_) {}
+    throw error;
+  }
+}
+
 module.exports = {
   TYPES,
   STATUSES,
@@ -620,4 +821,7 @@ module.exports = {
   deleteCharge,
   applyToInvoice,
   markNonRefundable,
+  approveModificationCharge,
+  rejectModificationCharge,
+  collectModificationCharge,
 };

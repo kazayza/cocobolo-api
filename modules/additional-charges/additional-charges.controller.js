@@ -186,7 +186,62 @@ async function markNonRefundable(req, res) {
   }
 }
 
+async function approveModification(req, res) {
+  try {
+    const row = await queries.approveModificationCharge(
+      req.params.id, req.body?.amount, req.auth,
+    );
+    // إشعار مسجّل حدث التسليم (منشئ الرسم) إن اعتمد غيره — AdditionalChargeService.cs:501
+    if (row.createdBy && String(row.createdBy).toLowerCase() !== String(req.auth.username).toLowerCase()) {
+      try {
+        await notifications.createNotification({
+          title: '💰 اعتُمدت رسوم تعديل',
+          message: `اعتُمدت رسوم التعديل على الفاتورة #${row.transactionId} بمبلغ ${row.amount.toFixed(2)} ج بواسطة ${req.auth.username} — يمكن تحصيلها الآن من قائمة الرسوم.`,
+          recipientUser: row.createdBy,
+          createdBy: req.auth.username,
+          formName: 'additional-charges',
+          relatedTable: 'AdditionalCharges',
+          relatedId: row.chargeId,
+        });
+      } catch (notifyError) {
+        console.error('modification approve notify:', notifyError.message);
+      }
+    }
+    return res.json({ success: true, message: row.message, data: row });
+  } catch (error) {
+    console.error('additionalCharges.approveModification:', error);
+    return errorResponse(res, error.message || 'فشل اعتماد رسوم التعديل', error.statusCode || 500, error.message);
+  }
+}
+
+async function rejectModification(req, res) {
+  try {
+    const row = await queries.rejectModificationCharge(
+      req.params.id, req.body?.reason, req.auth,
+    );
+    return res.json({ success: true, message: row.message, data: row });
+  } catch (error) {
+    console.error('additionalCharges.rejectModification:', error);
+    return errorResponse(res, error.message || 'فشل رفض رسوم التعديل', error.statusCode || 500, error.message);
+  }
+}
+
+async function collectModification(req, res) {
+  try {
+    const row = await queries.collectModificationCharge(
+      req.params.id, req.body?.cashBoxId, req.auth,
+    );
+    return res.json({ success: true, message: row.message, data: row });
+  } catch (error) {
+    console.error('additionalCharges.collectModification:', error);
+    return errorResponse(res, error.message || 'فشل تحصيل رسوم التعديل', error.statusCode || 500, error.message);
+  }
+}
+
 module.exports = {
+  approveModification,
+  rejectModification,
+  collectModification,
   getAll,
   getById,
   getReceipt,

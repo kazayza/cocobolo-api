@@ -286,6 +286,8 @@ async function getEditModel(transactionId, auth) {
         canViewHistory: policy.invoices.canViewHistory(auth),
         canRestore: policy.invoices.canRestore(auth),
         canViewProfit: canProfit,
+        // إلغاء الفاتورة بصلاحية الحذف frm_PartiesInvoices:Delete (Item 14)
+        canCancel: policy.invoices.canCancel(auth),
       },
     },
   };

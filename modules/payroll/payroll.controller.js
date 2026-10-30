@@ -188,6 +188,115 @@ async function deleteDetail(req, res) {
   }
 }
 
+// ══════════════════════════════════════════════════════════════
+// دورة الرواتب الشهرية (البند 34): حساب جماعي ← حفظ تشغيل
+// PendingReview ← اعتماد/رفض ← صرف من خزينة. حارس المراجع الأضيق
+// (Admin/AccountManager) يُفرض داخل المحرك نفسه.
+// ══════════════════════════════════════════════════════════════
+
+function validMonth(month) {
+  return typeof month === 'string' && /^\d{4}-\d{2}$/.test(month);
+}
+
+// حساب جماعي بلا حفظ — POST /api/payroll/calculate { month, employeeId? }
+async function calculate(req, res) {
+  try {
+    const { month, employeeId } = req.body || {};
+    if (!validMonth(month)) return errorResponse(res, 'الشهر مطلوب بصيغة YYYY-MM', 400);
+    const { sql, connectDB } = require('../../core/database');
+    if (employeeId) {
+      const pool = await connectDB();
+      const one = await payrollQueries.calculateOne(pool, parseInt(employeeId, 10), month);
+      return res.json({ success: true, data: [one] });
+    }
+    const data = await payrollQueries.calculateMonth(month);
+    return res.json({ success: true, data });
+  } catch (err) {
+    console.error('payroll.calculate:', err);
+    return errorResponse(res, err.message || 'فشل حساب الرواتب', err.statusCode || 500, err.message);
+  }
+}
+
+// حساب + حفظ تشغيل للمراجعة — POST /api/payroll/runs { month }
+async function createRun(req, res) {
+  try {
+    const { month } = req.body || {};
+    if (!validMonth(month)) return errorResponse(res, 'الشهر مطلوب بصيغة YYYY-MM', 400);
+    const result = await payrollQueries.saveRun(month, req.auth.username);
+    try {
+      for (const role of ['Admin', 'AccountManager']) {
+        await notificationsQueries.createNotificationSmart({
+          title: 'كشف رواتب جديد بانتظار المراجعة',
+          message: `تم تسجيل كشف رواتب شهر ${month} بعدد ${result.count} موظف وبإجمالي صافي ${result.totalNet} جـ وهو الآن بانتظار مراجعة مدير الحسابات.`,
+          createdBy: req.auth.username,
+          formName: 'frm_Payroll',
+          relatedTable: 'PayrollRuns',
+          relatedId: result.runId,
+        }, role);
+      }
+    } catch (_) {}
+    return res.status(201).json({
+      success: true,
+      message: `تم حفظ وإرسال ${result.count} راتب للمراجعة`,
+      data: result,
+    });
+  } catch (err) {
+    console.error('payroll.createRun:', err);
+    return errorResponse(res, err.message || 'فشل حفظ كشف الرواتب', err.statusCode || 500, err.message);
+  }
+}
+
+// قائمة التشغيلات — GET /api/payroll/runs?month=YYYY-MM
+async function getRuns(req, res) {
+  try {
+    const runs = await payrollQueries.getRuns(req.query.month || null);
+    return res.json({ success: true, data: runs });
+  } catch (err) {
+    console.error('payroll.getRuns:', err);
+    return errorResponse(res, 'فشل تحميل كشوف الرواتب', 500, err.message);
+  }
+}
+
+// اعتماد — POST /api/payroll/:id/approve (هنا :id هو معرّف المرتب)
+async function approve(req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const result = await payrollQueries.approvePayroll(id, req.auth);
+    return res.json({ success: true, message: 'تم اعتماد المرتب بنجاح', data: result });
+  } catch (err) {
+    console.error('payroll.approve:', err);
+    return errorResponse(res, err.message || 'فشل الاعتماد', err.statusCode || 500, err.message);
+  }
+}
+
+// رفض — POST /api/payroll/:id/reject { reason? }
+async function reject(req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const result = await payrollQueries.rejectPayroll(id, req.auth, req.body?.reason || null);
+    return res.json({ success: true, message: 'تم رفض المرتب', data: result });
+  } catch (err) {
+    console.error('payroll.reject:', err);
+    return errorResponse(res, err.message || 'فشل الرفض', err.statusCode || 500, err.message);
+  }
+}
+
+// صرف من خزينة — POST /api/payroll/:id/pay { cashBoxId }
+async function pay(req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const cashBoxId = parseInt(req.body?.cashBoxId, 10);
+    if (!Number.isInteger(cashBoxId) || cashBoxId <= 0) {
+      return errorResponse(res, 'اختيار الخزينة مطلوب', 400);
+    }
+    const result = await payrollQueries.payPayroll(id, cashBoxId, req.auth);
+    return res.json({ success: true, message: 'تم صرف المرتب بنجاح', data: result });
+  } catch (err) {
+    console.error('payroll.pay:', err);
+    return errorResponse(res, err.message || 'فشل الصرف', err.statusCode || 500, err.message);
+  }
+}
+
 // تصدير الدوال
 module.exports = {
   getByMonth,
@@ -199,5 +308,11 @@ module.exports = {
   update,
   updateStatus,
   addDetail,
-  deleteDetail
+  deleteDetail,
+  calculate,
+  createRun,
+  getRuns,
+  approve,
+  reject,
+  pay
 };
