@@ -593,9 +593,26 @@ async function getAdvancedReport(filters) {
       -- بيانات الموظف (عشان لو مدير بيعرض الكل)
       e.FullName,
       e.Department,
-      e.JobTitle
+      e.JobTitle,
+      e.EmployeeID,
+      e.Gender,
+
+      -- أوقات الشيفت الذي استُخدم في حساب التأخير/الانصراف المبكر لهذا
+      -- الصف — نفس قاعدة الحسم المستخدمة عند التسجيل (checkIn/checkOut):
+      -- الشيفت الساري في تاريخ الصف، والأحدث بـ EffectiveFrom؛ وبلا شيفت
+      -- محسم ترجع القيمتان NULL.
+      FORMAT(CAST(sh.StartTime AS DATETIME), 'hh:mm tt') as ShiftStart,
+      FORMAT(CAST(sh.EndTime AS DATETIME), 'hh:mm tt') as ShiftEnd
     FROM Attendance a
     JOIN Employees e ON a.BiometricCode = e.BioEmployeeID
+    OUTER APPLY (
+      SELECT TOP 1 s.StartTime, s.EndTime
+      FROM EmployeeShifts s
+      WHERE s.EmployeeID = e.EmployeeID
+        AND CAST(a.LogDate AS DATE) >= CAST(s.EffectiveFrom AS DATE)
+        AND (s.EffectiveTo IS NULL OR CAST(a.LogDate AS DATE) <= CAST(s.EffectiveTo AS DATE))
+      ORDER BY s.EffectiveFrom DESC
+    ) sh
     WHERE 1=1
   `;
 
