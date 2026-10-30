@@ -316,6 +316,7 @@ app.use('/api/attendance', require('./modules/attendance/attendance.routes'));
 
 // Payroll Module
 app.use('/api/payroll', require('./modules/payroll/payroll.routes'));
+app.use('/api/employee-penalties', require('./modules/employee-penalties/employee-penalties.routes'));
 app.use('/api/loans', require('./modules/loans/loans.routes'));
 app.use('/api/off-payroll', require('./modules/off-payroll/off-payroll.routes'));
 

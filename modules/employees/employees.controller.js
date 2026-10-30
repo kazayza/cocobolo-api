@@ -70,8 +70,21 @@ async function create(req, res) {
       return errorResponse(res, 'الرقم القومي مطلوب', 400);
     }
 
+    // المدير المباشر (اختياري): عند حضوره يجب أن يكون موظفًا قائمًا
+    let directManagerId = null;
+    if (req.body.directManagerId != null) {
+      directManagerId = Number(req.body.directManagerId);
+      if (!Number.isInteger(directManagerId) || directManagerId <= 0) {
+        return errorResponse(res, 'معرف المدير المباشر غير صالح.', 400);
+      }
+      const manager = await employeesQueries.getEmployeeById(directManagerId);
+      if (!manager) {
+        return errorResponse(res, 'المدير المباشر المحدد غير موجود.', 400);
+      }
+    }
+
     // المنشئ من التوكن فقط؛ createdBy الجسم يُتجاهل (كان قابلًا للانتحال)
-    const employeeId = await employeesQueries.createEmployee({ ...req.body, createdBy: req.auth.username });
+    const employeeId = await employeesQueries.createEmployee({ ...req.body, directManagerId, createdBy: req.auth.username });
 
     return res.json({
       success: true,
@@ -98,6 +111,22 @@ async function update(req, res) {
     const existing = await employeesQueries.getEmployeeById(id);
     if (!existing) {
       return notFoundResponse(res, 'الموظف غير موجود');
+    }
+
+    // المدير المباشر يُكتب فقط عند حضور مفتاحه في الجسم (حضوره فارغًا
+    // يمسحه)؛ وعند حضوره بقيمة يجب أن يكون موظفًا قائمًا غير الموظف نفسه
+    if ('directManagerId' in req.body && req.body.directManagerId != null) {
+      const managerId = Number(req.body.directManagerId);
+      if (!Number.isInteger(managerId) || managerId <= 0) {
+        return errorResponse(res, 'معرف المدير المباشر غير صالح.', 400);
+      }
+      if (managerId === Number(id)) {
+        return errorResponse(res, 'لا يجوز أن يكون الموظف مديرًا مباشرًا لنفسه.', 400);
+      }
+      const manager = await employeesQueries.getEmployeeById(managerId);
+      if (!manager) {
+        return errorResponse(res, 'المدير المباشر المحدد غير موجود.', 400);
+      }
     }
 
     let salaryChange = null;

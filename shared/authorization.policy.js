@@ -426,6 +426,43 @@ const shifts = {
     || roles.generalManager(a),
 };
 
+const employeePenalties = {
+  // إنشاء الجزاءات بالأدوار الأربعة المعتمدة من المالك (قرارات التصميم):
+  // Admin / GeneralManager / AccountManager / ProductionManager —
+  // SalesManager خارج القائمة عمدًا. الإملاء الرسمي AccountManager فقط.
+  canCreateByRole: (a) => roles.admin(a)
+    || roles.generalManager(a)
+    || roles.accountManager(a)
+    || roles.productionManager(a),
+  // رؤية الكل في القوائم: الأدوار الأربعة + مدير الموارد البشرية.
+  canViewAll: (a) => roles.admin(a)
+    || roles.generalManager(a)
+    || roles.accountManager(a)
+    || roles.productionManager(a)
+    || roles.hrManager(a),
+  // ── «التوقيع المباشر» (frm_EmployeePenalties:DirectSign) ──────────
+  // حقيقة نظام المطالبات (موثقة في الدراسة §١.٣/§١.٤): المطالبات تُبنى
+  // لكل طلب في core/auth.middleware.js من UserPermissions ⨝ Permissions
+  // بأربعة أفعال ثابتة فقط (CanView/CanAdd/CanEdit/CanDelete) فتتولد
+  // المطالبات بصيغة `${FormName}:View|Add|Edit|Delete` — لا يوجد عمود
+  // ولا مسار يمكنه حمل لاحقة حرة مثل `:DirectSign`. أقرب آلية قائمة
+  // بلا أي تغيير مخطط: صف Permissions مستقل يحمل الاسم في FormName
+  // نفسه. لذلك يُقبل التوقيع المباشر بأي من الصور التالية:
+  //   1) المطالبة الحرفية `frm_EmployeePenalties:DirectSign` إن وُجدت
+  //      في مجموعة المطالبات (توافق مستقبلي/خارجي).
+  //   2) مطالبة `frm_EmployeePenaltiesDirectSign:View` — وهي الصورة
+  //      القابلة للتخزين فعليًا اليوم: ينشئ الأدمن صف صلاحية
+  //      FormName='frm_EmployeePenaltiesDirectSign' ويمنح CanView=1
+  //      لمن يشاء من شاشة الصلاحيات الحالية، فيبني auth.middleware
+  //      المطالبة تلقائيًا.
+  //   3) كائن الصلاحيات نفسه (auth.permissions) لنفس الصف بـ canView.
+  DIRECT_SIGN_CLAIM: 'frm_EmployeePenalties:DirectSign',
+  DIRECT_SIGN_FORM: 'frm_EmployeePenaltiesDirectSign',
+  hasDirectSignClaim: (a) => hasClaim(a, 'frm_EmployeePenalties:DirectSign')
+    || hasClaim(a, 'frm_EmployeePenaltiesDirectSign:View')
+    || a?.permissions?.frm_EmployeePenaltiesDirectSign?.canView === true,
+};
+
 const loans = {
   // إنشاء السلفة في بلازور (LoansPage) بـ frmEmployeeLoans:Add، والإلغاء بـ :Delete.
   canCreate: (a) => roles.admin(a)
@@ -469,4 +506,5 @@ module.exports = {
   employees,
   shifts,
   loans,
+  employeePenalties,
 };

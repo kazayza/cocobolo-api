@@ -1,38 +1,42 @@
 const { sql, connectDB } = require('../../core/database');
 
 // جلب كل الموظفين (مع البحث والفلترة)
+// المدير المباشر (DirectManagerID — عمود جديد بملف penalties-schema.sql)
+// يظهر كـ directManagerId/directManagerName عبر انضمام ذاتي على Employees.
 async function getAllEmployees(filters = {}) {
   const pool = await connectDB();
   const request = pool.request();
-  
+
   let query = `
-    SELECT 
-      EmployeeID, FullName, JobTitle, Department, NationalID,
-      Gender, BirthDate, qualification, Address, MobilePhone,
-      MobilePhone2, EmailAddress, HireDate, EndDate,
-      BioEmployeeID, IsPermanentlyExempt, CurrentSalaryBase, Status, Notes,
-      CreatedBy, CreatedAt
-    FROM Employees
+    SELECT
+      e.EmployeeID, e.FullName, e.JobTitle, e.Department, e.NationalID,
+      e.Gender, e.BirthDate, e.qualification, e.Address, e.MobilePhone,
+      e.MobilePhone2, e.EmailAddress, e.HireDate, e.EndDate,
+      e.BioEmployeeID, e.IsPermanentlyExempt, e.CurrentSalaryBase, e.Status, e.Notes,
+      e.CreatedBy, e.CreatedAt,
+      e.DirectManagerID AS directManagerId, m.FullName AS directManagerName
+    FROM Employees e
+    LEFT JOIN Employees m ON m.EmployeeID = e.DirectManagerID
     WHERE 1=1
   `;
 
   // الفلترة
   if (filters.status) {
     request.input('status', sql.NVarChar(20), filters.status);
-    query += ` AND Status = @status`;
+    query += ` AND e.Status = @status`;
   }
 
   if (filters.department) {
     request.input('department', sql.NVarChar(100), filters.department);
-    query += ` AND Department = @department`;
+    query += ` AND e.Department = @department`;
   }
 
   if (filters.search) {
     request.input('search', sql.NVarChar(100), `%${filters.search}%`);
-    query += ` AND (FullName LIKE @search OR MobilePhone LIKE @search OR NationalID LIKE @search)`;
+    query += ` AND (e.FullName LIKE @search OR e.MobilePhone LIKE @search OR e.NationalID LIKE @search)`;
   }
 
-  query += ` ORDER BY FullName`;
+  query += ` ORDER BY e.FullName`;
 
   const result = await request.query(query);
   return result.recordset;
@@ -51,15 +55,21 @@ async function getActiveEmployees() {
   return result.recordset;
 }
 
-// جلب موظف بالـ ID
+// جلب موظف بالـ ID — مع اسم المدير المباشر (انضمام ذاتي) وحقل
+// directManagerId باسم واجهة ثابت إلى جوار DirectManagerID الفيزيائي.
 async function getEmployeeById(id) {
   const pool = await connectDB();
   const result = await pool.request()
     .input('id', sql.Int, id)
     .query(`
-      SELECT * FROM Employees WHERE EmployeeID = @id
+      SELECT e.*, m.FullName AS directManagerName
+      FROM Employees e
+      LEFT JOIN Employees m ON m.EmployeeID = e.DirectManagerID
+      WHERE e.EmployeeID = @id
     `);
-  return result.recordset[0] || null;
+  const row = result.recordset[0] || null;
+  if (row) row.directManagerId = row.DirectManagerID ?? null;
+  return row;
 }
 
 // جلب قوائم الأقسام والوظائف والفروع (Dropdowns)
@@ -113,13 +123,15 @@ async function createEmployee(data) {
     // موظف بلا فرع يختفي من كل استعلامات القمرة والتقارير المقيدة بالفرع.
     .input('branchId', sql.Int, data.branchId || null)
     .input('yearQualification', sql.NVarChar(4), data.yearQualification || null)
+    // المدير المباشر: اختياري، والمتحكم تحقق من وجوده عند حضوره
+    .input('directManagerId', sql.Int, data.directManagerId || null)
     .query(`
       INSERT INTO Employees (
         FullName, JobTitle, Department, NationalID, Gender,
         BirthDate, qualification, Address, MobilePhone, MobilePhone2,
         EmailAddress, HireDate, EndDate, BioEmployeeID, IsPermanentlyExempt,
         CurrentSalaryBase, Status, Notes, CreatedBy, CreatedAt,
-        BranchID, yearqualification
+        BranchID, yearqualification, DirectManagerID
       )
       OUTPUT INSERTED.EmployeeID
       VALUES (
@@ -127,7 +139,7 @@ async function createEmployee(data) {
         @birthDate, @qualification, @address, @mobilePhone, @mobilePhone2,
         @emailAddress, @hireDate, @endDate, @bioEmployeeId, @isPermanentlyExempt,
         @currentSalaryBase, @status, @notes, @createdBy, GETDATE(),
-        @branchId, @yearQualification
+        @branchId, @yearQualification, @directManagerId
       )
     `);
   return result.recordset[0].EmployeeID;
@@ -142,6 +154,9 @@ async function updateEmployee(id, data, salaryChange = null) {
   // يعني «اترك القائم» لا «صفّره» (نماذج قديمة لا ترسلهما بعد).
   const branchSet = data.branchId !== undefined ? ', BranchID = @branchId' : '';
   const yearSet = data.yearQualification !== undefined ? ', yearqualification = @yearQualification' : '';
+  // المدير المباشر بنفس قاعدة الحضور: غياب المفتاح = اترك القائم،
+  // وحضوره بقيمة فارغة = مسح صريح للمدير.
+  const managerSet = data.directManagerId !== undefined ? ', DirectManagerID = @directManagerId' : '';
   const tx = new sql.Transaction(pool);
   await tx.begin();
   try {
@@ -167,6 +182,7 @@ async function updateEmployee(id, data, salaryChange = null) {
       .input('notes', sql.NVarChar(150), data.notes || null)
       .input('branchId', sql.Int, data.branchId || null)
       .input('yearQualification', sql.NVarChar(4), data.yearQualification || null)
+      .input('directManagerId', sql.Int, data.directManagerId || null)
       .query(`
         UPDATE Employees SET
           FullName = @fullName, JobTitle = @jobTitle, Department = @department,
@@ -176,7 +192,7 @@ async function updateEmployee(id, data, salaryChange = null) {
           EmailAddress = @emailAddress, HireDate = @hireDate, EndDate = @endDate,
           BioEmployeeID = @bioEmployeeId, IsPermanentlyExempt = @isPermanentlyExempt,
           CurrentSalaryBase = @currentSalaryBase, Status = @status, Notes = @notes
-          ${branchSet} ${yearSet}
+          ${branchSet} ${yearSet} ${managerSet}
         WHERE EmployeeID = @id
       `);
 

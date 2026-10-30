@@ -268,9 +268,12 @@ async function findActivePayrollForMonth(employeeId, payrollMonth) {
 // GetRunsAsync:1203 / ApprovePayrollAsync:1045 / RejectPayrollAsync:1077 /
 // PayOneAsync:733 / GetAttendanceAsync:1660 / GetWorkingDaysAsync:1984 /
 // UpdatePayrollRunStatusAsync:1748 / DeductLoanInstallments:1869.
-// حدود صادقة: الجزاءات والمكافآت اليدوية لا تُخترع هنا — في بلازور
-// تُحرَّر يدويًا في شاشة المعالجة قبل الحفظ، وتبقى متاحة عبر تفاصيل
-// المرتب القائمة. NetSalary عمود محسوب — لا يُدرج أبدًا.
+// حدود صادقة: المكافآت اليدوية لا تُخترع هنا — في بلازور تُحرَّر
+// يدويًا في شاشة المعالجة قبل الحفظ، وتبقى متاحة عبر تفاصيل المرتب
+// القائمة. الجزاءات (نظام الجزاءات — المرحلة ١): تُقرأ من جدول
+// EmployeePenalties بالحالة Approved للموظف والشهر وتدخل الحساب في
+// PenaltyDeduction وبنود تفصيلية من نوع 'Penalty'، ثم تتحول إلى
+// Applied داخل معاملة الحفظ نفسها. NetSalary عمود محسوب — لا يُدرج أبدًا.
 // ══════════════════════════════════════════════════════════════
 
 const PAYROLL_STATUS = {
@@ -479,6 +482,31 @@ async function calculateOne(pool, employeeId, month) {
   }));
   const loanDeduction = round2(loanItems.reduce((s, i) => s + i.Amount, 0));
 
+  // الجزاءات المعتمدة لهذا الموظف في هذا الشهر (نظام الجزاءات):
+  // المبلغ محسوب ومجمّد عند الاعتماد في ComputedAmount — المحرك يجمعه
+  // كما هو ولا يعيد حسابه، حتى لا يختلف الرقم باختلاف وقت الحساب.
+  // الانتقاء بالحالة 'Approved' فقط هو حارس عدم التكرار: الجزاء الذي
+  // تحول إلى 'Applied' عند حفظ راتب سابق لا يُجمع مرة أخرى أبدًا.
+  const penRes = await pool.request()
+    .input('employeeId', sql.Int, employeeId)
+    .input('month', sql.NVarChar(10), month)
+    .query(`
+      SELECT Id, PenaltyType, DaysCount, FixedAmount, ComputedAmount, Reason
+      FROM EmployeePenalties
+      WHERE EmployeeID = @employeeId AND TargetMonth = @month AND Status = 'Approved'
+      ORDER BY Id
+    `);
+  const penaltyItems = penRes.recordset.map((r) => ({
+    DetailID: r.Id,
+    DetailType: 'Penalty',
+    Description: `جزاء: ${r.Reason}`,
+    Amount: Number(r.ComputedAmount || 0),
+    IsDeduction: true,
+    PaymentType: 'InPayroll',
+    PenaltyId: r.Id,
+  }));
+  const penaltyDeduction = round2(penaltyItems.reduce((s, i) => s + i.Amount, 0));
+
   const existingRes = await pool.request()
     .input('employeeId', sql.Int, employeeId)
     .input('month', sql.NVarChar(10), month)
@@ -490,7 +518,8 @@ async function calculateOne(pool, employeeId, month) {
     `);
   const existing = existingRes.recordset[0] || null;
 
-  const totalDeductions = round2(absDed + lateDed + loanDeduction);
+  // صافي بلازور (PayrollDto): الأساسي + الحافز − (غياب + تأخير + سلف + جزاءات)
+  const totalDeductions = round2(absDed + lateDed + loanDeduction + penaltyDeduction);
   return {
     EmployeeID: employeeId,
     EmployeeName: emp.FullName,
@@ -505,7 +534,8 @@ async function calculateOne(pool, employeeId, month) {
     LateDeduction: lateDed,
     LoanDeduction: loanDeduction,
     LoanItems: loanItems,
-    PenaltyDeduction: 0,
+    PenaltyDeduction: penaltyDeduction,
+    PenaltyItems: penaltyItems,
     GrossSalary: basic,
     TotalDeductions: totalDeductions,
     NetSalary: round2(basic - totalDeductions),
@@ -534,7 +564,7 @@ async function calculateMonth(month) {
 }
 
 // SaveOnlyAsync:395 — حفظ جماعي كتشغيل PendingReview، مع تخطي
-// المسجل سابقًا وصفر الأساسي، وتفاصيل غياب/تأخير/سلف — معاملة واحدة.
+// المسجل سابقًا وصفر الأساسي، وتفاصيل غياب/تأخير/سلف/جزاءات — معاملة واحدة.
 async function saveRun(month, username) {
   const calculations = await calculateMonth(month);
   const selected = calculations.filter((c) => !c.HasExistingPayroll && !c.Warning?.startsWith('خطأ'));
@@ -574,7 +604,7 @@ async function saveRun(month, username) {
         .input('absenceDeduction', sql.Decimal(18, 2), calc.AbsenceDeduction)
         .input('lateDeduction', sql.Decimal(18, 2), calc.LateDeduction)
         .input('loanDeduction', sql.Decimal(18, 2), calc.LoanDeduction)
-        .input('penaltyDeduction', sql.Decimal(18, 2), 0)
+        .input('penaltyDeduction', sql.Decimal(18, 2), calc.PenaltyDeduction || 0)
         .input('workingDays', sql.Int, calc.WorkingDaysInMonth)
         .input('presentDays', sql.Int, calc.PresentDays)
         .input('absenceDays', sql.Int, calc.AbsenceDays)
@@ -612,6 +642,12 @@ async function saveRun(month, username) {
       for (const item of calc.LoanItems) {
         if (item.Amount > 0) details.push({ type: 'LoanDeduction', description: item.Description, amount: item.Amount });
       }
+      // بند تفصيلي لكل جزاء — نوعه 'Penalty' كما في بلازور
+      // (PayrollService.BuildPayrollDetails) ووصفه يحمل سبب الجزاء،
+      // فيظهر مفصلًا في القسيمة لا رقمًا مجهولًا.
+      for (const item of calc.PenaltyItems || []) {
+        if (item.Amount > 0) details.push({ type: 'Penalty', description: item.Description, amount: item.Amount });
+      }
       for (const d of details) {
         await new sql.Request(transaction)
           .input('payrollId', sql.Int, payrollId)
@@ -622,6 +658,20 @@ async function saveRun(month, username) {
           .query(`
             INSERT INTO PayrollDetails (PayrollID, DetailType, DetailDescription, Amount, IsDeduction, PaymentType, CreatedBy, CreatedAt)
             VALUES (@payrollId, @detailType, @description, @amount, 1, 'InPayroll', @createdBy, GETDATE())
+          `);
+      }
+
+      // تحويل الجزاءات المجموعة في هذا الراتب إلى Applied برقمه —
+      // داخل معاملة الحفظ نفسها، وبحارس الحالة 'Approved' حتى لا
+      // يُطبَّق جزاء مرتين مهما تكرر المسار.
+      for (const item of calc.PenaltyItems || []) {
+        await new sql.Request(transaction)
+          .input('penaltyId', sql.Int, item.PenaltyId)
+          .input('payrollId', sql.Int, payrollId)
+          .query(`
+            UPDATE EmployeePenalties
+            SET Status = 'Applied', AppliedPayrollID = @payrollId
+            WHERE Id = @penaltyId AND Status = 'Approved'
           `);
       }
 
@@ -992,6 +1042,11 @@ module.exports = {
   findActivePayrollForMonth,
   // محرك الدورة (البند 34) — يُعاد استخدامه لدفعات خارج الراتب (البند 19)
   PAYROLL_STATUS,
+  // دوال محرك مشتركة — يعيد نظام الجزاءات استخدام منطق أيام العمل
+  // وقيمة اليوم نفسه بدل نسخة موازية (تعريف واحد للرقم في النظام).
+  getWorkingDays,
+  monthBounds,
+  round2,
   calculateOne,
   calculateMonth,
   saveRun,
