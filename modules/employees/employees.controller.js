@@ -70,7 +70,8 @@ async function create(req, res) {
       return errorResponse(res, 'الرقم القومي مطلوب', 400);
     }
 
-    const employeeId = await employeesQueries.createEmployee(req.body);
+    // المنشئ من التوكن فقط؛ createdBy الجسم يُتجاهل (كان قابلًا للانتحال)
+    const employeeId = await employeesQueries.createEmployee({ ...req.body, createdBy: req.auth.username });
 
     return res.json({
       success: true,
@@ -83,7 +84,8 @@ async function create(req, res) {
   }
 }
 
-// تعديل موظف
+// تعديل موظف — تغيير المرتب الأساسي يتطلب سببًا ويُسجَّل في
+// SalaryHistory داخل نفس المعاملة (مرآة قاعدة بلازور)
 async function update(req, res) {
   try {
     const { id } = req.params;
@@ -93,7 +95,23 @@ async function update(req, res) {
       return errorResponse(res, 'اسم الموظف مطلوب', 400);
     }
 
-    await employeesQueries.updateEmployee(id, req.body);
+    const existing = await employeesQueries.getEmployeeById(id);
+    if (!existing) {
+      return notFoundResponse(res, 'الموظف غير موجود');
+    }
+
+    let salaryChange = null;
+    const oldSalary = Number(existing.CurrentSalaryBase ?? 0);
+    const newSalary = Number(req.body.currentSalaryBase ?? 0);
+    if (newSalary !== oldSalary) {
+      const reason = String(req.body.salaryChangeReason || '').trim();
+      if (!reason) {
+        return errorResponse(res, 'سبب تغيير المرتب مطلوب عند تعديل المرتب الأساسي.', 400);
+      }
+      salaryChange = { oldSalary, newSalary, reason, changedBy: req.auth.username };
+    }
+
+    await employeesQueries.updateEmployee(id, req.body, salaryChange);
 
     return res.json({
       success: true,

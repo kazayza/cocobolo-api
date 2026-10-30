@@ -479,6 +479,12 @@ async function getAllExemptions(filters = {}) {
     query += ` AND e.FullName LIKE @employeeName`;
   }
 
+  // قيد النفس لغير المديرين (مرحلة صفر): سجلات كود البصمة هذا فقط
+  if (filters.bioEmployeeId) {
+    request.input('bioEmployeeId', sql.Int, filters.bioEmployeeId);
+    query += ` AND x.BioEmployeeID = @bioEmployeeId`;
+  }
+
   query += ` ORDER BY x.ExemptionDate DESC`;
 
   const result = await request.query(query);

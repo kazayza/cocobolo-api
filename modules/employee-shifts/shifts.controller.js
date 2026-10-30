@@ -1,5 +1,6 @@
 const shiftsQueries = require('./shifts.queries');
 const { successResponse, errorResponse } = require('../../shared/response.helper');
+const policies = require('../../shared/authorization.policy');
 
 // دالة مساعدة لتوقيت مصر
 function getEgyptTime() {
@@ -120,6 +121,12 @@ async function getMySchedule(req, res) {
   try {
     const { userId } = req.params;
     const { year, month } = req.query;
+
+    // مرحلة صفر (أمن): الجدول لصاحبه فقط أو لمدير موارد/حضور —
+    // كان أي مستخدم مصادق يقرأ جدول أي مستخدم آخر بمعرفته رقمه.
+    if (Number(userId) !== req.auth.userId && !policies.shifts.canViewOthersSchedule(req.auth)) {
+      return errorResponse(res, 'غير مصرح لك بعرض جدول ورديات مستخدم آخر', 403);
+    }
 
     if (!year || !month) {
       return errorResponse(res, 'السنة والشهر مطلوبين', 400);

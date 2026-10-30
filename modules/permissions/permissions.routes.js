@@ -9,17 +9,16 @@ router.use(authenticate);
 // 📝 Permission Routes
 // ==========================
 
-// تقديم طلب جديد
-// Body: { userId, employeeId, permissionDate, type, reason, createdAt, ... }
+// تقديم طلب جديد — الهوية من التوكن فقط (userId/employeeId في الجسم يُتجاهلان)
+// Body: { permissionDate, type, reason, createdAt, fromTime, toTime }
 router.post('/request', permissionsController.requestPermission);
 
-// عرض القائمة
-// Query: ?role=Admin&status=Pending (Manager)
-// Query: ?employeeId=5 (User)
+// عرض القائمة — الدور من التوكن: المدير يرى الكل، والموظف يرى طلباته فقط
+// Query: ?status=Pending&employeeName=... (&employeeId للمدير فقط)
 router.get('/list', permissionsController.listPermissions);
 
-// اتخاذ إجراء (موافقة/رفض)
-// Body: { permissionId, status: 'Approved', comment, userId }
+// اتخاذ إجراء (موافقة/رفض) — مدير فقط، والطلب معلق فقط
+// Body: { permissionId, status: 'Approved'|'Rejected', comment }
 router.post('/action', permissionsController.takeAction);
 
 module.exports = router;

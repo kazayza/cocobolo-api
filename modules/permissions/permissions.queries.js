@@ -99,26 +99,37 @@ async function getPermissionsList(filters) {
 }
 
 // 4. تغيير الحالة (موافقة/رفض) + تحديث الحضور أوتوماتيك
+// مرحلة صفر (أمن): التحديث مشروط بأن الطلب ما زال معلقًا، وأثر
+// الحضور لا يُنفَّذ إلا إذا حدّث هذا النداء الصف فعلًا (@@ROWCOUNT)،
+// وتُرجع الدالة عدد الصفوف المتأثرة ليتحقق المتحكم من نجاح البت.
 async function updatePermissionStatus(data) {
   const pool = await connectDB();
-  
-  await pool.request()
+
+  const updateResult = await pool.request()
     .input('id', sql.Int, data.permissionId)
     .input('status', sql.NVarChar(20), data.status)
     .input('comment', sql.NVarChar(255), data.comment || '')
     .input('userId', sql.Int, data.userId) // المدير اللي وافق
     .input('now', sql.DateTime, new Date())
     .query(`
-      -- 1. تحديث حالة الإذن
+      -- 1. تحديث حالة الإذن — معلق فقط
       UPDATE ShortPermissions
       SET Status = @status,
           ManagerComment = @comment,
           ApprovedByUserID = @userId,
           ApprovalDate = @now
-      WHERE PermissionID = @id;
+      WHERE PermissionID = @id AND Status = 'Pending';
 
-      -- 2. لو تمت الموافقة، نحدث سجل الحضور
-      IF @status = 'Approved'
+      SELECT @@ROWCOUNT AS Affected;
+    `);
+
+  const affected = updateResult.recordset[0]?.Affected || 0;
+  if (!affected || data.status !== 'Approved') return affected;
+
+  // 2. لو تمت الموافقة وتم التحديث فعلًا، نحدث سجل الحضور
+  await pool.request()
+    .input('id', sql.Int, data.permissionId)
+    .query(`
       BEGIN
           DECLARE @Type NVARCHAR(50);
           DECLARE @Date DATE;
@@ -149,6 +160,8 @@ async function updatePermissionStatus(data) {
           END
       END
     `);
+
+  return affected;
 }
 
 module.exports = {

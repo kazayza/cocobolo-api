@@ -80,14 +80,21 @@ async function notifyEmployee(targetUserId, title, message, relatedId) {
 
 // --- الدوال الرئيسية ---
 
-// 1. تقديم طلب إذن
+// مرحلة صفر (أمن): الهوية والسلطة من التوكن فقط (req.auth) — أي
+// userId/role في الجسم أو الاستعلام يُتجاهل تمامًا؛ كان أي مستخدم
+// مصادَق يستطيع تقديم طلب باسم غيره والبتّ في طلبات الآخرين بنفسه.
+const PERMISSION_MANAGER_ROLES = ['admin', 'hr', 'hrmanager', 'generalmanager', 'accountmanager', 'salesmanager'];
+function isPermissionManager(auth) {
+  return PERMISSION_MANAGER_ROLES.includes(String(auth?.role || '').toLowerCase().replace(/[\s_-]+/g, ''));
+}
+
+// 1. تقديم طلب إذن — لصاحب الجلسة نفسه فقط
 async function requestPermission(req, res) {
   try {
-    // ⚠️ مش بناخد employeeId من الموبايل هنا
-    const { userId, permissionDate, type, reason, createdAt, fromTime, toTime } = req.body;
+    const { permissionDate, type, reason, createdAt, fromTime, toTime } = req.body;
 
-    // ✅ 1. الباك اند بيجيب رقم الموظف بنفسه
-    const empId = await getEmployeeIdFromUser(userId);
+    // ✅ 1. رقم الموظف من جلسة التوكن، لا من الجسم
+    const empId = req.auth.employeeId || await getEmployeeIdFromUser(req.auth.userId);
 
     if (!empId) {
       return errorResponse(res, 'هذا المستخدم غير مرتبط بموظف، لا يمكن تقديم طلب.', 400);
@@ -119,21 +126,23 @@ async function requestPermission(req, res) {
   }
 }
 
-// 2. عرض الطلبات
+// 2. عرض الطلبات — الدور من التوكن؛ غير المدير يرى طلباته فقط
 async function listPermissions(req, res) {
   try {
-    const { userId, role, status, employeeName } = req.query;
-    
-    const managerRoles = ['Admin', 'HR', 'AccountManager', 'SalesManager'];
-    const isManager = managerRoles.some(r => r.toLowerCase() === (role || '').toLowerCase());
+    const { status, employeeName } = req.query;
+
+    const isManager = isPermissionManager(req.auth);
 
     let filters = { status, employeeName };
 
     if (!isManager) {
-      // ✅ لو موظف عادي: الباك اند يجيب رقمه ويفلتر بيه
-      const empId = await getEmployeeIdFromUser(userId);
+      // ✅ موظف عادي: مقيد برقم موظفه من الجلسة مهما أرسل
+      const empId = req.auth.employeeId || await getEmployeeIdFromUser(req.auth.userId);
       if (!empId) return res.json([]); // لو مش موظف ملوش بيانات
       filters.employeeId = empId;
+    } else if (req.query.employeeId) {
+      const wanted = parseInt(req.query.employeeId, 10);
+      if (!Number.isNaN(wanted)) filters.employeeId = wanted;
     }
 
     const data = await permissionsQueries.getPermissionsList(filters);
@@ -144,21 +153,38 @@ async function listPermissions(req, res) {
   }
 }
 
-// 3. اتخاذ إجراء (زي ما هي)
+// 3. اتخاذ إجراء — مدير فقط، والطلب يجب أن يكون معلقًا،
+// والمعتمِد هو صاحب الجلسة (لا userId من الجسم).
 async function takeAction(req, res) {
   try {
-    const { permissionId, status, comment, userId } = req.body;
+    if (!isPermissionManager(req.auth)) {
+      return errorResponse(res, 'ليس لديك صلاحية البت في طلبات الأذونات.', 403);
+    }
+
+    const { permissionId, status, comment } = req.body;
 
     if (!['Approved', 'Rejected'].includes(status)) {
       return errorResponse(res, 'حالة غير صحيحة', 400);
     }
 
-    await permissionsQueries.updatePermissionStatus({ permissionId, status, comment, userId });
-    
-    const permDetails = await permissionsQueries.getPermissionById(permissionId);
-    if (permDetails && permDetails.RequesterUserID) {
+    const existing = await permissionsQueries.getPermissionById(permissionId);
+    if (!existing) {
+      return errorResponse(res, 'الطلب غير موجود', 404);
+    }
+    if (existing.Status !== 'Pending') {
+      return errorResponse(res, 'تم البت في هذا الطلب مسبقًا ولا يمكن إعادة البت فيه.', 400);
+    }
+
+    const affected = await permissionsQueries.updatePermissionStatus({
+      permissionId, status, comment, userId: req.auth.userId
+    });
+    if (!affected) {
+      return errorResponse(res, 'تم البت في هذا الطلب مسبقًا ولا يمكن إعادة البت فيه.', 400);
+    }
+
+    if (existing.RequesterUserID) {
         const msg = status === 'Approved' ? 'تمت الموافقة على طلبك ✅' : 'تم رفض طلبك ❌';
-        await notifyEmployee(permDetails.RequesterUserID, 'تحديث حالة الطلب', msg, permissionId);
+        await notifyEmployee(existing.RequesterUserID, 'تحديث حالة الطلب', msg, permissionId);
     }
 
     return res.json({ success: true, message: 'تم تنفيذ الإجراء بنجاح' });

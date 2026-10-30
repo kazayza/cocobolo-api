@@ -74,6 +74,11 @@ async function getById(req, res) {
 }
 
 // إنشاء مرتب جديد
+// مرحلة صفر الموارد — تجميد المسارات القديمة: الحالات التي تُقفل
+// المرتب أمام أي تعديل قديم (الدفع يتم عبر محرك الدورة فقط، بحركة
+// خزينة وخصم أقساط؛ والملغي لا يُبعث من هذه المسارات).
+const LEGACY_LOCKED_STATUSES = ['مدفوع', 'ملغي'];
+
 async function create(req, res) {
   try {
     const { employeeId, payrollMonth, basicSalary } = req.body;
@@ -82,7 +87,19 @@ async function create(req, res) {
       return errorResponse(res, 'البيانات غير مكتملة', 400);
     }
 
-    const payrollId = await payrollQueries.createPayroll(req.body);
+    // لا إنشاء مباشر بحالة «مدفوع» — الصرف عبر محرك الدورة فقط.
+    if (req.body.paymentStatus === 'مدفوع') {
+      return errorResponse(res, 'لا يمكن إنشاء مرتب بحالة مدفوع مباشرة؛ الصرف يتم عبر دورة الرواتب.', 400);
+    }
+
+    // منع التكرار: مرتب قائم لنفس الموظف والشهر (غير ملغي).
+    const duplicateId = await payrollQueries.findActivePayrollForMonth(employeeId, payrollMonth);
+    if (duplicateId) {
+      return errorResponse(res, 'يوجد مرتب قائم لهذا الموظف في نفس الشهر.', 409);
+    }
+
+    // المنشئ من التوكن فقط؛ createdBy الجسم يُتجاهل.
+    const payrollId = await payrollQueries.createPayroll({ ...req.body, createdBy: req.auth.username });
 
     // إشعار للمديرين - مطابق للبلازور NotifyRoleAsync (frm_Payroll)
     try {
@@ -104,10 +121,18 @@ async function create(req, res) {
   }
 }
 
-// تعديل مرتب
+// تعديل مرتب — ممنوع على مرتب مدفوع أو ملغي (كان يعدّل المدفوع بحرية)
 async function update(req, res) {
   try {
     const { id } = req.params;
+
+    const currentStatus = await payrollQueries.getLegacyPayrollStatus(id);
+    if (currentStatus == null) {
+      return errorResponse(res, 'المرتب غير موجود', 404);
+    }
+    if (LEGACY_LOCKED_STATUSES.includes(currentStatus)) {
+      return errorResponse(res, 'لا يمكن تعديل مرتب مدفوع أو ملغي.', 400);
+    }
 
     await payrollQueries.updatePayroll(id, req.body);
 
@@ -121,7 +146,9 @@ async function update(req, res) {
   }
 }
 
-// تحديث حالة الدفع
+// تحديث حالة الدفع — المسار القديم لا يصرّف أبدًا: الانتقال إلى
+// «مدفوع» من هنا كان يتم بلا حركة خزينة ولا خصم أقساط ولا فحص رصيد.
+// الصرف الحقيقي عبر POST /:id/pay (محرك الدورة) فقط.
 async function updateStatus(req, res) {
   try {
     const { id } = req.params;
@@ -129,6 +156,18 @@ async function updateStatus(req, res) {
 
     if (!status) {
       return errorResponse(res, 'الحالة مطلوبة', 400);
+    }
+
+    if (status === 'مدفوع') {
+      return errorResponse(res, 'لا يمكن تحويل المرتب إلى مدفوع من هنا؛ استخدم صرف دورة الرواتب حتى تُسجَّل حركة الخزينة وتُخصم الأقساط.', 400);
+    }
+
+    const currentStatus = await payrollQueries.getLegacyPayrollStatus(id);
+    if (currentStatus == null) {
+      return errorResponse(res, 'المرتب غير موجود', 404);
+    }
+    if (LEGACY_LOCKED_STATUSES.includes(currentStatus)) {
+      return errorResponse(res, 'مرتب مدفوع أو ملغي لا تتغير حالته من هذا المسار.', 400);
     }
 
     await payrollQueries.updatePaymentStatus(id, status, paymentDate);
@@ -148,7 +187,8 @@ async function updateStatus(req, res) {
   }
 }
 
-// إضافة تفصيل للمرتب
+// إضافة تفصيل للمرتب — ممنوعة على مرتب مدفوع أو ملغي،
+// والمنشئ من التوكن فقط.
 async function addDetail(req, res) {
   try {
     const { id } = req.params;
@@ -158,7 +198,15 @@ async function addDetail(req, res) {
       return errorResponse(res, 'النوع والمبلغ مطلوبين', 400);
     }
 
-    const detailId = await payrollQueries.addPayrollDetail(id, req.body);
+    const parentStatus = await payrollQueries.getLegacyPayrollStatus(id);
+    if (parentStatus == null) {
+      return errorResponse(res, 'المرتب غير موجود', 404);
+    }
+    if (LEGACY_LOCKED_STATUSES.includes(parentStatus)) {
+      return errorResponse(res, 'لا يمكن إضافة تفاصيل إلى مرتب مدفوع أو ملغي.', 400);
+    }
+
+    const detailId = await payrollQueries.addPayrollDetail(id, { ...req.body, createdBy: req.auth.username });
 
     return res.json({
       success: true,
@@ -171,10 +219,18 @@ async function addDetail(req, res) {
   }
 }
 
-// حذف تفصيل
+// حذف تفصيل — ممنوع إذا كان المرتب الأب مدفوعًا أو ملغيًا
 async function deleteDetail(req, res) {
   try {
     const { detailId } = req.params;
+
+    const parentStatus = await payrollQueries.getDetailParentStatus(detailId);
+    if (parentStatus == null) {
+      return errorResponse(res, 'التفصيل غير موجود', 404);
+    }
+    if (LEGACY_LOCKED_STATUSES.includes(parentStatus)) {
+      return errorResponse(res, 'لا يمكن حذف تفاصيل من مرتب مدفوع أو ملغي.', 400);
+    }
 
     await payrollQueries.deletePayrollDetail(detailId);
 

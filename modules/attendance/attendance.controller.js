@@ -326,13 +326,25 @@ async function getExemptions(req, res) {
 async function createExemption(req, res) {
   try {
     const body = req.body || {};
-    if (!body.bioEmployeeId || !body.exemptionDate || !body.reasonCode) {
+    if (!body.exemptionDate || !body.reasonCode) {
       return errorResponse(res, 'بيانات الإعفاء غير مكتملة', 400);
     }
     const manager = isExemptionManager(req.auth);
+    // مرحلة صفر (أمن): غير المدير ينشئ لنفسه فقط — كود البصمة يُفرض
+    // من جلسته ويُتجاهل أي كود في الجسم (كان بإمكان أي مستخدم إنشاء
+    // إعفاء لأي موظف آخر). المدير وحده ينشئ لغيره.
+    let bioEmployeeId = body.bioEmployeeId;
+    if (!manager) {
+      bioEmployeeId = await attendanceQueries.getBioCodeByUserId(req.auth.userId);
+      if (!bioEmployeeId) {
+        return errorResponse(res, 'لم يتم ربط الموظف برقم بصمة', 400);
+      }
+    } else if (!bioEmployeeId) {
+      return errorResponse(res, 'بيانات الإعفاء غير مكتملة', 400);
+    }
     const status = manager ? 'Approved' : 'Pending';
     const { exemptionId, exemption } = await attendanceQueries.createExemption({
-      bioEmployeeId: body.bioEmployeeId,
+      bioEmployeeId,
       employeeId: body.employeeId || null,
       exemptionDate: body.exemptionDate,
       reasonCode: body.reasonCode,
@@ -422,12 +434,20 @@ async function getCalendar(req, res) {
 }
 
 // جلب كل الاستثناءات — مع حالة مستنتجة للصفوف القديمة (InferStatus)
+// مرحلة صفر (أمن): القائمة الكاملة لمديري الإعفاءات فقط؛ غيرهم
+// تُقيد تلقائيًا بسجلاتهم هم (كانت مفتوحة لأي جلسة بلا قيد).
 async function getExemptionsList(req, res) {
   try {
     const filters = {
       date: req.query.date,
       employeeName: req.query.employeeName
     };
+    if (!isExemptionManager(req.auth)) {
+      const ownBio = await attendanceQueries.getBioCodeByUserId(req.auth.userId);
+      if (!ownBio) return res.json([]);
+      filters.bioEmployeeId = ownBio;
+      delete filters.employeeName;
+    }
     const data = await attendanceQueries.getAllExemptions(filters);
     return res.json(data.map((row) => ({
       ...row,
@@ -486,9 +506,12 @@ async function saveManualAttendance(req, res) {
   }
 }
 
-// حذف استثناء
+// حذف استثناء — مدير إعفاءات فقط (كان مفتوحًا لأي جلسة)
 async function removeExemption(req, res) {
   try {
+    if (!isExemptionManager(req.auth)) {
+      return errorResponse(res, 'ليس لديك صلاحية حذف الاستثناءات.', 403);
+    }
     const { id } = req.params;
     await attendanceQueries.deleteExemption(id);
     return res.json({ success: true, message: 'تم الحذف بنجاح' });

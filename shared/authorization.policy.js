@@ -404,6 +404,42 @@ const settings = {
   canManage: (a) => roles.admin(a),
 };
 
+// ============================================================
+// مرحلة صفر الموارد البشرية — بوابات كتابات كانت مفتوحة لأي جلسة.
+// أسماء الـ Claims مطابقة لبلازور: frm_Employees (نموذج الموظف)،
+// frm_EmpolyeeShifts (بخطئها الإملائي كما في بلازور)، frmEmployeeLoans.
+// القراءات تبقى لأي جلسة مصادَقة (شاشات أخرى تعتمد عليها كقوائم اختيار).
+// ============================================================
+const employees = {
+  canCreate: (a) => roles.admin(a) || roles.hrManager(a) || hasClaim(a, 'frm_Employees:Add'),
+  canEdit: (a) => roles.admin(a) || roles.hrManager(a) || hasClaim(a, 'frm_Employees:Edit'),
+};
+
+const shifts = {
+  canCreate: (a) => roles.admin(a) || roles.hrManager(a) || hasClaim(a, 'frm_EmpolyeeShifts:Add'),
+  canEdit: (a) => roles.admin(a) || roles.hrManager(a) || hasClaim(a, 'frm_EmpolyeeShifts:Edit'),
+  canDelete: (a) => roles.admin(a) || roles.hrManager(a) || hasClaim(a, 'frm_EmpolyeeShifts:Delete'),
+  // عرض جدول ورديات مستخدم آخر: مديرو الحضور/الموارد فقط.
+  canViewOthersSchedule: (a) => roles.admin(a)
+    || roles.hrManager(a)
+    || roles.accountManager(a)
+    || roles.generalManager(a),
+};
+
+const loans = {
+  // إنشاء السلفة في بلازور (LoansPage) بـ frmEmployeeLoans:Add، والإلغاء بـ :Delete.
+  canCreate: (a) => roles.admin(a)
+    || roles.hrManager(a)
+    || roles.accountManager(a)
+    || isRole(a, 'AccountsManager')
+    || hasClaim(a, 'frmEmployeeLoans:Add'),
+  canCancel: (a) => roles.admin(a)
+    || roles.hrManager(a)
+    || roles.accountManager(a)
+    || isRole(a, 'AccountsManager')
+    || hasClaim(a, 'frmEmployeeLoans:Delete'),
+};
+
 module.exports = {
   norm,
   isRole,
@@ -430,4 +466,7 @@ module.exports = {
   expenses,
   personalAccounts,
   settings,
+  employees,
+  shifts,
+  loans,
 };

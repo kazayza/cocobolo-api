@@ -225,6 +225,44 @@ async function deletePayrollDetail(detailId) {
 }
 
 // ══════════════════════════════════════════════════════════════
+// حراس تجميد المسارات القديمة (مرحلة صفر الموارد): حالة المرتب
+// الحالية، وحالة مرتب التفصيل الأب، وفحص تكرار (موظف، شهر).
+// ══════════════════════════════════════════════════════════════
+async function getLegacyPayrollStatus(id) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('id', sql.Int, id)
+    .query('SELECT PaymentStatus FROM Payroll WHERE PayrollID = @id');
+  return result.recordset[0]?.PaymentStatus ?? null;
+}
+
+async function getDetailParentStatus(detailId) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('id', sql.Int, detailId)
+    .query(`
+      SELECT p.PaymentStatus
+      FROM PayrollDetails d
+      JOIN Payroll p ON d.PayrollID = p.PayrollID
+      WHERE d.PayrollDetailID = @id
+    `);
+  return result.recordset[0]?.PaymentStatus ?? null;
+}
+
+async function findActivePayrollForMonth(employeeId, payrollMonth) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('employeeId', sql.Int, employeeId)
+    .input('payrollMonth', sql.Char(7), payrollMonth)
+    .query(`
+      SELECT TOP 1 PayrollID FROM Payroll
+      WHERE EmployeeID = @employeeId AND PayrollMonth = @payrollMonth
+        AND PaymentStatus <> N'ملغي'
+    `);
+  return result.recordset[0]?.PayrollID ?? null;
+}
+
+// ══════════════════════════════════════════════════════════════
 // محرك دورة الرواتب — مرآة PayrollService.cs:
 // CalculateOneAsync:295 / CalculateMonthAsync / SaveOnlyAsync:395 /
 // GetRunsAsync:1203 / ApprovePayrollAsync:1045 / RejectPayrollAsync:1077 /
@@ -949,6 +987,9 @@ module.exports = {
   updatePaymentStatus,
   addPayrollDetail,
   deletePayrollDetail,
+  getLegacyPayrollStatus,
+  getDetailParentStatus,
+  findActivePayrollForMonth,
   // محرك الدورة (البند 34) — يُعاد استخدامه لدفعات خارج الراتب (البند 19)
   PAYROLL_STATUS,
   calculateOne,
