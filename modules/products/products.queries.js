@@ -47,7 +47,7 @@ async function getAllProducts(search = '', groupId = null, statusId = null, owne
         INNER JOIN Warehouses w ON sl.WarehouseID = w.WarehouseID
         WHERE sl.ProductID = p.ProductID
           ${warehouseId ? `AND sl.WarehouseID = @warehouseId` : ''}
-          ${!warehouseId && branchId ? `AND w.BranchId = @branchId` : ''}
+          ${!warehouseId && branchId ? `AND w.BranchID = @branchId` : ''}
       ), 0) AS StockQuantity,
       p.CreatedAt,
       -- ✅ تاريخ أول تسعير من المصنع

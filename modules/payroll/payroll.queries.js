@@ -428,7 +428,7 @@ async function calculateOne(pool, employeeId, month) {
       SELECT li.InstallmentId, li.InstallmentNumber, li.Amount, l.TotalInstallments
       FROM LoanInstallments li
       INNER JOIN EmployeeLoans l ON li.LoanId = l.LoanId
-      WHERE li.EmployeeID = @employeeId AND li.DeductionMonth = @month AND li.Status = 'Pending'
+      WHERE li.EmployeeId = @employeeId AND li.DeductionMonth = @month AND li.Status = 'Pending'
       ORDER BY li.InstallmentNumber
     `);
   const loanItems = loanRes.recordset.map((r) => ({

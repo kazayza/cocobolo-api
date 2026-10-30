@@ -420,7 +420,7 @@ async function exceptions(pool, scope, today) {
         AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled') AND ISNULL(t.IsDelivered, 0) = 0
         AND t.DueDate IS NOT NULL AND t.DueDate < @today ${txScopeSql('t', scope)}),
       PendingPrice = (SELECT COUNT(*) FROM PriceChangeRequests r WHERE r.Status = 'Pending'
-        ${scope.scoped ? `AND EXISTS (SELECT 1 FROM Users u WHERE u.Username = r.RequestedBy AND u.EmployeeId IN (${inList(scope.employeeIds)}))` : ''}),
+        ${scope.scoped ? `AND EXISTS (SELECT 1 FROM Users u WHERE u.Username = r.RequestedBy AND u.employeeID IN (${inList(scope.employeeIds)}))` : ''}),
       NegativeStock = (SELECT COUNT(DISTINCT s.ProductID) FROM StockLevels s WHERE s.Quantity < 0
         ${scope.scoped ? `AND s.WarehouseId IN (${inList(scope.warehouseIds)})` : ''}),
       StalledLeads = (SELECT COUNT(*) FROM LeadsCRM l WHERE l.LeadStatus IN (N'جديد', N'تم الإسناد')
@@ -447,9 +447,9 @@ async function pending(pool, scope) {
     SELECT
       InvoiceEdits = (SELECT COUNT(*) FROM Transactions t WHERE t.EditStatus = 1 ${txScopeSql('t', scope)}),
       ClosureApprovals = (SELECT COUNT(*) FROM OpportunityClosureApprovalRequests r WHERE r.Status = 'Pending'
-        ${scope.scoped ? `AND EXISTS (SELECT 1 FROM Users u WHERE u.Username = r.RequestedBy AND u.EmployeeId IN (${inList(scope.employeeIds)}))` : ''}),
+        ${scope.scoped ? `AND EXISTS (SELECT 1 FROM Users u WHERE u.Username = r.RequestedBy AND u.employeeID IN (${inList(scope.employeeIds)}))` : ''}),
       PriceRequests = (SELECT COUNT(*) FROM PriceChangeRequests r WHERE r.Status = 'Pending'
-        ${scope.scoped ? `AND EXISTS (SELECT 1 FROM Users u WHERE u.Username = r.RequestedBy AND u.EmployeeId IN (${inList(scope.employeeIds)}))` : ''})
+        ${scope.scoped ? `AND EXISTS (SELECT 1 FROM Users u WHERE u.Username = r.RequestedBy AND u.employeeID IN (${inList(scope.employeeIds)}))` : ''})
   `);
   const r = rows[0] || {};
   // أذونات التسليم: آخر إجراء لكل فاتورة في Audit_Log (طلب بلا منح لاحق)
@@ -636,7 +636,7 @@ async function inventory(pool, branchId, scope, today) {
     FROM StockLevels sl
     INNER JOIN Warehouses w ON w.WarehouseID = sl.WarehouseID AND ISNULL(w.IsActive, 1) = 1
     INNER JOIN Products p ON p.ProductID = sl.ProductID
-    WHERE sl.Quantity > 0 ${branchId ? 'AND w.BranchId = @branchId' : ''}`);
+    WHERE sl.Quantity > 0 ${branchId ? 'AND w.BranchID = @branchId' : ''}`);
   const dto = {
     TotalCostValue: money(valueRows.reduce((s, r) => s + Number(r.Quantity || 0) * Number(r.UnitCost || 0), 0)),
     TotalSaleValue: money(valueRows.reduce((s, r) => s + Number(r.Quantity || 0) * Number(r.UnitSale || 0), 0)),
@@ -941,7 +941,7 @@ function leadSourceId(lead) {
 }
 async function marketing(pool, ranges) {
   const leads = await fin._internal.request(pool, params(ranges, { branchId: null }), `
-    SELECT LeadID AS LeadId, LeadStatus, IsConverted, FormId, Platform, AdSetName, AdName
+    SELECT LeadId, LeadStatus, IsConverted, FormId, Platform, AdSetName, AdName
     FROM LeadsCRM WHERE LeadDate >= @fromDate AND LeadDate < DATEADD(DAY, 1, @toDate)`);
   const opps = await fin._internal.request(pool, params(ranges, { branchId: null }), `
     SELECT OpportunityID AS OpportunityId, StageID AS StageId, TransactionID AS TransactionId, SourceID AS SourceId FROM SalesOpportunities
@@ -1050,19 +1050,19 @@ async function hr(pool, ranges, scope, today) {
   dto.AttendancePct = basis.length === 0 ? 0 : Math.round((dto.PresentToday * 1000) / basis.length) / 10;
   const payrollRows = await fin._internal.request(pool, [['branchId', sql.Int, scope.branchId]], `
     SELECT ISNULL(SUM(ISNULL(p.NetSalary, p.BasicSalary + ISNULL(p.Allowances, 0) - ISNULL(p.Deductions, 0))), 0) AS Total
-    FROM Payrolls p WHERE p.PayrollMonth = '${dto.PayrollMonthLabel}'
-    ${scope.scoped ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = p.EmployeeID AND e.BranchId = @branchId)' : ''}`);
+    FROM Payroll p WHERE p.PayrollMonth = '${dto.PayrollMonthLabel}'
+    ${scope.scoped ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeID = p.EmployeeID AND e.BranchID = @branchId)' : ''}`);
   dto.PayrollMonthCost = money(payrollRows[0]?.Total);
   const loanRows = await fin._internal.request(pool, params(ranges, scope), `
     SELECT
       ActiveCount = (SELECT COUNT(*) FROM EmployeeLoans l WHERE l.Status = 'Active'
-        ${scope.scoped ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = l.EmployeeId AND e.BranchId = @branchId)' : ''}),
+        ${scope.scoped ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeID = l.EmployeeId AND e.BranchID = @branchId)' : ''}),
       ActiveRemaining = (SELECT ISNULL(SUM(l.RemainingAmount), 0) FROM EmployeeLoans l WHERE l.Status = 'Active'
-        ${scope.scoped ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = l.EmployeeId AND e.BranchId = @branchId)' : ''}),
+        ${scope.scoped ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeID = l.EmployeeId AND e.BranchID = @branchId)' : ''}),
       NewCount = (SELECT COUNT(*) FROM EmployeeLoans l WHERE l.Status <> 'Cancelled' AND l.LoanDate >= @fromDate AND l.LoanDate < DATEADD(DAY, 1, @toDate)
-        ${scope.scoped ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = l.EmployeeId AND e.BranchId = @branchId)' : ''}),
+        ${scope.scoped ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeID = l.EmployeeId AND e.BranchID = @branchId)' : ''}),
       NewAmount = (SELECT ISNULL(SUM(l.LoanAmount), 0) FROM EmployeeLoans l WHERE l.Status <> 'Cancelled' AND l.LoanDate >= @fromDate AND l.LoanDate < DATEADD(DAY, 1, @toDate)
-        ${scope.scoped ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = l.EmployeeId AND e.BranchId = @branchId)' : ''})
+        ${scope.scoped ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeID = l.EmployeeId AND e.BranchID = @branchId)' : ''})
   `);
   const lr = loanRows[0] || {};
   dto.ActiveLoansCount = Number(lr.ActiveCount || 0);

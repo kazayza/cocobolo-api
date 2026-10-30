@@ -87,7 +87,7 @@ function txScope(alias, scoped) {
 }
 function creatorScope(column, scoped) {
   if (!scoped) return '';
-  return ` AND (${column} IS NOT NULL AND EXISTS (SELECT 1 FROM Users u INNER JOIN Employees e ON e.EmployeeID = u.EmployeeID WHERE u.Username = ${column} AND e.BranchID = @branchId))`;
+  return ` AND (${column} IS NOT NULL AND EXISTS (SELECT 1 FROM Users u INNER JOIN Employees e ON e.EmployeeID = u.employeeID WHERE u.Username = ${column} AND e.BranchID = @branchId))`;
 }
 const NOT_CANCELLED = `(InvoiceStatus IS NULL OR InvoiceStatus <> 'Cancelled')`;
 
@@ -120,7 +120,7 @@ async function payrollRows(pool, range, from, to) {
            (p.BasicSalary + ISNULL(p.Allowances, p.BonusInPayroll)) AS Amount,
            (ISNULL(p.NetSalary, p.BasicSalary)) AS NetAmount,
            p.PaymentStatus
-    FROM Payrolls p
+    FROM Payroll p
     WHERE p.PayrollMonth >= @monthFrom AND p.PayrollMonth <= @monthTo
       AND p.PaymentStatus IN (${PAYROLL_RECOGNIZED.map((s) => `N'${s}'`).join(',')})
       ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeID = p.EmployeeID AND e.BranchID = @branchId)' : ''}
@@ -394,12 +394,12 @@ async function getIncomeStatement(pool, range, options = {}) {
 
   const loanRows = await request(pool, baseParams(range), `
     SELECT
-      (SELECT ISNULL(SUM(l.LoanAmount), 0) FROM EmployeeLoans l WHERE l.LoanDate >= @fromDate AND l.LoanDate < DATEADD(DAY, 1, @toDate) ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = l.EmployeeId AND e.BranchId = @branchId)' : ''}) AS Disbursed,
-      (SELECT ISNULL(SUM(i.Amount), 0) FROM LoanInstallments i WHERE i.DeductionMonth >= '${monthKey(from)}' AND i.DeductionMonth <= '${monthKey(to)}' AND i.Status <> 'Skipped' ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = i.EmployeeId AND e.BranchId = @branchId)' : ''}) AS DueAmt,
-      (SELECT ISNULL(SUM(i.Amount), 0) FROM LoanInstallments i WHERE i.DeductionMonth >= '${monthKey(from)}' AND i.DeductionMonth <= '${monthKey(to)}' AND i.Status = 'Deducted' ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = i.EmployeeId AND e.BranchId = @branchId)' : ''}) AS DeductedAmt,
-      (SELECT ISNULL(SUM(l.RemainingAmount), 0) FROM EmployeeLoans l WHERE l.Status = 'Active' ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = l.EmployeeId AND e.BranchId = @branchId)' : ''}) AS Outstanding,
-      (SELECT COUNT(*) FROM EmployeeLoans l WHERE l.Status = 'Active' ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = l.EmployeeId AND e.BranchId = @branchId)' : ''}) AS ActiveCount,
-      (SELECT COUNT(DISTINCT l.EmployeeID) FROM EmployeeLoans l WHERE l.Status = 'Active' ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = l.EmployeeId AND e.BranchId = @branchId)' : ''}) AS EmpCount
+      (SELECT ISNULL(SUM(l.LoanAmount), 0) FROM EmployeeLoans l WHERE l.LoanDate >= @fromDate AND l.LoanDate < DATEADD(DAY, 1, @toDate) ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeID = l.EmployeeId AND e.BranchID = @branchId)' : ''}) AS Disbursed,
+      (SELECT ISNULL(SUM(i.Amount), 0) FROM LoanInstallments i WHERE i.DeductionMonth >= '${monthKey(from)}' AND i.DeductionMonth <= '${monthKey(to)}' AND i.Status <> 'Skipped' ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeID = i.EmployeeId AND e.BranchID = @branchId)' : ''}) AS DueAmt,
+      (SELECT ISNULL(SUM(i.Amount), 0) FROM LoanInstallments i WHERE i.DeductionMonth >= '${monthKey(from)}' AND i.DeductionMonth <= '${monthKey(to)}' AND i.Status = 'Deducted' ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeID = i.EmployeeId AND e.BranchID = @branchId)' : ''}) AS DeductedAmt,
+      (SELECT ISNULL(SUM(l.RemainingAmount), 0) FROM EmployeeLoans l WHERE l.Status = 'Active' ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeID = l.EmployeeId AND e.BranchID = @branchId)' : ''}) AS Outstanding,
+      (SELECT COUNT(*) FROM EmployeeLoans l WHERE l.Status = 'Active' ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeID = l.EmployeeId AND e.BranchID = @branchId)' : ''}) AS ActiveCount,
+      (SELECT COUNT(DISTINCT l.EmployeeId) FROM EmployeeLoans l WHERE l.Status = 'Active' ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeID = l.EmployeeId AND e.BranchID = @branchId)' : ''}) AS EmpCount
   `);
   const lr = loanRows[0] || {};
   dto.EmployeeLoans = {
@@ -414,7 +414,7 @@ async function getIncomeStatement(pool, range, options = {}) {
     FROM Expenses e LEFT JOIN ExpenseGroups g ON g.ExpenseGroupID = e.ExpenseGroupID
     WHERE e.ExpenseDate >= @fromDate AND e.ExpenseDate < DATEADD(DAY, 1, @toDate)
       AND (ISNULL(e.IsAdvance, 0) <> 1 OR e.AdvanceParentExpenseId IS NOT NULL)
-      ${range.branchId ? 'AND e.BranchId = @branchId' : ''}
+      ${range.branchId ? 'AND e.BranchID = @branchId' : ''}
     GROUP BY e.ExpenseGroupID, g.ExpenseGroupName
     ORDER BY Total DESC
   `);
@@ -440,7 +440,7 @@ async function getIncomeStatement(pool, range, options = {}) {
     FROM Expenses e LEFT JOIN ExpenseGroups g ON g.ExpenseGroupID = e.ExpenseGroupID
     WHERE e.ExpenseDate >= @fromDate AND e.ExpenseDate < DATEADD(DAY, 1, @toDate)
       AND (ISNULL(e.IsAdvance, 0) <> 1 OR e.AdvanceParentExpenseId IS NOT NULL)
-      ${range.branchId ? 'AND e.BranchId = @branchId' : ''}
+      ${range.branchId ? 'AND e.BranchID = @branchId' : ''}
     ORDER BY e.Amount DESC
   `);
   dto.TopExpenses = topRows.map((r) => ({
@@ -494,7 +494,7 @@ async function getBalanceSheet(pool, range) {
     SELECT COUNT(*) AS Cnt, ISNULL(SUM(cb.OpeningBalance
       + (SELECT ISNULL(SUM(t.Amount), 0) FROM CashboxTransactions t WHERE t.CashBoxID = cb.CashBoxID AND t.TransactionType = N'قبض')
       - (SELECT ISNULL(SUM(t.Amount), 0) FROM CashboxTransactions t WHERE t.CashBoxID = cb.CashBoxID AND t.TransactionType = N'صرف')), 0) AS Total
-    FROM CashBoxes cb ${scoped ? 'WHERE cb.BranchId = @branchId' : ''}
+    FROM CashBoxes cb ${scoped ? 'WHERE cb.BranchID = @branchId' : ''}
   `);
   dto.CashBoxesCount = Number(cashRows[0]?.Cnt || 0);
   dto.CashBalance = money(cashRows[0]?.Total);
@@ -507,19 +507,19 @@ async function getBalanceSheet(pool, range) {
   // المخزون بتكلفة باقة المنتج نفسه (PricingType) — :1211
   const invRows = await request(pool, baseParams(range), `
     SELECT ISNULL(SUM(sl.Quantity * CASE
-        WHEN LTRIM(RTRIM(ISNULL(p.pricingType, 'Premium'))) = 'CClass' THEN ISNULL(p.PurchasePriceCClass, ISNULL(p.PurchasePrice, 0))
-        WHEN LTRIM(RTRIM(ISNULL(p.pricingType, 'Premium'))) = 'Elite' THEN ISNULL(p.PurchasePriceElite, ISNULL(p.PurchasePrice, 0))
+        WHEN LTRIM(RTRIM(ISNULL(p.PricingType, 'Premium'))) = 'CClass' THEN ISNULL(p.PurchasePriceCClass, ISNULL(p.PurchasePrice, 0))
+        WHEN LTRIM(RTRIM(ISNULL(p.PricingType, 'Premium'))) = 'Elite' THEN ISNULL(p.PurchasePriceElite, ISNULL(p.PurchasePrice, 0))
         ELSE ISNULL(p.PurchasePrice, ISNULL(p.PurchasePriceCClass, ISNULL(p.PurchasePriceElite, 0))) END), 0) AS Total,
       COUNT(DISTINCT sl.ProductID) AS Cnt
     FROM StockLevels sl
     INNER JOIN Warehouses w ON w.WarehouseID = sl.WarehouseID AND ISNULL(w.IsActive, 1) = 1
     INNER JOIN Products p ON p.ProductID = sl.ProductID
-    WHERE sl.Quantity > 0 ${scoped ? 'AND w.BranchId = @branchId' : ''}
+    WHERE sl.Quantity > 0 ${scoped ? 'AND w.BranchID = @branchId' : ''}
   `);
   dto.InventoryValue = money(invRows[0]?.Total); dto.InventoryItemsCount = Number(invRows[0]?.Cnt || 0);
   const loanBalRows = await request(pool, baseParams(range), `
     SELECT COUNT(*) AS Cnt, ISNULL(SUM(l.RemainingAmount), 0) AS Total FROM EmployeeLoans l
-    WHERE l.Status = 'Active' ${scoped ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = l.EmployeeId AND e.BranchId = @branchId)' : ''}
+    WHERE l.Status = 'Active' ${scoped ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeID = l.EmployeeId AND e.BranchID = @branchId)' : ''}
   `);
   dto.ActiveLoansCount = Number(loanBalRows[0]?.Cnt || 0); dto.EmployeeLoansOutstanding = money(loanBalRows[0]?.Total);
   const prepaidRows = await request(pool, baseParams(range), `
@@ -531,9 +531,9 @@ async function getBalanceSheet(pool, range) {
   dto.TotalAssets = money(dto.CashBalance + dto.AccountsReceivable + dto.InventoryValue + dto.EmployeeLoansOutstanding + dto.PrepaidExpensesAsset);
   // الالتزامات — الرواتب المستحقة عدا Paid/Rejected/Cancelled
   const payOutRows = await request(pool, baseParams(range), `
-    SELECT COUNT(*) AS Cnt, ISNULL(SUM(ISNULL(p.NetSalary, p.BasicSalary)), 0) AS Total FROM Payrolls p
+    SELECT COUNT(*) AS Cnt, ISNULL(SUM(ISNULL(p.NetSalary, p.BasicSalary)), 0) AS Total FROM Payroll p
     WHERE p.PaymentStatus NOT IN (N'مدفوع', N'مرفوض', N'ملغي') AND p.PaymentStatus IS NOT NULL
-    ${scoped ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = p.EmployeeID AND e.BranchId = @branchId)' : ''}
+    ${scoped ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeID = p.EmployeeID AND e.BranchID = @branchId)' : ''}
   `);
   dto.PayrollPendingCount = Number(payOutRows[0]?.Cnt || 0); dto.PayrollOutstanding = money(payOutRows[0]?.Total);
   // مستحقات الموردين تشمل المرآة (قرار المالك — :1349)
@@ -582,8 +582,8 @@ async function getBalanceSheet(pool, range) {
 
 // ═══ التدفقات النقدية — CashFlowService.cs:19 ═══
 function cashScope(range) {
-  if (range.cashBoxId) return 'AND t.CashBoxId = @cashBoxId';
-  if (range.branchId) return 'AND EXISTS (SELECT 1 FROM CashBoxes cb WHERE cb.CashBoxId = t.CashBoxId AND cb.BranchId = @branchId)';
+  if (range.cashBoxId) return 'AND t.CashBoxID = @cashBoxId';
+  if (range.branchId) return 'AND EXISTS (SELECT 1 FROM CashBoxes cb WHERE cb.CashBoxID = t.CashBoxID AND cb.BranchID = @branchId)';
   return '';
 }
 async function cashSum(pool, range, whereSql, params) {
@@ -601,7 +601,7 @@ async function getCashFlow(pool, range) {
       CASE WHEN EXISTS (SELECT 1 FROM CashboxTransactions t WHERE t.CashBoxID = cb.CashBoxID AND t.ReferenceType = 'OpeningBalance' AND t.TransactionDate < @fromDate)
            THEN 0 ELSE 1 END AS UseConfigured
     FROM CashBoxes cb
-    WHERE 1 = 1 ${range.cashBoxId ? 'AND cb.CashBoxId = @cashBoxId' : ''} ${range.branchId ? 'AND cb.BranchId = @branchId' : ''}
+    WHERE 1 = 1 ${range.cashBoxId ? 'AND cb.CashBoxID = @cashBoxId' : ''} ${range.branchId ? 'AND cb.BranchID = @branchId' : ''}
   `);
   const preIn = await cashSum(pool, range, `t.TransactionDate < @fromDate AND (t.TransactionType = N'قبض' OR t.TransactionType = 'In')`);
   const preOut = await cashSum(pool, range, `t.TransactionDate < @fromDate AND (t.TransactionType = N'صرف' OR t.TransactionType = 'Out')`);
@@ -687,7 +687,7 @@ async function getCashFlow(pool, range) {
     SELECT TOP 5 t.TransactionDate AS Day, ISNULL(t.Notes, N'—') AS Description, ISNULL(cb.CashBoxName, '-') AS CashBoxName,
            t.ReferenceType, t.Amount
     FROM CashboxTransactions t LEFT JOIN CashBoxes cb ON cb.CashBoxID = t.CashBoxID
-    WHERE t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) AND (${typeSql}) ${cashScope(range).replaceAll('t.CashBoxId', 't.CashBoxId')}
+    WHERE t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) AND (${typeSql}) ${cashScope(range).replaceAll('t.CashBoxID', 't.CashBoxID')}
     ORDER BY t.Amount DESC`;
   const mapTop = (rows) => rows.map((r) => ({
     Date: r.Day, Description: r.Description, CashBoxName: r.CashBoxName, ReferenceType: r.ReferenceType,

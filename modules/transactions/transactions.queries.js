@@ -509,7 +509,7 @@ async function createTransaction(data) {
           TransactionDate, PartyID, TransactionType, WarehouseID, EmpId, ReferenceNumber,
           TotalAmount, DiscountPercentage, DiscountAmount, NetTotalAmount,
           PaidAmount, TotalChargesAmount, GrandTotal, PaymentMethod, InvoiceStatus,
-          DueDate, OpportunityId, Notes, CreatedBy, CreatedAt
+          DueDate, OpportunityID, Notes, CreatedBy, CreatedAt
         )
         OUTPUT INSERTED.TransactionID
         VALUES (
