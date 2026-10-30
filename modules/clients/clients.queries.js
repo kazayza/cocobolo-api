@@ -79,10 +79,10 @@ async function getClientById(id) {
         p.OpeningBalance, p.BalanceType, p.Notes, p.IsActive,
         p.NationalID, p.FloorNumber, p.CreatedBy, p.CreatedAt,
         p.ReferralSourceID, p.ReferralSourceClient,
-        p.CustomerStage, p.StageID, p.JobTitle, p.ParentPartyID,
-        p.City, p.Area, p.ContactSourceID,
+        p.CustomerStage, p.StageID AS StageId, p.JobTitle, p.ParentPartyID AS ParentPartyId,
+        p.City, p.Area, p.ContactSourceID AS ContactSourceId,
         p.LastContactDate, p.Rating, p.LastUpdatedBy, p.LastUpdatedAt,
-        p.dataDone, p.IsB2B,
+        p.dataDone AS DataDone, p.IsB2B,
         rs.SourceName AS ReferralSourceName,
         pt.PartyTypeName AS PartyTypeName,
         ss.StageName AS StageName, ss.StageNameAr AS StageNameAr,
@@ -103,7 +103,7 @@ async function getClientById(id) {
     const contacts = await pool.request()
       .input('id', sql.Int, id)
       .query(`
-        SELECT ContactID, PartyID, ContactName, JobTitle, Phone, Email,
+        SELECT ContactID AS ContactId, PartyID AS PartyId, ContactName, JobTitle, Phone, Email,
                Notes, IsPrimary, IsActive, CreatedBy, CreatedAt
         FROM PartyContacts
         WHERE PartyID = @id

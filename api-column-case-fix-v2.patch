@@ -1,0 +1,921 @@
+diff --git a/modules/attendance/attendance.queries.js b/modules/attendance/attendance.queries.js
+index 2962ac7..009ab48 100644
+--- a/modules/attendance/attendance.queries.js
++++ b/modules/attendance/attendance.queries.js
+@@ -640,7 +640,7 @@ async function getManualAttendance(month) {
+   const existingRes = await pool.request()
+     .input('month', sql.NVarChar(10), month)
+     .query(`
+-      SELECT ManualId, EmployeeId, AttendanceMonth, PresentDays, AbsenceDays, LateMinutes, Notes
++      SELECT ManualID AS ManualId, EmployeeID AS EmployeeId, AttendanceMonth, PresentDays, AbsenceDays, LateMinutes, Notes
+       FROM AttendanceManual
+       WHERE AttendanceMonth = @month
+     `);
+@@ -702,13 +702,13 @@ async function saveManualAttendance(dto, currentUserName) {
+     .input('notes', sql.NVarChar(500), dto.notes || null)
+     .input('createdBy', sql.NVarChar(100), currentUserName)
+     .query(`
+-      IF EXISTS (SELECT 1 FROM AttendanceManual WHERE EmployeeId = @employeeId AND AttendanceMonth = @month)
++      IF EXISTS (SELECT 1 FROM AttendanceManual WHERE EmployeeID = @employeeId AND AttendanceMonth = @month)
+         UPDATE AttendanceManual
+         SET PresentDays = @presentDays, AbsenceDays = @absenceDays,
+             LateMinutes = @lateMinutes, Notes = @notes
+-        WHERE EmployeeId = @employeeId AND AttendanceMonth = @month
++        WHERE EmployeeID = @employeeId AND AttendanceMonth = @month
+       ELSE
+-        INSERT INTO AttendanceManual (EmployeeId, AttendanceMonth, PresentDays, AbsenceDays, LateMinutes, Notes, CreatedBy, CreatedAt)
++        INSERT INTO AttendanceManual (EmployeeID, AttendanceMonth, PresentDays, AbsenceDays, LateMinutes, Notes, CreatedBy, CreatedAt)
+         VALUES (@employeeId, @month, @presentDays, @absenceDays, @lateMinutes, @notes, @createdBy, GETDATE())
+     `);
+   return true;
+diff --git a/modules/clients/clients.queries.js b/modules/clients/clients.queries.js
+index a61ece8..d66f373 100644
+--- a/modules/clients/clients.queries.js
++++ b/modules/clients/clients.queries.js
+@@ -79,10 +79,10 @@ async function getClientById(id) {
+         p.OpeningBalance, p.BalanceType, p.Notes, p.IsActive,
+         p.NationalID, p.FloorNumber, p.CreatedBy, p.CreatedAt,
+         p.ReferralSourceID, p.ReferralSourceClient,
+-        p.CustomerStage, p.StageId, p.JobTitle, p.ParentPartyId,
+-        p.City, p.Area, p.ContactSourceId,
++        p.CustomerStage, p.StageID AS StageId, p.JobTitle, p.ParentPartyID AS ParentPartyId,
++        p.City, p.Area, p.ContactSourceID AS ContactSourceId,
+         p.LastContactDate, p.Rating, p.LastUpdatedBy, p.LastUpdatedAt,
+-        p.DataDone, p.IsB2B,
++        p.dataDone AS DataDone, p.IsB2B,
+         rs.SourceName AS ReferralSourceName,
+         pt.PartyTypeName AS PartyTypeName,
+         ss.StageName AS StageName, ss.StageNameAr AS StageNameAr,
+@@ -90,10 +90,10 @@ async function getClientById(id) {
+         parent.PartyName AS ParentPartyName
+       FROM Parties p
+       LEFT JOIN ReferralSources rs ON p.ReferralSourceID = rs.ReferralSourceID
+-      LEFT JOIN PartyTypes pt ON p.PartyType = pt.PartyTypeId
+-      LEFT JOIN SalesStages ss ON p.StageId = ss.StageId
+-      LEFT JOIN ContactSources cs ON p.ContactSourceId = cs.SourceId
+-      LEFT JOIN Parties parent ON p.ParentPartyId = parent.PartyID
++      LEFT JOIN PartyTypes pt ON p.PartyType = pt.PartyTypeID
++      LEFT JOIN SalesStages ss ON p.StageID = ss.StageID
++      LEFT JOIN ContactSources cs ON p.ContactSourceID = cs.SourceID
++      LEFT JOIN Parties parent ON p.ParentPartyID = parent.PartyID
+       WHERE p.PartyID = @id
+     `);
+   const client = result.recordset[0] || null;
+@@ -103,11 +103,11 @@ async function getClientById(id) {
+     const contacts = await pool.request()
+       .input('id', sql.Int, id)
+       .query(`
+-        SELECT ContactId, PartyId, ContactName, JobTitle, Phone, Email,
++        SELECT ContactID AS ContactId, PartyID AS PartyId, ContactName, JobTitle, Phone, Email,
+                Notes, IsPrimary, IsActive, CreatedBy, CreatedAt
+         FROM PartyContacts
+-        WHERE PartyId = @id
+-        ORDER BY IsPrimary DESC, ContactId ASC
++        WHERE PartyID = @id
++        ORDER BY IsPrimary DESC, ContactID ASC
+       `);
+     client.Contacts = contacts.recordset;
+   } catch (_) {
+diff --git a/modules/executive-cockpit/executive-cockpit.queries.js b/modules/executive-cockpit/executive-cockpit.queries.js
+index 1b49b14..a6484f8 100644
+--- a/modules/executive-cockpit/executive-cockpit.queries.js
++++ b/modules/executive-cockpit/executive-cockpit.queries.js
+@@ -147,10 +147,10 @@ function computeRanges(period, customFrom, customTo) {
+ async function branchScope(pool, branchId) {
+   if (!branchId) return { branchId: null, branchName: '', employeeIds: [], warehouseIds: [], cashBoxIds: [], scoped: false };
+   const rows = await fin._internal.request(pool, [['branchId', sql.Int, branchId]], `
+-    SELECT (SELECT BranchNameAr FROM Branches WHERE BranchId = @branchId) AS BranchName,
+-      (SELECT STRING_AGG(CAST(EmployeeId AS NVARCHAR(12)), ',') FROM Employees WHERE BranchId = @branchId) AS EmpIds,
+-      (SELECT STRING_AGG(CAST(WarehouseId AS NVARCHAR(12)), ',') FROM Warehouses WHERE BranchId = @branchId) AS WhIds,
+-      (SELECT STRING_AGG(CAST(CashBoxId AS NVARCHAR(12)), ',') FROM CashBoxes WHERE BranchId = @branchId) AS BoxIds
++    SELECT (SELECT BranchNameAr FROM Branches WHERE BranchID = @branchId) AS BranchName,
++      (SELECT STRING_AGG(CAST(EmployeeID AS NVARCHAR(12)), ',') FROM Employees WHERE BranchID = @branchId) AS EmpIds,
++      (SELECT STRING_AGG(CAST(WarehouseID AS NVARCHAR(12)), ',') FROM Warehouses WHERE BranchID = @branchId) AS WhIds,
++      (SELECT STRING_AGG(CAST(CashBoxID AS NVARCHAR(12)), ',') FROM CashBoxes WHERE BranchID = @branchId) AS BoxIds
+   `);
+   const parse = (v) => String(v || '').split(',').map((x) => Number(x)).filter(Number.isSafeInteger);
+   const r = rows[0] || {};
+@@ -197,7 +197,7 @@ async function figures(pool, from, to, scope) {
+         WHERE t.TransactionType = 'PurchaseReturn' AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')
+           AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) ${txScopeSql('t', scope)}),
+       Collected = (SELECT ISNULL(SUM(p.Amount), 0) FROM Payments p
+-        INNER JOIN Transactions t ON t.TransactionId = p.TransactionId
++        INNER JOIN Transactions t ON t.TransactionID = p.TransactionID
+         WHERE t.TransactionType = 'Sale'
+           AND p.PaymentDate >= @fromDate AND p.PaymentDate < DATEADD(DAY, 1, @toDate) ${txScopeSql('t', scope)}),
+       CashIn = (SELECT ISNULL(SUM(ct.Amount), 0) FROM CashboxTransactions ct
+@@ -246,7 +246,7 @@ async function trend(pool, scope) {
+     ['trendStart', sql.Date, trendStart], ['branchId', sql.Int, scope.branchId],
+   ], `
+     SELECT YEAR(p.PaymentDate) AS Y, MONTH(p.PaymentDate) AS M, ISNULL(SUM(p.Amount), 0) AS Total
+-    FROM Payments p INNER JOIN Transactions t ON t.TransactionId = p.TransactionId
++    FROM Payments p INNER JOIN Transactions t ON t.TransactionID = p.TransactionID
+     WHERE t.TransactionType = 'Sale' AND p.PaymentDate >= @trendStart ${txScopeSql('t', scope)}
+     GROUP BY YEAR(p.PaymentDate), MONTH(p.PaymentDate)
+   `);
+@@ -421,7 +421,7 @@ async function exceptions(pool, scope, today) {
+         AND t.DueDate IS NOT NULL AND t.DueDate < @today ${txScopeSql('t', scope)}),
+       PendingPrice = (SELECT COUNT(*) FROM PriceChangeRequests r WHERE r.Status = 'Pending'
+         ${scope.scoped ? `AND EXISTS (SELECT 1 FROM Users u WHERE u.Username = r.RequestedBy AND u.EmployeeId IN (${inList(scope.employeeIds)}))` : ''}),
+-      NegativeStock = (SELECT COUNT(DISTINCT s.ProductId) FROM StockLevels s WHERE s.Quantity < 0
++      NegativeStock = (SELECT COUNT(DISTINCT s.ProductID) FROM StockLevels s WHERE s.Quantity < 0
+         ${scope.scoped ? `AND s.WarehouseId IN (${inList(scope.warehouseIds)})` : ''}),
+       StalledLeads = (SELECT COUNT(*) FROM LeadsCRM l WHERE l.LeadStatus IN (N'جديد', N'تم الإسناد')
+         AND l.CreatedAt < DATEADD(DAY, -10, @today)
+@@ -470,7 +470,7 @@ async function pending(pool, scope) {
+       const txIds = keys.map((k) => Number(k)).filter((n) => Number.isSafeInteger(n) && n > 0);
+       if (txIds.length) {
+         const scopedRows = await fin._internal.request(pool, [['branchId', sql.Int, scope.branchId]], `
+-          SELECT COUNT(*) AS Cnt FROM Transactions t WHERE t.TransactionId IN (${txIds.join(',')}) ${txScopeSql('t', scope)}`);
++          SELECT COUNT(*) AS Cnt FROM Transactions t WHERE t.TransactionID IN (${txIds.join(',')}) ${txScopeSql('t', scope)}`);
+         deliveryPermits = Number(scopedRows[0]?.Cnt || 0);
+       }
+     }
+@@ -523,8 +523,8 @@ async function pipeline(pool, ranges, scope, today) {
+   const branchRows = await fin._internal.request(pool, params(ranges, scope), `
+     SELECT ISNULL(b.BranchNameAr, N'') AS Name, ISNULL(SUM(t.GrandTotal), 0) AS Value
+     FROM Transactions t
+-    INNER JOIN Warehouses w ON w.WarehouseId = t.WarehouseId
+-    INNER JOIN Branches b ON b.BranchId = w.BranchId
++    INNER JOIN Warehouses w ON w.WarehouseID = t.WarehouseID
++    INNER JOIN Branches b ON b.BranchID = w.BranchID
+     WHERE t.TransactionType = 'Sale' AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')
+       AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate)
+     GROUP BY b.BranchNameAr ORDER BY Value DESC`);
+@@ -552,11 +552,11 @@ function bucketize(rows, today) {
+ }
+ async function aging(pool, scope, today) {
+   const recv = await fin._internal.request(pool, [['branchId', sql.Int, scope.branchId]], `
+-    SELECT t.PartyId, (t.GrandTotal - t.PaidAmount) AS Remaining, COALESCE(t.DueDate, t.TransactionDate) AS EffDate
++    SELECT t.PartyID AS PartyId, (t.GrandTotal - t.PaidAmount) AS Remaining, COALESCE(t.DueDate, t.TransactionDate) AS EffDate
+     FROM Transactions t WHERE t.TransactionType = 'Sale'
+       AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled') AND t.GrandTotal > t.PaidAmount ${txScopeSql('t', scope)}`);
+   const pay = await fin._internal.request(pool, [['branchId', sql.Int, scope.branchId]], `
+-    SELECT t.PartyId, (t.GrandTotal - t.PaidAmount) AS Remaining, COALESCE(t.DueDate, t.TransactionDate) AS EffDate
++    SELECT t.PartyID AS PartyId, (t.GrandTotal - t.PaidAmount) AS Remaining, COALESCE(t.DueDate, t.TransactionDate) AS EffDate
+     FROM Transactions t WHERE t.TransactionType = 'Purchase'
+       AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')
+       AND (t.ReferenceType IS NULL OR t.ReferenceType NOT LIKE 'MirrorOf:%') AND t.GrandTotal > t.PaidAmount ${txScopeSql('t', scope)}`);
+@@ -566,7 +566,7 @@ async function aging(pool, scope, today) {
+   let topDebtors = [];
+   if (top.length) {
+     const names = await fin._internal.request(pool, [], `
+-      SELECT PartyId, PartyName FROM Parties WHERE PartyId IN (${top.map(([id]) => id).join(',')})`);
++      SELECT PartyID AS PartyId, PartyName FROM Parties WHERE PartyID IN (${top.map(([id]) => id).join(',')})`);
+     const nameMap = new Map(names.map((n) => [Number(n.PartyId), n.PartyName]));
+     topDebtors = top.map(([id, amount]) => ({ Name: nameMap.get(id) || '—', Amount: money(amount) }));
+   }
+@@ -582,13 +582,13 @@ async function aging(pool, scope, today) {
+ const QUOTATION_STATUSES = [['Draft', 'مسودة'], ['Sent', 'تم الإرسال'], ['Accepted', 'مقبول'], ['Rejected', 'مرفوض'], ['Converted', 'تحوّل لفاتورة'], ['Expired', 'منتهي الصلاحية']];
+ function quotationScopeSql(alias, scope) {
+   if (!scope.scoped) return '';
+-  return ` AND ((${alias}.EmpId IN (SELECT EmployeeId FROM Employees WHERE BranchId = @branchId))
+-    OR (((${alias}.EmpId IS NULL OR NOT EXISTS (SELECT 1 FROM Employees ex WHERE ex.EmployeeId = ${alias}.EmpId AND ex.BranchId IS NOT NULL))
+-      AND ${alias}.WarehouseId IN (SELECT WarehouseId FROM Warehouses WHERE BranchId = @branchId))))`;
++  return ` AND ((${alias}.EmpId IN (SELECT EmployeeID AS EmployeeId FROM Employees WHERE BranchID = @branchId))
++    OR (((${alias}.EmpId IS NULL OR NOT EXISTS (SELECT 1 FROM Employees ex WHERE ex.EmployeeID = ${alias}.EmpId AND ex.BranchID IS NOT NULL))
++      AND ${alias}.WarehouseID IN (SELECT WarehouseID AS WarehouseId FROM Warehouses WHERE BranchID = @branchId))))`;
+ }
+ async function quotations(pool, ranges, scope, today) {
+   const periodRows = await fin._internal.request(pool, params(ranges, scope), `
+-    SELECT q.Status, q.InvoiceId, ISNULL(q.GrandTotal, q.TotalAmount) AS Value
++    SELECT q.Status, q.InvoiceID AS InvoiceId, ISNULL(q.GrandTotal, q.TotalAmount) AS Value
+     FROM Quotations q WHERE q.QuotationDate >= @fromDate AND q.QuotationDate < DATEADD(DAY, 1, @toDate) ${quotationScopeSql('q', scope)}`);
+   const dto = {
+     ByStatus: [], PeriodCount: periodRows.length,
+@@ -619,7 +619,7 @@ async function quotations(pool, ranges, scope, today) {
+   }).length;
+   const acceptedRows = await fin._internal.request(pool, [['branchId', sql.Int, scope.branchId]], `
+     SELECT ISNULL(q.GrandTotal, q.TotalAmount) AS Value FROM Quotations q
+-    WHERE q.Status = 'Accepted' AND q.InvoiceId IS NULL ${quotationScopeSql('q', scope)}`);
++    WHERE q.Status = 'Accepted' AND q.InvoiceID IS NULL ${quotationScopeSql('q', scope)}`);
+   dto.AcceptedNotConvertedCount = acceptedRows.length;
+   dto.AcceptedNotConvertedValue = money(acceptedRows.reduce((s, r) => s + Number(r.Value || 0), 0));
+   return dto;
+@@ -630,12 +630,12 @@ async function quotations(pool, ranges, scope, today) {
+ // (PurchasePrice ?? CClass ?? Elite)، والبيع SuggestedSalePrice بنفس السقوط.
+ async function inventory(pool, branchId, scope, today) {
+   const valueRows = await fin._internal.request(pool, [['branchId', sql.Int, branchId]], `
+-    SELECT sl.ProductId, p.ProductName, sl.WarehouseId, w.WarehouseName, sl.Quantity,
++    SELECT sl.ProductID AS ProductId, p.ProductName, sl.WarehouseID AS WarehouseId, w.WarehouseName, sl.Quantity,
+       ISNULL(p.PurchasePrice, ISNULL(p.PurchasePriceCClass, ISNULL(p.PurchasePriceElite, 0))) AS UnitCost,
+       ISNULL(p.SuggestedSalePrice, ISNULL(p.SuggestedSalePriceCClass, ISNULL(p.SuggestedSalePriceElite, 0))) AS UnitSale
+     FROM StockLevels sl
+-    INNER JOIN Warehouses w ON w.WarehouseId = sl.WarehouseId AND ISNULL(w.IsActive, 1) = 1
+-    INNER JOIN Products p ON p.ProductId = sl.ProductId
++    INNER JOIN Warehouses w ON w.WarehouseID = sl.WarehouseID AND ISNULL(w.IsActive, 1) = 1
++    INNER JOIN Products p ON p.ProductID = sl.ProductID
+     WHERE sl.Quantity > 0 ${branchId ? 'AND w.BranchId = @branchId' : ''}`);
+   const dto = {
+     TotalCostValue: money(valueRows.reduce((s, r) => s + Number(r.Quantity || 0) * Number(r.UnitCost || 0), 0)),
+@@ -667,13 +667,13 @@ async function inventory(pool, branchId, scope, today) {
+     ProductsCount: r.products.size,
+   }));
+   const totalsRows = await fin._internal.request(pool, [], `
+-    SELECT ProductId, ISNULL(SUM(Quantity), 0) AS Total FROM StockLevels
++    SELECT ProductID AS ProductId, ISNULL(SUM(Quantity), 0) AS Total FROM StockLevels
+     ${scope.scoped ? `WHERE WarehouseId IN (${inList(scope.warehouseIds)})` : ''} GROUP BY ProductId`);
+   dto.OutOfStockCount = totalsRows.filter((r) => Number(r.Total) <= 0).length;
+   dto.LowStockCount = totalsRows.filter((r) => Number(r.Total) >= 1 && Number(r.Total) <= 5).length;
+   const cutoff = addDays(today, -90);
+   const moveRows = await fin._internal.request(pool, [], `
+-    SELECT ProductId, MAX(ISNULL(TransactionDate, CreatedAt)) AS LastMove FROM StockTransactions
++    SELECT ProductID AS ProductId, MAX(ISNULL(TransactionDate, CreatedAt)) AS LastMove FROM StockTransactions
+     ${scope.scoped ? `WHERE WarehouseID IN (${inList(scope.warehouseIds)})` : ''} GROUP BY ProductId`);
+   const lastByProduct = new Map(moveRows.map((r) => [Number(r.ProductId), r.LastMove ? new Date(r.LastMove) : null]));
+   let deadCount = 0; let deadValue = 0;
+@@ -699,7 +699,7 @@ async function jobOrders(pool, ranges, scope, today) {
+       OpenPurchase = (SELECT COUNT(*) ${base} AND ISNULL(t.IsDelivered, 0) = 0 AND t.TransactionType = 'Purchase'),
+       DeliveredInPeriod = (SELECT COUNT(*) ${base} AND t.IsDelivered = 1 AND t.DeliveredAt >= @fromDate AND t.DeliveredAt < DATEADD(DAY, 1, @toDate)),
+       WithAlternatives = (SELECT COUNT(*) ${base} AND ISNULL(t.IsDelivered, 0) = 0
+-        AND EXISTS (SELECT 1 FROM TransactionDetails d WHERE d.TransactionId = t.TransactionId AND d.SelectedAlternativeId IS NOT NULL))
++        AND EXISTS (SELECT 1 FROM TransactionDetails d WHERE d.TransactionID = t.TransactionID AND d.SelectedAlternativeID IS NOT NULL))
+   `);
+   const overdueRows = await fin._internal.request(pool, [['today', sql.Date, today], ['branchId', sql.Int, scope.branchId]], `
+     SELECT ISNULL(SUM(t.GrandTotal), 0) AS Value, COUNT(*) AS Cnt ${base}
+@@ -728,10 +728,10 @@ async function deliveries(pool, ranges, scope, today) {
+   };
+   const empFilter = scope.scoped ? `AND EmpId IN (${inList(scope.employeeIds)})` : '';
+   const planned = await fin._internal.request(pool, params(ranges, scope), `
+-    SELECT TransactionId, DueDate, DeliveryStatus, DeliveredAt, GrandTotal FROM VwSalesDeliveryStatuses
++    SELECT TransactionID AS TransactionId, DueDate, DeliveryStatus, DeliveredAt, GrandTotal FROM VwSalesDeliveryStatuses
+     WHERE DueDate IS NOT NULL AND DueDate >= @fromDate AND DueDate < DATEADD(DAY, 1, @toDate) ${empFilter}`);
+   const openRows = await fin._internal.request(pool, [], `
+-    SELECT TransactionId, DueDate, DeliveryStatus, GrandTotal FROM VwSalesDeliveryStatuses
++    SELECT TransactionID AS TransactionId, DueDate, DeliveryStatus, GrandTotal FROM VwSalesDeliveryStatuses
+     WHERE DueDate IS NOT NULL AND DeliveryStatus <> N'تم التسليم' AND DeliveryStatus <> N'مرتجع' ${empFilter}`);
+   dto.Planned = planned.length;
+   let progress = new Map();
+@@ -740,7 +740,7 @@ async function deliveries(pool, ranges, scope, today) {
+   let oc = null;
+   try {
+     const scopedRows = await fin._internal.request(pool, [], `
+-      SELECT TransactionId, DeliveryStatus FROM VwSalesDeliveryStatuses WHERE 1 = 1 ${empFilter}`);
++      SELECT TransactionID AS TransactionId, DeliveryStatus FROM VwSalesDeliveryStatuses WHERE 1 = 1 ${empFilter}`);
+     const scopedIds = new Set(scopedRows.map((r) => Number(r.TransactionId)));
+     const returnedIds = new Set(scopedRows.filter((r) => r.DeliveryStatus === 'مرتجع').map((r) => Number(r.TransactionId)));
+     const [invoicedRows, deliveredRows, settledRows, eventRows] = await Promise.all([
+@@ -794,11 +794,11 @@ async function deliveries(pool, ranges, scope, today) {
+         SELECT DeliveryId, TransactionDetailId FROM InvoiceDeliveryItems WHERE DeliveryId IN (${evIds.join(',')})`);
+       const detailIds = [...new Set(itemRows.map((r) => Number(r.TransactionDetailId)))];
+       const lineRows = detailIds.length ? await fin._internal.request(pool, [], `
+-        SELECT DetailId, DeliveryDate, DeliveryDateIsCustom FROM TransactionDetails WHERE DetailId IN (${detailIds.join(',')})`) : [];
++        SELECT DetailID AS DetailId, DeliveryDate, DeliveryDateIsCustom FROM TransactionDetails WHERE DetailID IN (${detailIds.join(',')})`) : [];
+       const lineById = new Map(lineRows.map((r) => [Number(r.DetailId), r]));
+       const txIds = [...new Set(periodEvents.map((e) => Number(e.TransactionId)))];
+       const dueRows = await fin._internal.request(pool, [], `
+-        SELECT TransactionId, DueDate FROM Transactions WHERE TransactionId IN (${txIds.join(',')})`);
++        SELECT TransactionID AS TransactionId, DueDate FROM Transactions WHERE TransactionID IN (${txIds.join(',')})`);
+       const dueByTx = new Map(dueRows.map((r) => [Number(r.TransactionId), r.DueDate]));
+       const itemsByEvent = new Map();
+       for (const it of itemRows) {
+@@ -864,7 +864,7 @@ async function deliveries(pool, ranges, scope, today) {
+       oc.RepairCost = money(repairRows.filter((r) => scopedIds.has(Number(r.TransactionId)))
+         .reduce((sum, r) => sum + Number(r.RepairCost || 0), 0));
+       const chargeRows = await fin._internal.request(pool, [], `
+-        SELECT TransactionId, Status, ISNULL(ChargeAmount, 0) AS ChargeAmount
++        SELECT TransactionID AS TransactionId, Status, ISNULL(ChargeAmount, 0) AS ChargeAmount
+         FROM AdditionalCharges
+         WHERE ChargeType = 'Modification' AND SourceDeliveryId IS NOT NULL AND Status IN ('PendingApproval', 'Approved')`);
+       for (const r of chargeRows) {
+@@ -941,14 +941,14 @@ function leadSourceId(lead) {
+ }
+ async function marketing(pool, ranges) {
+   const leads = await fin._internal.request(pool, params(ranges, { branchId: null }), `
+-    SELECT LeadId, LeadStatus, IsConverted, FormId, Platform, AdSetName, AdName
++    SELECT LeadID AS LeadId, LeadStatus, IsConverted, FormId, Platform, AdSetName, AdName
+     FROM LeadsCRM WHERE LeadDate >= @fromDate AND LeadDate < DATEADD(DAY, 1, @toDate)`);
+   const opps = await fin._internal.request(pool, params(ranges, { branchId: null }), `
+-    SELECT OpportunityId, StageId, TransactionId, SourceId FROM SalesOpportunities
++    SELECT OpportunityID AS OpportunityId, StageID AS StageId, TransactionID AS TransactionId, SourceID AS SourceId FROM SalesOpportunities
+     WHERE CreatedAt >= @fromDate AND CreatedAt < DATEADD(DAY, 1, @toDate) AND ISNULL(IsActive, 1) = 1`);
+   const customers = opps.filter((o) => Number(o.StageId) === 3 && o.TransactionId != null).length;
+   const groups = await fin._internal.request(pool, [], `
+-    SELECT ExpenseGroupId, ExpenseGroupName, ParentGroupId FROM ExpenseGroups`);
++    SELECT ExpenseGroupID AS ExpenseGroupId, ExpenseGroupName, ParentGroupID AS ParentGroupId FROM ExpenseGroups`);
+   const root = groups.find((g) => String(g.ExpenseGroupName || '').includes('اعلان'));
+   let groupIds;
+   if (!root) groupIds = [29];
+@@ -964,14 +964,14 @@ async function marketing(pool, ranges) {
+   const spendRows = await fin._internal.request(pool, params(ranges, { branchId: null }), `
+     SELECT ISNULL(SUM(Amount), 0) AS Total FROM Expenses
+     WHERE ExpenseDate >= @fromDate AND ExpenseDate < DATEADD(DAY, 1, @toDate)
+-      AND ExpenseGroupId IN (${groupIds.join(',')})`);
++      AND ExpenseGroupID IN (${groupIds.join(',')})`);
+   const spend = money(spendRows[0]?.Total);
+   const leadsCount = leads.length;
+   // المصادر
+   let topSourceName = ''; let topSourceLeads = 0;
+   try {
+     const sources = await fin._internal.request(pool, [], `
+-      SELECT SourceId, SourceName, SourceNameAr FROM ContactSources WHERE ISNULL(IsActive, 1) = 1`);
++      SELECT SourceID AS SourceId, SourceName, SourceNameAr FROM ContactSources WHERE ISNULL(IsActive, 1) = 1`);
+     const counts = new Map();
+     for (const lead of leads) {
+       const sid = leadSourceId(lead);
+@@ -1010,7 +1010,7 @@ async function b2b(pool, ranges) {
+   const invoiceIds = [...new Set(converted.map((r) => Number(r.RelatedInvoiceId)).filter((n) => Number.isSafeInteger(n) && n > 0))];
+   if (invoiceIds.length) {
+     const valueRows = await fin._internal.request(pool, [], `
+-      SELECT ISNULL(SUM(GrandTotal), 0) AS Total FROM Transactions WHERE TransactionId IN (${invoiceIds.join(',')})`);
++      SELECT ISNULL(SUM(GrandTotal), 0) AS Total FROM Transactions WHERE TransactionID IN (${invoiceIds.join(',')})`);
+     dto.ConvertedValue = money(valueRows[0]?.Total);
+   }
+   const pendingRows = await fin._internal.request(pool, [], `
+diff --git a/modules/expenses/expenses.queries.js b/modules/expenses/expenses.queries.js
+index 4b5615d..5f4398a 100644
+--- a/modules/expenses/expenses.queries.js
++++ b/modules/expenses/expenses.queries.js
+@@ -45,7 +45,7 @@ async function getAllExpenses(search = '', groupId = null, startDate = null, end
+     SELECT 
+       e.ExpenseID, e.ExpenseName, e.ExpenseDate, e.Amount,
+       e.Notes, e.Torecipient, e.IsAdvance, e.AdvanceMonths,
+-      e.AdvanceParentExpenseId, e.AdvanceMonthIndex, e.BranchId,
++      e.AdvanceParentExpenseId, e.AdvanceMonthIndex, e.BranchID AS BranchId,
+       e.CreatedBy, e.CreatedAt,
+       eg.ExpenseGroupID, eg.ExpenseGroupName,
+       cb.CashBoxID, cb.CashBoxName
+@@ -112,7 +112,7 @@ async function assertBranchAndCashbox(transaction, branchId, cashBoxId) {
+   if (branchId == null || !(Number(branchId) > 0)) throw guardError('الفرع مطلوب');
+   const cashResult = await transaction.request()
+     .input('cashBoxId', sql.Int, cashBoxId)
+-    .query(`SELECT CashBoxID, BranchId, IsActive FROM CashBoxes WHERE CashBoxID = @cashBoxId`);
++    .query(`SELECT CashBoxID, BranchID AS BranchId, IsActive FROM CashBoxes WHERE CashBoxID = @cashBoxId`);
+   const cashbox = cashResult.recordset[0];
+   if (!cashbox) throw guardError('الخزينة المحددة غير موجودة');
+   if (!cashbox.IsActive) throw guardError('الخزينة المحددة غير نشطة');
+@@ -142,7 +142,7 @@ async function createRegularExpense(expenseData, transaction) {
+     .input('createdBy', sql.NVarChar(50), expenseData.createdBy)
+     .query(`
+       INSERT INTO Expenses (
+-        ExpenseName, ExpenseGroupID, CashBoxID, BranchId, Amount, ExpenseDate,
++        ExpenseName, ExpenseGroupID, CashBoxID, BranchID, Amount, ExpenseDate,
+         Notes, Torecipient, IsAdvance, AdvanceMonths,
+         AdvanceParentExpenseId, AdvanceMonthIndex, CreatedBy, CreatedAt
+       )
+@@ -200,7 +200,7 @@ async function createAdvanceExpense(expenseData, transaction) {
+     .input('createdBy', sql.NVarChar(50), expenseData.createdBy)
+     .query(`
+       INSERT INTO Expenses (
+-        ExpenseName, ExpenseGroupID, CashBoxID, BranchId, Amount, ExpenseDate,
++        ExpenseName, ExpenseGroupID, CashBoxID, BranchID, Amount, ExpenseDate,
+         Notes, Torecipient, IsAdvance, AdvanceMonths,
+         AdvanceParentExpenseId, AdvanceMonthIndex, CreatedBy, CreatedAt
+       )
+@@ -235,7 +235,7 @@ async function createAdvanceExpense(expenseData, transaction) {
+       .input('createdBy', sql.NVarChar(50), expenseData.createdBy)
+       .query(`
+         INSERT INTO Expenses (
+-          ExpenseName, ExpenseGroupID, CashBoxID, BranchId, Amount, ExpenseDate,
++          ExpenseName, ExpenseGroupID, CashBoxID, BranchID, Amount, ExpenseDate,
+           Notes, Torecipient, IsAdvance, AdvanceMonths,
+           AdvanceParentExpenseId, AdvanceMonthIndex, CreatedBy, CreatedAt
+         )
+@@ -367,7 +367,7 @@ async function updateExpense(id, expenseData) {
+       .query(`
+         UPDATE Expenses SET
+           ExpenseName = @expenseName, ExpenseGroupID = @expenseGroupId,
+-          CashBoxID = @cashBoxId, BranchId = @branchId,
++          CashBoxID = @cashBoxId, BranchID = @branchId,
+           Amount = @amount, ExpenseDate = @expenseDate,
+           Notes = @notes, Torecipient = @toRecipient,
+           IsAdvance = 0, AdvanceMonths = NULL, AdvanceMonthIndex = NULL
+diff --git a/modules/inventory/inventory.queries.js b/modules/inventory/inventory.queries.js
+index 717be0f..a488703 100644
+--- a/modules/inventory/inventory.queries.js
++++ b/modules/inventory/inventory.queries.js
+@@ -502,24 +502,24 @@ async function getStockCountWorkspace(warehouseId, stockCountId = null) {
+     const headerRes = await pool.request()
+       .input('stockCountId', sql.Int, stockCountId)
+       .query(`
+-        SELECT h.StockCountId, h.BranchId, b.BranchNameAr, h.WarehouseId,
++        SELECT h.StockCountID AS StockCountId, h.BranchID AS BranchId, b.BranchNameAr, h.WarehouseID AS WarehouseId,
+                w.WarehouseName, h.CountDate, h.Status, h.Notes,
+                h.CreatedBy, h.CreatedAt, h.FinalizedBy, h.FinalizedAt
+         FROM StockCountHeaders h
+-        LEFT JOIN Branches b ON h.BranchId = b.BranchID
+-        LEFT JOIN Warehouses w ON h.WarehouseId = w.WarehouseID
+-        WHERE h.StockCountId = @stockCountId
++        LEFT JOIN Branches b ON h.BranchID = b.BranchID
++        LEFT JOIN Warehouses w ON h.WarehouseID = w.WarehouseID
++        WHERE h.StockCountID = @stockCountId
+       `);
+     const header = headerRes.recordset[0];
+     if (!header) return null;
+     const linesRes = await pool.request()
+       .input('stockCountId', sql.Int, stockCountId)
+       .query(`
+-        SELECT l.StockCountLineId, l.ProductId, p.ProductName,
++        SELECT l.StockCountLineID AS StockCountLineId, l.ProductID AS ProductId, p.ProductName,
+                l.SystemQty, l.ActualQty, l.DifferenceQty, l.Notes
+         FROM StockCountLines l
+-        INNER JOIN Products p ON l.ProductId = p.ProductID
+-        WHERE l.StockCountId = @stockCountId
++        INNER JOIN Products p ON l.ProductID = p.ProductID
++        WHERE l.StockCountID = @stockCountId
+         ORDER BY p.ProductName
+       `);
+     return { ...header, Lines: linesRes.recordset };
+@@ -568,14 +568,14 @@ async function getStockCounts({ branchId = null, warehouseId = null } = {}) {
+   const pool = await connectDB();
+   const request = pool.request();
+   let query = `
+-    SELECT h.StockCountId, h.BranchId, b.BranchNameAr, h.WarehouseId,
++    SELECT h.StockCountID AS StockCountId, h.BranchID AS BranchId, b.BranchNameAr, h.WarehouseID AS WarehouseId,
+            w.WarehouseName, h.CountDate, h.Status, h.CreatedBy, h.CreatedAt,
+            h.FinalizedBy, h.FinalizedAt,
+-           (SELECT COUNT(*) FROM StockCountLines l WHERE l.StockCountId = h.StockCountId) AS LinesCount,
+-           (SELECT COUNT(*) FROM StockCountLines l WHERE l.StockCountId = h.StockCountId AND l.DifferenceQty != 0) AS DifferenceItemsCount
++           (SELECT COUNT(*) FROM StockCountLines l WHERE l.StockCountID = h.StockCountID) AS LinesCount,
++           (SELECT COUNT(*) FROM StockCountLines l WHERE l.StockCountID = h.StockCountID AND l.DifferenceQty != 0) AS DifferenceItemsCount
+     FROM StockCountHeaders h
+-    LEFT JOIN Branches b ON h.BranchId = b.BranchID
+-    LEFT JOIN Warehouses w ON h.WarehouseId = w.WarehouseID
++    LEFT JOIN Branches b ON h.BranchID = b.BranchID
++    LEFT JOIN Warehouses w ON h.WarehouseID = w.WarehouseID
+     WHERE 1=1
+   `;
+   if (branchId) {
+@@ -622,15 +622,15 @@ async function saveStockCountDraft(dto, currentUserName) {
+         .input('notes', sql.NVarChar(500), dto.notes || null)
+         .input('createdBy', sql.NVarChar(100), currentUserName)
+         .query(`
+-          INSERT INTO StockCountHeaders (BranchId, WarehouseId, CountDate, Status, Notes, CreatedBy, CreatedAt)
+-          OUTPUT INSERTED.StockCountId
++          INSERT INTO StockCountHeaders (BranchID, WarehouseID, CountDate, Status, Notes, CreatedBy, CreatedAt)
++          OUTPUT INSERTED.StockCountID
+           VALUES (@branchId, @warehouseId, @countDate, 'Draft', @notes, @createdBy, GETDATE())
+         `);
+       stockCountId = headerRes.recordset[0].StockCountId;
+     } else {
+       const existingRes = await new sql.Request(transaction)
+         .input('stockCountId', sql.Int, stockCountId)
+-        .query(`SELECT StockCountId, Status FROM StockCountHeaders WHERE StockCountId = @stockCountId`);
++        .query(`SELECT StockCountID AS StockCountId, Status FROM StockCountHeaders WHERE StockCountID = @stockCountId`);
+       const existing = existingRes.recordset[0];
+       if (!existing) throw badRequest('مستند الجرد غير موجود.');
+       if (String(existing.Status).toLowerCase() === 'finalized') {
+@@ -644,10 +644,10 @@ async function saveStockCountDraft(dto, currentUserName) {
+         .input('notes', sql.NVarChar(500), dto.notes || null)
+         .query(`
+           UPDATE StockCountHeaders SET
+-            BranchId = @branchId, WarehouseId = @warehouseId,
++            BranchID = @branchId, WarehouseID = @warehouseId,
+             CountDate = ISNULL(@countDate, CountDate), Notes = @notes
+-          WHERE StockCountId = @stockCountId;
+-          DELETE FROM StockCountLines WHERE StockCountId = @stockCountId;
++          WHERE StockCountID = @stockCountId;
++          DELETE FROM StockCountLines WHERE StockCountID = @stockCountId;
+         `);
+     }
+ 
+@@ -662,7 +662,7 @@ async function saveStockCountDraft(dto, currentUserName) {
+         .input('differenceQty', sql.Int, actualQty - systemQty)
+         .input('notes', sql.NVarChar(500), line.notes || null)
+         .query(`
+-          INSERT INTO StockCountLines (StockCountId, ProductId, SystemQty, ActualQty, DifferenceQty, Notes)
++          INSERT INTO StockCountLines (StockCountID, ProductID, SystemQty, ActualQty, DifferenceQty, Notes)
+           VALUES (@stockCountId, @productId, @systemQty, @actualQty, @differenceQty, @notes)
+         `);
+     }
+@@ -686,7 +686,7 @@ async function finalizeStockCount(stockCountId, currentUserName) {
+   try {
+     const headerRes = await new sql.Request(transaction)
+       .input('stockCountId', sql.Int, stockCountId)
+-      .query(`SELECT StockCountId, WarehouseId, Status FROM StockCountHeaders WHERE StockCountId = @stockCountId`);
++      .query(`SELECT StockCountID AS StockCountId, WarehouseID AS WarehouseId, Status FROM StockCountHeaders WHERE StockCountID = @stockCountId`);
+     const header = headerRes.recordset[0];
+     if (!header) throw badRequest('مستند الجرد غير موجود.');
+     if (String(header.Status).toLowerCase() === 'finalized') {
+@@ -695,7 +695,7 @@ async function finalizeStockCount(stockCountId, currentUserName) {
+ 
+     const linesRes = await new sql.Request(transaction)
+       .input('stockCountId', sql.Int, stockCountId)
+-      .query(`SELECT ProductId, ActualQty, Notes FROM StockCountLines WHERE StockCountId = @stockCountId`);
++      .query(`SELECT ProductID AS ProductId, ActualQty, Notes FROM StockCountLines WHERE StockCountID = @stockCountId`);
+     const lines = linesRes.recordset;
+ 
+     for (const line of lines) {
+@@ -751,7 +751,7 @@ async function finalizeStockCount(stockCountId, currentUserName) {
+       .query(`
+         UPDATE StockCountHeaders
+         SET Status = 'Finalized', FinalizedAt = GETDATE(), FinalizedBy = @finalizedBy
+-        WHERE StockCountId = @stockCountId
++        WHERE StockCountID = @stockCountId
+       `);
+ 
+     await transaction.commit();
+diff --git a/modules/loans/loans.queries.js b/modules/loans/loans.queries.js
+index bb3e072..05077ad 100644
+--- a/modules/loans/loans.queries.js
++++ b/modules/loans/loans.queries.js
+@@ -33,12 +33,12 @@ async function getLoans(filter={}){
+   if(filter.branchId){ req.input('branchId', sql.Int, parseInt(filter.branchId,10)); where+=` AND e.BranchID=@branchId`; }
+   const page=Math.max(parseInt(filter.page)||1,1); const ps=Math.min(Math.max(parseInt(filter.pageSize)||15,1),100); const off=(page-1)*ps;
+   const rs = await req.query(`
+-    SELECT l.LoanId, l.EmployeeId, l.LoanAmount, l.TotalInstallments, l.MonthlyInstallment, l.RemainingAmount, l.PaidInstallments, l.StartDeductionMonth, l.Status, l.LoanDate, l.Notes,
++    SELECT l.LoanId, l.EmployeeID AS EmployeeId, l.LoanAmount, l.TotalInstallments, l.MonthlyInstallment, l.RemainingAmount, l.PaidInstallments, l.StartDeductionMonth, l.Status, l.LoanDate, l.Notes,
+            e.FullName AS EmployeeName, e.Department, e.JobTitle, e.BranchID,
+            CASE WHEN e.EmploymentStatus='Resigned' THEN 'Resigned' ELSE 'Active' END AS EmployeeStatus,
+            b.BranchNameAr AS BranchName
+     FROM EmployeeLoans l 
+-    INNER JOIN Employees e ON l.EmployeeId=e.EmployeeID
++    INNER JOIN Employees e ON l.EmployeeID=e.EmployeeID
+     LEFT JOIN Branches b ON e.BranchID=b.BranchID
+     ${where} ORDER BY l.CreatedAt DESC OFFSET ${off} ROWS FETCH NEXT ${ps} ROWS ONLY
+   `);
+@@ -128,7 +128,7 @@ async function createWithInstallments(data, username){
+       .input('cashBoxId', sql.Int, cashBoxId)
+       .input('notes', sql.NVarChar(500), data.notes || data.purpose || null)
+       .input('user', sql.NVarChar(50), username)
+-      .query(`INSERT INTO EmployeeLoans (EmployeeID, LoanAmount, TotalInstallments, MonthlyInstallment, RemainingAmount, PaidInstallments, LoanDate, StartDeductionMonth, Status, CashBoxId, Notes, CreatedBy, CreatedAt) OUTPUT INSERTED.LoanId VALUES (@empId, @amount, @total, @monthly, @remaining, 0, GETDATE(), @month, 'Active', @cashBoxId, @notes, @user, GETDATE())`);
++      .query(`INSERT INTO EmployeeLoans (EmployeeID, LoanAmount, TotalInstallments, MonthlyInstallment, RemainingAmount, PaidInstallments, LoanDate, StartDeductionMonth, Status, CashBoxID, Notes, CreatedBy, CreatedAt) OUTPUT INSERTED.LoanId VALUES (@empId, @amount, @total, @monthly, @remaining, 0, GETDATE(), @month, 'Active', @cashBoxId, @notes, @user, GETDATE())`);
+     const loanId = rs.recordset[0].LoanId;
+ 
+     // توليد الأقساط: القسط الشهري المقرب، والأخير يأخذ الباقي بالضبط
+@@ -146,7 +146,7 @@ async function createWithInstallments(data, username){
+         .input('m', sql.NVarChar(7), m)
+         .input('amt', sql.Decimal(18,2), amt)
+         .input('user', sql.NVarChar(50), username)
+-        .query(`INSERT INTO LoanInstallments (LoanId, EmployeeId, InstallmentNumber, DeductionMonth, Amount, Status, CreatedBy, CreatedAt) VALUES (@loanId, @empId, @num, @m, @amt, 'Pending', @user, GETDATE())`);
++        .query(`INSERT INTO LoanInstallments (LoanId, EmployeeID, InstallmentNumber, DeductionMonth, Amount, Status, CreatedBy, CreatedAt) VALUES (@loanId, @empId, @num, @m, @amt, 'Pending', @user, GETDATE())`);
+     }
+ 
+     if (cashBoxId) {
+@@ -167,7 +167,7 @@ async function createWithInstallments(data, username){
+       await new sql.Request(tx)
+         .input('loanId', sql.Int, loanId)
+         .input('txId', sql.Int, txRes.recordset[0].CashboxTransactionID)
+-        .query(`UPDATE EmployeeLoans SET CashboxTransactionId = @txId WHERE LoanId = @loanId`);
++        .query(`UPDATE EmployeeLoans SET CashboxTransactionID = @txId WHERE LoanId = @loanId`);
+     }
+ 
+     await tx.commit();
+@@ -184,12 +184,12 @@ async function getMonthInstallments(month){
+   const rs = await pool.request()
+     .input('month', sql.NVarChar(7), month)
+     .query(`
+-      SELECT i.InstallmentId, i.LoanId, i.EmployeeId,
++      SELECT i.InstallmentId, i.LoanId, i.EmployeeID AS EmployeeId,
+              e.FullName AS EmployeeName, e.Department,
+              i.InstallmentNumber, i.DeductionMonth, i.DeductionMonth AS MonthDisplay,
+              i.Amount, i.Status
+       FROM LoanInstallments i
+-      INNER JOIN Employees e ON i.EmployeeId = e.EmployeeID
++      INNER JOIN Employees e ON i.EmployeeID = e.EmployeeID
+       WHERE i.DeductionMonth = @month AND i.Status = 'Pending'
+       ORDER BY e.FullName
+     `);
+@@ -208,11 +208,11 @@ async function getEmployeeStatement(employeeId){
+   const loansRes = await pool.request()
+     .input('empId', sql.Int, employeeId)
+     .query(`
+-      SELECT l.LoanId, l.EmployeeId, l.LoanAmount, l.TotalInstallments, l.MonthlyInstallment,
++      SELECT l.LoanId, l.EmployeeID AS EmployeeId, l.LoanAmount, l.TotalInstallments, l.MonthlyInstallment,
+              l.RemainingAmount, (l.LoanAmount - l.RemainingAmount) AS PaidAmount,
+              l.PaidInstallments, l.StartDeductionMonth, l.Status, l.LoanDate, l.Notes
+       FROM EmployeeLoans l
+-      WHERE l.EmployeeId = @empId
++      WHERE l.EmployeeID = @empId
+       ORDER BY l.LoanDate DESC
+     `);
+   const loans = loansRes.recordset;
+@@ -220,12 +220,12 @@ async function getEmployeeStatement(employeeId){
+   const instRes = await pool.request()
+     .input('empId', sql.Int, employeeId)
+     .query(`
+-      SELECT i.InstallmentId, i.LoanId, i.EmployeeId,
++      SELECT i.InstallmentId, i.LoanId, i.EmployeeID AS EmployeeId,
+              i.InstallmentNumber, i.DeductionMonth, i.Amount, i.Status,
+              i.DeductionDate, i.Notes,
+-             (SELECT TOP 1 p.PayrollMonth FROM Payroll p WHERE p.PayrollID = i.PayrollId) AS PayrollMonth
++             (SELECT TOP 1 p.PayrollMonth FROM Payroll p WHERE p.PayrollID = i.PayrollID) AS PayrollMonth
+       FROM LoanInstallments i
+-      WHERE i.EmployeeId = @empId
++      WHERE i.EmployeeID = @empId
+       ORDER BY i.DeductionMonth DESC, i.InstallmentNumber
+     `);
+   const installments = instRes.recordset;
+@@ -257,7 +257,7 @@ async function cancelLoan(loanId, username){
+   try{
+     const loanRes = await new sql.Request(tx)
+       .input('loanId', sql.Int, loanId)
+-      .query(`SELECT LoanId, Status, LoanAmount, CashBoxId FROM EmployeeLoans WHERE LoanId = @loanId`);
++      .query(`SELECT LoanId, Status, LoanAmount, CashBoxID AS CashBoxId FROM EmployeeLoans WHERE LoanId = @loanId`);
+     const loan = loanRes.recordset[0];
+     if (!loan) throw loanError('السلفة غير موجودة', 404);
+     if (loan.Status !== 'Active') throw loanError('لا يمكن إلغاء سلفة غير نشطة');
+diff --git a/modules/notifications/notification.scheduler.js b/modules/notifications/notification.scheduler.js
+index 08e8a80..b81473e 100644
+--- a/modules/notifications/notification.scheduler.js
++++ b/modules/notifications/notification.scheduler.js
+@@ -341,7 +341,7 @@ async function checkNewLeadsWithoutNotify() {
+     // Leads created in last 15 minutes still "جديد"
+     const result = await pool.request().query(`
+       SELECT TOP 50
+-        l.LeadId, l.FullName, l.Phone, l.CampaignName, l.CreatedAt
++        l.LeadID AS LeadId, l.FullName, l.Phone, l.CampaignName, l.CreatedAt
+       FROM LeadsCRM l
+       WHERE l.LeadStatus = N'جديد'
+         AND l.IsConverted = 0
+@@ -351,10 +351,10 @@ async function checkNewLeadsWithoutNotify() {
+           SELECT 1 FROM Notifications n
+           INNER JOIN Users u ON u.Username = n.RecipientUser
+           WHERE n.RelatedTable = 'LeadsCRM'
+-            AND n.RelatedID = l.LeadId
++            AND n.RelatedID = l.LeadID
+             AND n.CreatedAt >= DATEADD(MINUTE, -30, GETDATE())
+         )
+-      ORDER BY l.LeadId DESC
++      ORDER BY l.LeadID DESC
+     `);
+ 
+     for (const lead of result.recordset || []) {
+diff --git a/modules/payroll/payroll.queries.js b/modules/payroll/payroll.queries.js
+index 34c18aa..43face4 100644
+--- a/modules/payroll/payroll.queries.js
++++ b/modules/payroll/payroll.queries.js
+@@ -356,7 +356,7 @@ async function getAttendance(pool, employeeId, month) {
+     .input('month', sql.NVarChar(10), month)
+     .query(`
+       SELECT TOP 1 PresentDays, LateMinutes FROM AttendanceManual
+-      WHERE EmployeeId = @employeeId AND AttendanceMonth = @month
++      WHERE EmployeeID = @employeeId AND AttendanceMonth = @month
+     `);
+   const manual = manualRes.recordset[0];
+   if (manual) {
+@@ -428,7 +428,7 @@ async function calculateOne(pool, employeeId, month) {
+       SELECT li.InstallmentId, li.InstallmentNumber, li.Amount, l.TotalInstallments
+       FROM LoanInstallments li
+       INNER JOIN EmployeeLoans l ON li.LoanId = l.LoanId
+-      WHERE li.EmployeeId = @employeeId AND li.DeductionMonth = @month AND li.Status = 'Pending'
++      WHERE li.EmployeeID = @employeeId AND li.DeductionMonth = @month AND li.Status = 'Pending'
+       ORDER BY li.InstallmentNumber
+     `);
+   const loanItems = loanRes.recordset.map((r) => ({
+@@ -782,7 +782,7 @@ async function deductLoanInstallments(makeRequest, payroll, username) {
+     .query(`
+       SELECT InstallmentId, LoanId, InstallmentNumber, Amount, Notes
+       FROM LoanInstallments
+-      WHERE EmployeeId = @employeeId AND DeductionMonth = @month AND Status = 'Pending'
++      WHERE EmployeeID = @employeeId AND DeductionMonth = @month AND Status = 'Pending'
+       ORDER BY InstallmentNumber
+     `);
+   const installments = instRes.recordset;
+@@ -808,7 +808,7 @@ async function deductLoanInstallments(makeRequest, payroll, username) {
+       .input('notes', sql.NVarChar(sql.MAX), notes)
+       .query(`
+         UPDATE LoanInstallments
+-        SET Status = 'Deducted', PayrollId = @payrollId, PayrollDetailId = @payrollDetailId,
++        SET Status = 'Deducted', PayrollID = @payrollId, PayrollDetailId = @payrollDetailId,
+             DeductionDate = GETDATE(), Notes = @notes
+         WHERE InstallmentId = @installmentId
+       `);
+diff --git a/modules/reports/financial-reports.queries.js b/modules/reports/financial-reports.queries.js
+index a07f5df..70eb5dc 100644
+--- a/modules/reports/financial-reports.queries.js
++++ b/modules/reports/financial-reports.queries.js
+@@ -81,13 +81,13 @@ function baseParams(range, extra = []) {
+ // منشئها موظف الفرع أولًا، واحتياطيًا (المنشئ بلا فرع/بلا موظف) مخزن الفرع.
+ function txScope(alias, scoped) {
+   if (!scoped) return '';
+-  return ` AND ((${alias}.EmpId IN (SELECT EmployeeId FROM Employees WHERE BranchId = @branchId))
+-    OR (((${alias}.EmpId IS NULL OR NOT EXISTS (SELECT 1 FROM Employees ex WHERE ex.EmployeeId = ${alias}.EmpId AND ex.BranchId IS NOT NULL))
+-      AND ${alias}.WarehouseId IN (SELECT WarehouseId FROM Warehouses WHERE BranchId = @branchId))))`;
++  return ` AND ((${alias}.EmpId IN (SELECT EmployeeID AS EmployeeId FROM Employees WHERE BranchID = @branchId))
++    OR (((${alias}.EmpId IS NULL OR NOT EXISTS (SELECT 1 FROM Employees ex WHERE ex.EmployeeID = ${alias}.EmpId AND ex.BranchID IS NOT NULL))
++      AND ${alias}.WarehouseID IN (SELECT WarehouseID AS WarehouseId FROM Warehouses WHERE BranchID = @branchId))))`;
+ }
+ function creatorScope(column, scoped) {
+   if (!scoped) return '';
+-  return ` AND (${column} IS NOT NULL AND EXISTS (SELECT 1 FROM Users u INNER JOIN Employees e ON e.EmployeeId = u.EmployeeId WHERE u.Username = ${column} AND e.BranchId = @branchId))`;
++  return ` AND (${column} IS NOT NULL AND EXISTS (SELECT 1 FROM Users u INNER JOIN Employees e ON e.EmployeeID = u.EmployeeID WHERE u.Username = ${column} AND e.BranchID = @branchId))`;
+ }
+ const NOT_CANCELLED = `(InvoiceStatus IS NULL OR InvoiceStatus <> 'Cancelled')`;
+ 
+@@ -123,7 +123,7 @@ async function payrollRows(pool, range, from, to) {
+     FROM Payrolls p
+     WHERE p.PayrollMonth >= @monthFrom AND p.PayrollMonth <= @monthTo
+       AND p.PaymentStatus IN (${PAYROLL_RECOGNIZED.map((s) => `N'${s}'`).join(',')})
+-      ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = p.EmployeeID AND e.BranchId = @branchId)' : ''}
++      ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeID = p.EmployeeID AND e.BranchID = @branchId)' : ''}
+   `.replace('@monthFrom', `'${monthKey(from)}'`).replace('@monthTo', `'${monthKey(to)}'`));
+   return rows;
+ }
+@@ -139,7 +139,7 @@ async function computeCogs(pool, range, from, to) {
+   const scoped = Boolean(range.branchId);
+   const eff = { from, to, branchId: range.branchId };
+   const saleRows = await request(pool, baseParams(eff), `
+-    SELECT t.TransactionId FROM Transactions t
++    SELECT t.TransactionID AS TransactionId FROM Transactions t
+     WHERE t.TransactionType = 'Sale' AND ${NOT_CANCELLED.replaceAll('InvoiceStatus', 't.InvoiceStatus')}
+       AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate)
+       ${txScope('t', scoped)}
+@@ -154,8 +154,8 @@ async function computeCogs(pool, range, from, to) {
+   `);
+   const mirrorCogs = Number(mirrorRows[0]?.Total || 0);
+   const coveredRows = await request(pool, [], `
+-    SELECT DISTINCT p.ReferenceType, d.ProductId
+-    FROM Transactions p INNER JOIN TransactionDetails d ON d.TransactionId = p.TransactionId
++    SELECT DISTINCT p.ReferenceType, d.ProductID AS ProductId
++    FROM Transactions p INNER JOIN TransactionDetails d ON d.TransactionID = p.TransactionID
+     WHERE p.TransactionType = 'Purchase' AND (p.InvoiceStatus IS NULL OR p.InvoiceStatus <> 'Cancelled')
+       AND p.ReferenceType IN (${saleIds.map((id) => `'MirrorOf:${id}'`).join(',')})
+   `);
+@@ -165,22 +165,22 @@ async function computeCogs(pool, range, from, to) {
+     covered.get(r.ReferenceType).add(Number(r.ProductId));
+   }
+   const lines = await request(pool, [], `
+-    SELECT d.TransactionId, d.ProductId, d.Quantity, d.PricingTier, d.Notes, d.SelectedAlternativeId,
++    SELECT d.TransactionID AS TransactionId, d.ProductID AS ProductId, d.Quantity, d.PricingTier, d.Notes, d.SelectedAlternativeID AS SelectedAlternativeId,
+            tx.TransactionDate, p.PurchasePrice, p.PurchasePriceCClass, p.PurchasePriceElite,
+            a.PurchasePriceCClass AS AltCClass, a.PurchasePricePremium AS AltPremium, a.PurchasePriceElite AS AltElite
+     FROM TransactionDetails d
+-    INNER JOIN Transactions tx ON tx.TransactionId = d.TransactionId
+-    INNER JOIN Products p ON p.ProductId = d.ProductId
+-    LEFT JOIN ProductFactoryAlternatives a ON a.AlternativeId = d.SelectedAlternativeId
+-    WHERE d.TransactionId IN (${idList})
++    INNER JOIN Transactions tx ON tx.TransactionID = d.TransactionID
++    INNER JOIN Products p ON p.ProductID = d.ProductID
++    LEFT JOIN ProductFactoryAlternatives a ON a.AlternativeID = d.SelectedAlternativeID
++    WHERE d.TransactionID IN (${idList})
+   `);
+   let historyByProduct = new Map();
+   try {
+     const productIds = [...new Set(lines.map((l) => Number(l.ProductId)))];
+     if (productIds.length) {
+       const hist = await request(pool, [], `
+-        SELECT ProductId, PriceType, NewPrice, ChangedAt FROM PriceHistory
+-        WHERE ProductId IN (${productIds.join(',')}) AND PriceType LIKE '%\\_Cost' ESCAPE '\\'
++        SELECT ProductID AS ProductId, PriceType, NewPrice, ChangedAt FROM PriceHistory
++        WHERE ProductID IN (${productIds.join(',')}) AND PriceType LIKE '%\\_Cost' ESCAPE '\\'
+         ORDER BY ChangedAt
+       `);
+       for (const h of hist) {
+@@ -224,7 +224,7 @@ async function otherRevenue(pool, range, from, to) {
+   const rows = await request(pool, baseParams({ from, to, branchId: range.branchId }), `
+     SELECT c.ChargeType, ISNULL(c.ChargeAmount, 0) AS Amount
+     FROM AdditionalCharges c
+-    WHERE c.TransactionId IS NULL AND c.AppliedToTransactionId IS NULL
++    WHERE c.TransactionID IS NULL AND c.AppliedToTransactionId IS NULL
+       AND (c.Status = 'Paid' OR c.Status = 'NonRefundable')
+       AND NOT (c.ChargeType = 'Advance' AND c.Status = 'Paid')
+       AND c.CreatedAt IS NOT NULL AND c.CreatedAt >= @fromDate AND c.CreatedAt < DATEADD(DAY, 1, @toDate)
+@@ -399,7 +399,7 @@ async function getIncomeStatement(pool, range, options = {}) {
+       (SELECT ISNULL(SUM(i.Amount), 0) FROM LoanInstallments i WHERE i.DeductionMonth >= '${monthKey(from)}' AND i.DeductionMonth <= '${monthKey(to)}' AND i.Status = 'Deducted' ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = i.EmployeeId AND e.BranchId = @branchId)' : ''}) AS DeductedAmt,
+       (SELECT ISNULL(SUM(l.RemainingAmount), 0) FROM EmployeeLoans l WHERE l.Status = 'Active' ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = l.EmployeeId AND e.BranchId = @branchId)' : ''}) AS Outstanding,
+       (SELECT COUNT(*) FROM EmployeeLoans l WHERE l.Status = 'Active' ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = l.EmployeeId AND e.BranchId = @branchId)' : ''}) AS ActiveCount,
+-      (SELECT COUNT(DISTINCT l.EmployeeId) FROM EmployeeLoans l WHERE l.Status = 'Active' ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = l.EmployeeId AND e.BranchId = @branchId)' : ''}) AS EmpCount
++      (SELECT COUNT(DISTINCT l.EmployeeID) FROM EmployeeLoans l WHERE l.Status = 'Active' ${range.branchId ? 'AND EXISTS (SELECT 1 FROM Employees e WHERE e.EmployeeId = l.EmployeeId AND e.BranchId = @branchId)' : ''}) AS EmpCount
+   `);
+   const lr = loanRows[0] || {};
+   dto.EmployeeLoans = {
+@@ -409,13 +409,13 @@ async function getIncomeStatement(pool, range, options = {}) {
+ 
+   // المصروفات: عادية أو أشهر فرعية لمقدم — بلا أي فلتر حالة ترحيل (:548)
+   const expRows = await request(pool, baseParams(range), `
+-    SELECT e.ExpenseGroupId, ISNULL(g.ExpenseGroupName, N'غير محدد') AS GroupName,
++    SELECT e.ExpenseGroupID AS ExpenseGroupId, ISNULL(g.ExpenseGroupName, N'غير محدد') AS GroupName,
+            ISNULL(SUM(e.Amount), 0) AS Total, COUNT(*) AS Cnt
+-    FROM Expenses e LEFT JOIN ExpenseGroups g ON g.ExpenseGroupId = e.ExpenseGroupId
++    FROM Expenses e LEFT JOIN ExpenseGroups g ON g.ExpenseGroupID = e.ExpenseGroupID
+     WHERE e.ExpenseDate >= @fromDate AND e.ExpenseDate < DATEADD(DAY, 1, @toDate)
+       AND (ISNULL(e.IsAdvance, 0) <> 1 OR e.AdvanceParentExpenseId IS NOT NULL)
+       ${range.branchId ? 'AND e.BranchId = @branchId' : ''}
+-    GROUP BY e.ExpenseGroupId, g.ExpenseGroupName
++    GROUP BY e.ExpenseGroupID, g.ExpenseGroupName
+     ORDER BY Total DESC
+   `);
+   dto.ExpensesByGroup = expRows.map((r, idx) => ({
+@@ -436,8 +436,8 @@ async function getIncomeStatement(pool, range, options = {}) {
+   dto.ProfitTarget = profitTarget(dto);
+ 
+   const topRows = await request(pool, baseParams(range), `
+-    SELECT TOP 10 e.ExpenseId, e.ExpenseName, e.Amount, e.ExpenseDate, ISNULL(g.ExpenseGroupName, N'') AS GroupName
+-    FROM Expenses e LEFT JOIN ExpenseGroups g ON g.ExpenseGroupId = e.ExpenseGroupId
++    SELECT TOP 10 e.ExpenseID AS ExpenseId, e.ExpenseName, e.Amount, e.ExpenseDate, ISNULL(g.ExpenseGroupName, N'') AS GroupName
++    FROM Expenses e LEFT JOIN ExpenseGroups g ON g.ExpenseGroupID = e.ExpenseGroupID
+     WHERE e.ExpenseDate >= @fromDate AND e.ExpenseDate < DATEADD(DAY, 1, @toDate)
+       AND (ISNULL(e.IsAdvance, 0) <> 1 OR e.AdvanceParentExpenseId IS NOT NULL)
+       ${range.branchId ? 'AND e.BranchId = @branchId' : ''}
+@@ -492,8 +492,8 @@ async function getBalanceSheet(pool, range) {
+   // النقدية: OpeningBalance + قبض − صرف (أنواع عربية فقط — :1211)
+   const cashRows = await request(pool, baseParams(range), `
+     SELECT COUNT(*) AS Cnt, ISNULL(SUM(cb.OpeningBalance
+-      + (SELECT ISNULL(SUM(t.Amount), 0) FROM CashboxTransactions t WHERE t.CashBoxId = cb.CashBoxId AND t.TransactionType = N'قبض')
+-      - (SELECT ISNULL(SUM(t.Amount), 0) FROM CashboxTransactions t WHERE t.CashBoxId = cb.CashBoxId AND t.TransactionType = N'صرف')), 0) AS Total
++      + (SELECT ISNULL(SUM(t.Amount), 0) FROM CashboxTransactions t WHERE t.CashBoxID = cb.CashBoxID AND t.TransactionType = N'قبض')
++      - (SELECT ISNULL(SUM(t.Amount), 0) FROM CashboxTransactions t WHERE t.CashBoxID = cb.CashBoxID AND t.TransactionType = N'صرف')), 0) AS Total
+     FROM CashBoxes cb ${scoped ? 'WHERE cb.BranchId = @branchId' : ''}
+   `);
+   dto.CashBoxesCount = Number(cashRows[0]?.Cnt || 0);
+@@ -507,13 +507,13 @@ async function getBalanceSheet(pool, range) {
+   // المخزون بتكلفة باقة المنتج نفسه (PricingType) — :1211
+   const invRows = await request(pool, baseParams(range), `
+     SELECT ISNULL(SUM(sl.Quantity * CASE
+-        WHEN LTRIM(RTRIM(ISNULL(p.PricingType, 'Premium'))) = 'CClass' THEN ISNULL(p.PurchasePriceCClass, ISNULL(p.PurchasePrice, 0))
+-        WHEN LTRIM(RTRIM(ISNULL(p.PricingType, 'Premium'))) = 'Elite' THEN ISNULL(p.PurchasePriceElite, ISNULL(p.PurchasePrice, 0))
++        WHEN LTRIM(RTRIM(ISNULL(p.pricingType, 'Premium'))) = 'CClass' THEN ISNULL(p.PurchasePriceCClass, ISNULL(p.PurchasePrice, 0))
++        WHEN LTRIM(RTRIM(ISNULL(p.pricingType, 'Premium'))) = 'Elite' THEN ISNULL(p.PurchasePriceElite, ISNULL(p.PurchasePrice, 0))
+         ELSE ISNULL(p.PurchasePrice, ISNULL(p.PurchasePriceCClass, ISNULL(p.PurchasePriceElite, 0))) END), 0) AS Total,
+-      COUNT(DISTINCT sl.ProductId) AS Cnt
++      COUNT(DISTINCT sl.ProductID) AS Cnt
+     FROM StockLevels sl
+-    INNER JOIN Warehouses w ON w.WarehouseId = sl.WarehouseId AND ISNULL(w.IsActive, 1) = 1
+-    INNER JOIN Products p ON p.ProductId = sl.ProductId
++    INNER JOIN Warehouses w ON w.WarehouseID = sl.WarehouseID AND ISNULL(w.IsActive, 1) = 1
++    INNER JOIN Products p ON p.ProductID = sl.ProductID
+     WHERE sl.Quantity > 0 ${scoped ? 'AND w.BranchId = @branchId' : ''}
+   `);
+   dto.InventoryValue = money(invRows[0]?.Total); dto.InventoryItemsCount = Number(invRows[0]?.Cnt || 0);
+@@ -545,7 +545,7 @@ async function getBalanceSheet(pool, range) {
+   dto.SupplierPayables = money(payRows[0]?.Total); dto.PayablePurchasesCount = Number(payRows[0]?.Cnt || 0);
+   const advRows = await request(pool, baseParams(range), `
+     SELECT ISNULL(SUM(ISNULL(c.ChargeAmount, 0)), 0) AS Total FROM AdditionalCharges c
+-    WHERE c.ChargeType = 'Advance' AND c.Status = 'Paid' AND c.TransactionId IS NULL AND c.AppliedToTransactionId IS NULL
++    WHERE c.ChargeType = 'Advance' AND c.Status = 'Paid' AND c.TransactionID IS NULL AND c.AppliedToTransactionId IS NULL
+     ${creatorScope('c.CreatedBy', scoped)}
+   `);
+   dto.CustomerAdvances = money(advRows[0]?.Total);
+@@ -597,8 +597,8 @@ async function getCashFlow(pool, range) {
+   const dto = { FromDate: dstr(from), ToDate: dstr(to), PeriodLabel: `من ${dstr(from)} إلى ${dstr(to)}`, BranchId: range.branchId, CashBoxId: range.cashBoxId };
+   // الرصيد الافتتاحي: OpeningBalance المحفوظ يُستخدم فقط إن لم توجد حركة OpeningBalance قبل الفترة لنفس الخزينة
+   const boxesRows = await request(pool, baseParams(range, [['cashBoxId', sql.Int, range.cashBoxId]]), `
+-    SELECT cb.CashBoxId, cb.CashBoxName, cb.Color, cb.OpeningBalance, cb.OpeningDate, cb.IsActive,
+-      CASE WHEN EXISTS (SELECT 1 FROM CashboxTransactions t WHERE t.CashBoxId = cb.CashBoxId AND t.ReferenceType = 'OpeningBalance' AND t.TransactionDate < @fromDate)
++    SELECT cb.CashBoxID AS CashBoxId, cb.CashBoxName, cb.Color, cb.OpeningBalance, cb.OpeningDate, cb.IsActive,
++      CASE WHEN EXISTS (SELECT 1 FROM CashboxTransactions t WHERE t.CashBoxID = cb.CashBoxID AND t.ReferenceType = 'OpeningBalance' AND t.TransactionDate < @fromDate)
+            THEN 0 ELSE 1 END AS UseConfigured
+     FROM CashBoxes cb
+     WHERE 1 = 1 ${range.cashBoxId ? 'AND cb.CashBoxId = @cashBoxId' : ''} ${range.branchId ? 'AND cb.BranchId = @branchId' : ''}
+@@ -686,7 +686,7 @@ async function getCashFlow(pool, range) {
+   const topSql = (typeSql) => `
+     SELECT TOP 5 t.TransactionDate AS Day, ISNULL(t.Notes, N'—') AS Description, ISNULL(cb.CashBoxName, '-') AS CashBoxName,
+            t.ReferenceType, t.Amount
+-    FROM CashboxTransactions t LEFT JOIN CashBoxes cb ON cb.CashBoxId = t.CashBoxId
++    FROM CashboxTransactions t LEFT JOIN CashBoxes cb ON cb.CashBoxID = t.CashBoxID
+     WHERE t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) AND (${typeSql}) ${cashScope(range).replaceAll('t.CashBoxId', 't.CashBoxId')}
+     ORDER BY t.Amount DESC`;
+   const mapTop = (rows) => rows.map((r) => ({
+@@ -865,8 +865,8 @@ async function getFinancialDashboard(pool, range) {
+     const cogsRows = await request(pool, baseParams(mRange), `
+       SELECT ISNULL(SUM(d.Quantity * ISNULL(p.PurchasePrice, 0)), 0) AS Cogs
+       FROM Transactions t
+-      INNER JOIN TransactionDetails d ON d.TransactionId = t.TransactionId
+-      INNER JOIN Products p ON p.ProductId = d.ProductId
++      INNER JOIN TransactionDetails d ON d.TransactionID = t.TransactionID
++      INNER JOIN Products p ON p.ProductID = d.ProductID
+       WHERE t.TransactionType = 'Sale' AND ${NOT_CANCELLED.replaceAll('InvoiceStatus', 't.InvoiceStatus')}
+         AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) ${txScope('t', scoped)}
+     `);
+@@ -885,17 +885,17 @@ async function getFinancialDashboard(pool, range) {
+     cursor = addMonths(cursor, 1);
+   }
+   const topProducts = await request(pool, baseParams(range), `
+-    SELECT TOP 10 p.ProductId, p.ProductName,
++    SELECT TOP 10 p.ProductID AS ProductId, p.ProductName,
+       ISNULL(SUM(CAST(d.Quantity AS int)), 0) AS QuantitySold,
+       ISNULL(SUM(d.Quantity * d.UnitPrice), 0) AS Revenue,
+       ISNULL(SUM(d.Quantity * ISNULL(p.PurchasePrice, 0)), 0) AS Cogs,
+-      COUNT(DISTINCT t.TransactionId) AS OrdersCount
++      COUNT(DISTINCT t.TransactionID) AS OrdersCount
+     FROM Transactions t
+-    INNER JOIN TransactionDetails d ON d.TransactionId = t.TransactionId
+-    INNER JOIN Products p ON p.ProductId = d.ProductId
++    INNER JOIN TransactionDetails d ON d.TransactionID = t.TransactionID
++    INNER JOIN Products p ON p.ProductID = d.ProductID
+     WHERE t.TransactionType = 'Sale' AND ${NOT_CANCELLED.replaceAll('InvoiceStatus', 't.InvoiceStatus')}
+       AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) ${txScope('t', scoped)}
+-    GROUP BY p.ProductId, p.ProductName ORDER BY Revenue DESC
++    GROUP BY p.ProductID, p.ProductName ORDER BY Revenue DESC
+   `);
+   dto.TopProducts = topProducts.map((r) => {
+     const revenue = money(r.Revenue); const cogs = money(r.Cogs);
+@@ -906,12 +906,12 @@ async function getFinancialDashboard(pool, range) {
+     };
+   });
+   const topCustomers = await request(pool, baseParams(range), `
+-    SELECT TOP 10 pa.PartyId, pa.PartyName, pa.Phone, COUNT(*) AS InvoicesCount,
++    SELECT TOP 10 pa.PartyID AS PartyId, pa.PartyName, pa.Phone, COUNT(*) AS InvoicesCount,
+       ISNULL(SUM(t.GrandTotal), 0) AS TotalRevenue, ISNULL(SUM(t.PaidAmount), 0) AS TotalPaid
+-    FROM Transactions t INNER JOIN Parties pa ON pa.PartyId = t.PartyId
++    FROM Transactions t INNER JOIN Parties pa ON pa.PartyID = t.PartyID
+     WHERE t.TransactionType = 'Sale' AND ${NOT_CANCELLED.replaceAll('InvoiceStatus', 't.InvoiceStatus')}
+       AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) ${txScope('t', scoped)}
+-    GROUP BY pa.PartyId, pa.PartyName, pa.Phone ORDER BY TotalRevenue DESC
++    GROUP BY pa.PartyID, pa.PartyName, pa.Phone ORDER BY TotalRevenue DESC
+   `);
+   dto.TopCustomers = topCustomers.map((r) => {
+     const total = money(r.TotalRevenue); const paid = money(r.TotalPaid); const count = Number(r.InvoicesCount || 0);
+@@ -926,9 +926,9 @@ async function getFinancialDashboard(pool, range) {
+   }));
+   // الذمم — BuildReceivablesSummaryAsync (مستحقات الموردين تستبعد PartyId=11 الافتراضي وتشمل المرآة ضمن المشتريات)
+   const recvSumRows = await request(pool, baseParams(range), `
+-    SELECT ISNULL(SUM(t.GrandTotal - t.PaidAmount), 0) AS Total, COUNT(DISTINCT t.PartyId) AS Debtors,
++    SELECT ISNULL(SUM(t.GrandTotal - t.PaidAmount), 0) AS Total, COUNT(DISTINCT t.PartyID) AS Debtors,
+       (SELECT COUNT(*) FROM Transactions o WHERE o.TransactionType = 'Sale' AND ${NOT_CANCELLED.replaceAll('InvoiceStatus', 'o.InvoiceStatus')} AND o.GrandTotal > o.PaidAmount AND o.DueDate IS NOT NULL AND o.DueDate < CAST(GETDATE() AS DATE) ${txScope('o', scoped)}) AS Overdue,
+-      (SELECT ISNULL(SUM(s.GrandTotal - s.PaidAmount), 0) FROM Transactions s WHERE s.TransactionType = 'Purchase' AND ${NOT_CANCELLED.replaceAll('InvoiceStatus', 's.InvoiceStatus')} AND s.PartyId <> 11 AND s.GrandTotal > s.PaidAmount ${txScope('s', scoped)}) AS SupplierTotal
++      (SELECT ISNULL(SUM(s.GrandTotal - s.PaidAmount), 0) FROM Transactions s WHERE s.TransactionType = 'Purchase' AND ${NOT_CANCELLED.replaceAll('InvoiceStatus', 's.InvoiceStatus')} AND s.PartyID <> 11 AND s.GrandTotal > s.PaidAmount ${txScope('s', scoped)}) AS SupplierTotal
+     FROM Transactions t
+     WHERE t.TransactionType = 'Sale' AND ${NOT_CANCELLED.replaceAll('InvoiceStatus', 't.InvoiceStatus')} AND t.GrandTotal > t.PaidAmount ${txScope('t', scoped)}
+   `);

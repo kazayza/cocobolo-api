@@ -81,9 +81,9 @@ function baseParams(range, extra = []) {
 // منشئها موظف الفرع أولًا، واحتياطيًا (المنشئ بلا فرع/بلا موظف) مخزن الفرع.
 function txScope(alias, scoped) {
   if (!scoped) return '';
-  return ` AND ((${alias}.EmpId IN (SELECT EmployeeID FROM Employees WHERE BranchID = @branchId))
+  return ` AND ((${alias}.EmpId IN (SELECT EmployeeID AS EmployeeId FROM Employees WHERE BranchID = @branchId))
     OR (((${alias}.EmpId IS NULL OR NOT EXISTS (SELECT 1 FROM Employees ex WHERE ex.EmployeeID = ${alias}.EmpId AND ex.BranchID IS NOT NULL))
-      AND ${alias}.WarehouseID IN (SELECT WarehouseID FROM Warehouses WHERE BranchID = @branchId))))`;
+      AND ${alias}.WarehouseID IN (SELECT WarehouseID AS WarehouseId FROM Warehouses WHERE BranchID = @branchId))))`;
 }
 function creatorScope(column, scoped) {
   if (!scoped) return '';
@@ -139,7 +139,7 @@ async function computeCogs(pool, range, from, to) {
   const scoped = Boolean(range.branchId);
   const eff = { from, to, branchId: range.branchId };
   const saleRows = await request(pool, baseParams(eff), `
-    SELECT t.TransactionID FROM Transactions t
+    SELECT t.TransactionID AS TransactionId FROM Transactions t
     WHERE t.TransactionType = 'Sale' AND ${NOT_CANCELLED.replaceAll('InvoiceStatus', 't.InvoiceStatus')}
       AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate)
       ${txScope('t', scoped)}
@@ -154,7 +154,7 @@ async function computeCogs(pool, range, from, to) {
   `);
   const mirrorCogs = Number(mirrorRows[0]?.Total || 0);
   const coveredRows = await request(pool, [], `
-    SELECT DISTINCT p.ReferenceType, d.ProductID
+    SELECT DISTINCT p.ReferenceType, d.ProductID AS ProductId
     FROM Transactions p INNER JOIN TransactionDetails d ON d.TransactionID = p.TransactionID
     WHERE p.TransactionType = 'Purchase' AND (p.InvoiceStatus IS NULL OR p.InvoiceStatus <> 'Cancelled')
       AND p.ReferenceType IN (${saleIds.map((id) => `'MirrorOf:${id}'`).join(',')})
@@ -165,7 +165,7 @@ async function computeCogs(pool, range, from, to) {
     covered.get(r.ReferenceType).add(Number(r.ProductId));
   }
   const lines = await request(pool, [], `
-    SELECT d.TransactionID, d.ProductID, d.Quantity, d.PricingTier, d.Notes, d.SelectedAlternativeID,
+    SELECT d.TransactionID AS TransactionId, d.ProductID AS ProductId, d.Quantity, d.PricingTier, d.Notes, d.SelectedAlternativeID AS SelectedAlternativeId,
            tx.TransactionDate, p.PurchasePrice, p.PurchasePriceCClass, p.PurchasePriceElite,
            a.PurchasePriceCClass AS AltCClass, a.PurchasePricePremium AS AltPremium, a.PurchasePriceElite AS AltElite
     FROM TransactionDetails d
@@ -179,7 +179,7 @@ async function computeCogs(pool, range, from, to) {
     const productIds = [...new Set(lines.map((l) => Number(l.ProductId)))];
     if (productIds.length) {
       const hist = await request(pool, [], `
-        SELECT ProductID, PriceType, NewPrice, ChangedAt FROM PriceHistory
+        SELECT ProductID AS ProductId, PriceType, NewPrice, ChangedAt FROM PriceHistory
         WHERE ProductID IN (${productIds.join(',')}) AND PriceType LIKE '%\\_Cost' ESCAPE '\\'
         ORDER BY ChangedAt
       `);
@@ -409,7 +409,7 @@ async function getIncomeStatement(pool, range, options = {}) {
 
   // المصروفات: عادية أو أشهر فرعية لمقدم — بلا أي فلتر حالة ترحيل (:548)
   const expRows = await request(pool, baseParams(range), `
-    SELECT e.ExpenseGroupID, ISNULL(g.ExpenseGroupName, N'غير محدد') AS GroupName,
+    SELECT e.ExpenseGroupID AS ExpenseGroupId, ISNULL(g.ExpenseGroupName, N'غير محدد') AS GroupName,
            ISNULL(SUM(e.Amount), 0) AS Total, COUNT(*) AS Cnt
     FROM Expenses e LEFT JOIN ExpenseGroups g ON g.ExpenseGroupID = e.ExpenseGroupID
     WHERE e.ExpenseDate >= @fromDate AND e.ExpenseDate < DATEADD(DAY, 1, @toDate)
@@ -436,7 +436,7 @@ async function getIncomeStatement(pool, range, options = {}) {
   dto.ProfitTarget = profitTarget(dto);
 
   const topRows = await request(pool, baseParams(range), `
-    SELECT TOP 10 e.ExpenseID, e.ExpenseName, e.Amount, e.ExpenseDate, ISNULL(g.ExpenseGroupName, N'') AS GroupName
+    SELECT TOP 10 e.ExpenseID AS ExpenseId, e.ExpenseName, e.Amount, e.ExpenseDate, ISNULL(g.ExpenseGroupName, N'') AS GroupName
     FROM Expenses e LEFT JOIN ExpenseGroups g ON g.ExpenseGroupID = e.ExpenseGroupID
     WHERE e.ExpenseDate >= @fromDate AND e.ExpenseDate < DATEADD(DAY, 1, @toDate)
       AND (ISNULL(e.IsAdvance, 0) <> 1 OR e.AdvanceParentExpenseId IS NOT NULL)
@@ -597,7 +597,7 @@ async function getCashFlow(pool, range) {
   const dto = { FromDate: dstr(from), ToDate: dstr(to), PeriodLabel: `من ${dstr(from)} إلى ${dstr(to)}`, BranchId: range.branchId, CashBoxId: range.cashBoxId };
   // الرصيد الافتتاحي: OpeningBalance المحفوظ يُستخدم فقط إن لم توجد حركة OpeningBalance قبل الفترة لنفس الخزينة
   const boxesRows = await request(pool, baseParams(range, [['cashBoxId', sql.Int, range.cashBoxId]]), `
-    SELECT cb.CashBoxID, cb.CashBoxName, cb.Color, cb.OpeningBalance, cb.OpeningDate, cb.IsActive,
+    SELECT cb.CashBoxID AS CashBoxId, cb.CashBoxName, cb.Color, cb.OpeningBalance, cb.OpeningDate, cb.IsActive,
       CASE WHEN EXISTS (SELECT 1 FROM CashboxTransactions t WHERE t.CashBoxID = cb.CashBoxID AND t.ReferenceType = 'OpeningBalance' AND t.TransactionDate < @fromDate)
            THEN 0 ELSE 1 END AS UseConfigured
     FROM CashBoxes cb
@@ -885,7 +885,7 @@ async function getFinancialDashboard(pool, range) {
     cursor = addMonths(cursor, 1);
   }
   const topProducts = await request(pool, baseParams(range), `
-    SELECT TOP 10 p.ProductID, p.ProductName,
+    SELECT TOP 10 p.ProductID AS ProductId, p.ProductName,
       ISNULL(SUM(CAST(d.Quantity AS int)), 0) AS QuantitySold,
       ISNULL(SUM(d.Quantity * d.UnitPrice), 0) AS Revenue,
       ISNULL(SUM(d.Quantity * ISNULL(p.PurchasePrice, 0)), 0) AS Cogs,
@@ -906,7 +906,7 @@ async function getFinancialDashboard(pool, range) {
     };
   });
   const topCustomers = await request(pool, baseParams(range), `
-    SELECT TOP 10 pa.PartyID, pa.PartyName, pa.Phone, COUNT(*) AS InvoicesCount,
+    SELECT TOP 10 pa.PartyID AS PartyId, pa.PartyName, pa.Phone, COUNT(*) AS InvoicesCount,
       ISNULL(SUM(t.GrandTotal), 0) AS TotalRevenue, ISNULL(SUM(t.PaidAmount), 0) AS TotalPaid
     FROM Transactions t INNER JOIN Parties pa ON pa.PartyID = t.PartyID
     WHERE t.TransactionType = 'Sale' AND ${NOT_CANCELLED.replaceAll('InvoiceStatus', 't.InvoiceStatus')}

@@ -341,7 +341,7 @@ async function checkNewLeadsWithoutNotify() {
     // Leads created in last 15 minutes still "جديد"
     const result = await pool.request().query(`
       SELECT TOP 50
-        l.LeadID, l.FullName, l.Phone, l.CampaignName, l.CreatedAt
+        l.LeadID AS LeadId, l.FullName, l.Phone, l.CampaignName, l.CreatedAt
       FROM LeadsCRM l
       WHERE l.LeadStatus = N'جديد'
         AND l.IsConverted = 0

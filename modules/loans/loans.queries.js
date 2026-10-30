@@ -33,7 +33,7 @@ async function getLoans(filter={}){
   if(filter.branchId){ req.input('branchId', sql.Int, parseInt(filter.branchId,10)); where+=` AND e.BranchID=@branchId`; }
   const page=Math.max(parseInt(filter.page)||1,1); const ps=Math.min(Math.max(parseInt(filter.pageSize)||15,1),100); const off=(page-1)*ps;
   const rs = await req.query(`
-    SELECT l.LoanId, l.EmployeeID, l.LoanAmount, l.TotalInstallments, l.MonthlyInstallment, l.RemainingAmount, l.PaidInstallments, l.StartDeductionMonth, l.Status, l.LoanDate, l.Notes,
+    SELECT l.LoanId, l.EmployeeID AS EmployeeId, l.LoanAmount, l.TotalInstallments, l.MonthlyInstallment, l.RemainingAmount, l.PaidInstallments, l.StartDeductionMonth, l.Status, l.LoanDate, l.Notes,
            e.FullName AS EmployeeName, e.Department, e.JobTitle, e.BranchID,
            CASE WHEN e.EmploymentStatus='Resigned' THEN 'Resigned' ELSE 'Active' END AS EmployeeStatus,
            b.BranchNameAr AS BranchName
@@ -184,7 +184,7 @@ async function getMonthInstallments(month){
   const rs = await pool.request()
     .input('month', sql.NVarChar(7), month)
     .query(`
-      SELECT i.InstallmentId, i.LoanId, i.EmployeeID,
+      SELECT i.InstallmentId, i.LoanId, i.EmployeeID AS EmployeeId,
              e.FullName AS EmployeeName, e.Department,
              i.InstallmentNumber, i.DeductionMonth, i.DeductionMonth AS MonthDisplay,
              i.Amount, i.Status
@@ -208,7 +208,7 @@ async function getEmployeeStatement(employeeId){
   const loansRes = await pool.request()
     .input('empId', sql.Int, employeeId)
     .query(`
-      SELECT l.LoanId, l.EmployeeID, l.LoanAmount, l.TotalInstallments, l.MonthlyInstallment,
+      SELECT l.LoanId, l.EmployeeID AS EmployeeId, l.LoanAmount, l.TotalInstallments, l.MonthlyInstallment,
              l.RemainingAmount, (l.LoanAmount - l.RemainingAmount) AS PaidAmount,
              l.PaidInstallments, l.StartDeductionMonth, l.Status, l.LoanDate, l.Notes
       FROM EmployeeLoans l
@@ -220,7 +220,7 @@ async function getEmployeeStatement(employeeId){
   const instRes = await pool.request()
     .input('empId', sql.Int, employeeId)
     .query(`
-      SELECT i.InstallmentId, i.LoanId, i.EmployeeID,
+      SELECT i.InstallmentId, i.LoanId, i.EmployeeID AS EmployeeId,
              i.InstallmentNumber, i.DeductionMonth, i.Amount, i.Status,
              i.DeductionDate, i.Notes,
              (SELECT TOP 1 p.PayrollMonth FROM Payroll p WHERE p.PayrollID = i.PayrollID) AS PayrollMonth
@@ -257,7 +257,7 @@ async function cancelLoan(loanId, username){
   try{
     const loanRes = await new sql.Request(tx)
       .input('loanId', sql.Int, loanId)
-      .query(`SELECT LoanId, Status, LoanAmount, CashBoxID FROM EmployeeLoans WHERE LoanId = @loanId`);
+      .query(`SELECT LoanId, Status, LoanAmount, CashBoxID AS CashBoxId FROM EmployeeLoans WHERE LoanId = @loanId`);
     const loan = loanRes.recordset[0];
     if (!loan) throw loanError('السلفة غير موجودة', 404);
     if (loan.Status !== 'Active') throw loanError('لا يمكن إلغاء سلفة غير نشطة');

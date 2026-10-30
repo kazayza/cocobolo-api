@@ -640,7 +640,7 @@ async function getManualAttendance(month) {
   const existingRes = await pool.request()
     .input('month', sql.NVarChar(10), month)
     .query(`
-      SELECT ManualID, EmployeeID, AttendanceMonth, PresentDays, AbsenceDays, LateMinutes, Notes
+      SELECT ManualID AS ManualId, EmployeeID AS EmployeeId, AttendanceMonth, PresentDays, AbsenceDays, LateMinutes, Notes
       FROM AttendanceManual
       WHERE AttendanceMonth = @month
     `);

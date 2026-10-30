@@ -502,7 +502,7 @@ async function getStockCountWorkspace(warehouseId, stockCountId = null) {
     const headerRes = await pool.request()
       .input('stockCountId', sql.Int, stockCountId)
       .query(`
-        SELECT h.StockCountID, h.BranchID, b.BranchNameAr, h.WarehouseID,
+        SELECT h.StockCountID AS StockCountId, h.BranchID AS BranchId, b.BranchNameAr, h.WarehouseID AS WarehouseId,
                w.WarehouseName, h.CountDate, h.Status, h.Notes,
                h.CreatedBy, h.CreatedAt, h.FinalizedBy, h.FinalizedAt
         FROM StockCountHeaders h
@@ -515,7 +515,7 @@ async function getStockCountWorkspace(warehouseId, stockCountId = null) {
     const linesRes = await pool.request()
       .input('stockCountId', sql.Int, stockCountId)
       .query(`
-        SELECT l.StockCountLineID, l.ProductID, p.ProductName,
+        SELECT l.StockCountLineID AS StockCountLineId, l.ProductID AS ProductId, p.ProductName,
                l.SystemQty, l.ActualQty, l.DifferenceQty, l.Notes
         FROM StockCountLines l
         INNER JOIN Products p ON l.ProductID = p.ProductID
@@ -568,7 +568,7 @@ async function getStockCounts({ branchId = null, warehouseId = null } = {}) {
   const pool = await connectDB();
   const request = pool.request();
   let query = `
-    SELECT h.StockCountID, h.BranchID, b.BranchNameAr, h.WarehouseID,
+    SELECT h.StockCountID AS StockCountId, h.BranchID AS BranchId, b.BranchNameAr, h.WarehouseID AS WarehouseId,
            w.WarehouseName, h.CountDate, h.Status, h.CreatedBy, h.CreatedAt,
            h.FinalizedBy, h.FinalizedAt,
            (SELECT COUNT(*) FROM StockCountLines l WHERE l.StockCountID = h.StockCountID) AS LinesCount,
@@ -630,7 +630,7 @@ async function saveStockCountDraft(dto, currentUserName) {
     } else {
       const existingRes = await new sql.Request(transaction)
         .input('stockCountId', sql.Int, stockCountId)
-        .query(`SELECT StockCountID, Status FROM StockCountHeaders WHERE StockCountID = @stockCountId`);
+        .query(`SELECT StockCountID AS StockCountId, Status FROM StockCountHeaders WHERE StockCountID = @stockCountId`);
       const existing = existingRes.recordset[0];
       if (!existing) throw badRequest('مستند الجرد غير موجود.');
       if (String(existing.Status).toLowerCase() === 'finalized') {
@@ -686,7 +686,7 @@ async function finalizeStockCount(stockCountId, currentUserName) {
   try {
     const headerRes = await new sql.Request(transaction)
       .input('stockCountId', sql.Int, stockCountId)
-      .query(`SELECT StockCountID, WarehouseID, Status FROM StockCountHeaders WHERE StockCountID = @stockCountId`);
+      .query(`SELECT StockCountID AS StockCountId, WarehouseID AS WarehouseId, Status FROM StockCountHeaders WHERE StockCountID = @stockCountId`);
     const header = headerRes.recordset[0];
     if (!header) throw badRequest('مستند الجرد غير موجود.');
     if (String(header.Status).toLowerCase() === 'finalized') {
@@ -695,7 +695,7 @@ async function finalizeStockCount(stockCountId, currentUserName) {
 
     const linesRes = await new sql.Request(transaction)
       .input('stockCountId', sql.Int, stockCountId)
-      .query(`SELECT ProductID, ActualQty, Notes FROM StockCountLines WHERE StockCountID = @stockCountId`);
+      .query(`SELECT ProductID AS ProductId, ActualQty, Notes FROM StockCountLines WHERE StockCountID = @stockCountId`);
     const lines = linesRes.recordset;
 
     for (const line of lines) {
