@@ -1,8 +1,8 @@
 // ════════════════════════════════════════════════════════════════════
 //  لوحة القيادة التنفيذية — مرآة ExecutiveCockpitService.cs في بلازور.
 //  التعريفات (بند 29):
-//   • FiguresAsync:398-430 — المبيعات الإجمالية = Σ (NetTotalAmount ?? GrandTotal)
-//     لبيع غير ملغاة في الفترة، مرتجعات البيع = Σ TotalAmount لمرتجع البيع،
+//   • FiguresAsync:403-432 — المبيعات الإجمالية = Σ GrandTotal لبيع غير ملغاة
+//     في الفترة، مرتجعات البيع = Σ GrandTotal لمرتجع البيع (نفس العمود)،
 //     المشتريات الصافية تستبعد المرآة (ReferenceType NOT LIKE 'MirrorOf:%')،
 //     التحصيلات = Σ Payments المنضمة لبيع بتاريخ الدفعة (بلا فلتر حالة فاتورة)،
 //     حركة الخزينة تقبل «قبض/صرف» و«In/Out» معًا.
@@ -183,10 +183,10 @@ async function figures(pool, from, to, scope) {
   const range = { from, to };
   const rows = await fin._internal.request(pool, params(range, scope), `
     SELECT
-      SalesGross = (SELECT ISNULL(SUM(ISNULL(t.NetTotalAmount, t.GrandTotal)), 0) FROM Transactions t
+      SalesGross = (SELECT ISNULL(SUM(ISNULL(t.GrandTotal, 0)), 0) FROM Transactions t
         WHERE t.TransactionType = 'Sale' AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')
           AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) ${txScopeSql('t', scope)}),
-      SaleReturns = (SELECT ISNULL(SUM(ISNULL(t.TotalAmount, 0)), 0) FROM Transactions t
+      SaleReturns = (SELECT ISNULL(SUM(ISNULL(t.GrandTotal, 0)), 0) FROM Transactions t
         WHERE t.TransactionType = 'SaleReturn' AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')
           AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) ${txScopeSql('t', scope)}),
       PurchasesGross = (SELECT ISNULL(SUM(ISNULL(t.GrandTotal, 0)), 0) FROM Transactions t
@@ -203,11 +203,11 @@ async function figures(pool, from, to, scope) {
       CashIn = (SELECT ISNULL(SUM(ct.Amount), 0) FROM CashboxTransactions ct
         WHERE (ct.TransactionType = N'قبض' OR ct.TransactionType = 'In')
           AND ct.TransactionDate >= @fromDate AND ct.TransactionDate < DATEADD(DAY, 1, @toDate)
-          ${scope.scoped ? `AND ct.CashBoxId IN (${inList(scope.cashBoxIds)})` : ''}),
+          ${scope.scoped ? `AND ct.CashBoxID IN (${inList(scope.cashBoxIds)})` : ''}),
       CashOut = (SELECT ISNULL(SUM(ct.Amount), 0) FROM CashboxTransactions ct
         WHERE (ct.TransactionType = N'صرف' OR ct.TransactionType = 'Out')
           AND ct.TransactionDate >= @fromDate AND ct.TransactionDate < DATEADD(DAY, 1, @toDate)
-          ${scope.scoped ? `AND ct.CashBoxId IN (${inList(scope.cashBoxIds)})` : ''})
+          ${scope.scoped ? `AND ct.CashBoxID IN (${inList(scope.cashBoxIds)})` : ''})
   `);
   const r = rows[0] || {};
   const f = {
@@ -506,14 +506,14 @@ async function ops(pool, scope, today) {
 // ─── الخزينة والفرص والفروع — PipelineAsync:1176 ───
 async function pipeline(pool, ranges, scope, today) {
   const cashRows = await fin._internal.request(pool, [], `
-    SELECT (SELECT ISNULL(SUM(OpeningBalance), 0) FROM CashBoxes ${scope.scoped ? `WHERE CashBoxId IN (${inList(scope.cashBoxIds)})` : ''})
-      + (SELECT ISNULL(SUM(Amount), 0) FROM CashboxTransactions WHERE (TransactionType = N'قبض' OR TransactionType = 'In') ${scope.scoped ? `AND CashBoxId IN (${inList(scope.cashBoxIds)})` : ''})
-      - (SELECT ISNULL(SUM(Amount), 0) FROM CashboxTransactions WHERE (TransactionType = N'صرف' OR TransactionType = 'Out') ${scope.scoped ? `AND CashBoxId IN (${inList(scope.cashBoxIds)})` : ''}) AS CashBalance`);
+    SELECT (SELECT ISNULL(SUM(OpeningBalance), 0) FROM CashBoxes ${scope.scoped ? `WHERE CashBoxID IN (${inList(scope.cashBoxIds)})` : ''})
+      + (SELECT ISNULL(SUM(Amount), 0) FROM CashboxTransactions WHERE (TransactionType = N'قبض' OR TransactionType = 'In') ${scope.scoped ? `AND CashBoxID IN (${inList(scope.cashBoxIds)})` : ''})
+      - (SELECT ISNULL(SUM(Amount), 0) FROM CashboxTransactions WHERE (TransactionType = N'صرف' OR TransactionType = 'Out') ${scope.scoped ? `AND CashBoxID IN (${inList(scope.cashBoxIds)})` : ''}) AS CashBalance`);
   const oppRows = await fin._internal.request(pool, [['today', sql.Date, today]], `
     SELECT COUNT(*) AS Cnt, ISNULL(SUM(ISNULL(ExpectedValue, 0)), 0) AS Value,
       SUM(CASE WHEN NextFollowUpDate IS NOT NULL AND NextFollowUpDate < @today THEN 1 ELSE 0 END) AS Stalled
     FROM SalesOpportunities WHERE ClosedAt IS NULL
-    ${scope.scoped ? `AND EmployeeId IN (${inList(scope.employeeIds)})` : ''}`);
+    ${scope.scoped ? `AND EmployeeID IN (${inList(scope.employeeIds)})` : ''}`);
   let b2bPending = 0;
   try {
     const b2bRows = await fin._internal.request(pool, [], `
@@ -526,7 +526,7 @@ async function pipeline(pool, ranges, scope, today) {
     INNER JOIN Warehouses w ON w.WarehouseID = t.WarehouseID
     INNER JOIN Branches b ON b.BranchID = w.BranchID
     WHERE t.TransactionType = 'Sale' AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')
-      AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate)
+      AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) ${txScopeSql('t', scope)}
     GROUP BY b.BranchNameAr ORDER BY Value DESC`);
   const o = oppRows[0] || {};
   return {
@@ -1282,5 +1282,5 @@ async function saveSnapshot(dto, userName) {
 
 module.exports = {
   getCockpit, getEmployeeTimeline, listSnapshots, getSnapshot, saveSnapshot, PERIOD_KEYS,
-  _test: { computeRanges, bucketize, leadSourceId },
+  _test: { computeRanges, bucketize, leadSourceId, figures, pipeline },
 };

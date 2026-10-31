@@ -22,7 +22,14 @@ router.post(
   requirePolicy(additionalCharges.canMarkNonRefundable, 'غير مصرح لك بتغيير حالة الرسوم'),
   controller.markNonRefundable,
 );
-router.get('/:id/receipt', requirePolicy(additionalCharges.canView), controller.getReceipt);
+// بوابة إيصال الرسوم في بلازور أضيق من بوابة عرض الوحدة:
+// CanViewChargeReceipt (AdditionalChargeService.cs:168) = Admin أو
+// frmInspectionCharge:View حصرًا — بلا بدائل أدوار الحسابات.
+const canViewChargeReceipt = (a) => {
+  const role = String(a?.role || '').toLowerCase().replace(/[\s_-]+/g, '');
+  return role === 'admin' || (a?.claims instanceof Set && a.claims.has('frmInspectionCharge:View'));
+};
+router.get('/:id/receipt', requirePolicy(canViewChargeReceipt, 'غير مصرح لك بعرض إيصال الرسوم'), controller.getReceipt);
 // دورة رسوم تعديل التسليم — الأدوار الدقيقة داخل الاستعلامات بمرآة بلازور
 router.post(
   '/:id/approve-modification',

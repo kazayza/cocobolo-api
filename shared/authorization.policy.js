@@ -49,15 +49,39 @@ const invoices = {
     || roles.factory(a)
     || hasClaim(a, 'frm_SalesInvoiveNew:Edit')
     || hasClaim(a, 'frm_SupplierInvoices:View'),
-  // الإلغاء في بلازور على صلاحية الحذف نفسها frm_PartiesInvoices:Delete
-  // (InvoiceService.CancelInvoiceAsync + حارس صفحة المبيعات btn_CancelInvoice)
-  canCancel: (a) => roles.admin(a) || hasClaim(a, 'frm_PartiesInvoices:Delete'),
+  // الإلغاء في بلازور الحالي على صلاحية مخصصة مستقلة عن الحذف:
+  // frm_PartiesInvoices:Cancel أو Admin (InvoiceService.cs:2029 +
+  // SalesList.razor:992). صف الكتالوج المخصص FormName='frm_PartiesInvoices:Cancel'
+  // يُنتج في بانِيَي الادعاءات (بلازور Program.cs:430 والواجهة auth.middleware)
+  // الادعاء ':Cancel:View' تحديدًا — فنقبل الصيغتين ونُسقط ':Delete' التي
+  // لم تعد بلازور تحترمها للإلغاء.
+  canCancel: (a) => roles.admin(a)
+    || hasAnyClaim(a, 'frm_PartiesInvoices:Cancel', 'frm_PartiesInvoices:Cancel:View'),
   canFullEdit: (a) => roles.admin(a) || roles.accountManager(a),
   canApproveEdit: (a) => roles.admin(a) || roles.accountManager(a),
   canViewProfit: (a) => roles.admin(a) || roles.accountManager(a),
   canViewHistory: (a) => roles.admin(a) || roles.accountManager(a),
   canRestore: (a) => roles.admin(a) || roles.accountManager(a),
   canSeeProtectedAccountManagerInvoices: (a) => roles.admin(a) || roles.accountManager(a) || roles.account(a),
+};
+
+const payments = {
+  // مرآة PaymentService.CanMutatePayment في بلازور (PaymentService.cs:44-58):
+  // مستخدم داخلي + (Admin أو ادعاء الإجراء frm_Payments:{Action})؛ الإضافة
+  // والتعديل يقبلان أيضًا AccountManager/Account، وSales للبيع فقط (لا شراء)؛
+  // الحذف بلا أي بديل أدوار — Admin أو frm_Payments:Delete حصرًا.
+  canView: (a) => roles.admin(a) || hasClaim(a, 'frm_Payments:View'),
+  canCreate: (a, isPurchase) => !roles.b2b(a) && (roles.admin(a)
+    || hasClaim(a, 'frm_Payments:Add')
+    || roles.accountManager(a)
+    || roles.account(a)
+    || (!isPurchase && roles.sales(a))),
+  canEdit: (a, isPurchase) => !roles.b2b(a) && (roles.admin(a)
+    || hasClaim(a, 'frm_Payments:Edit')
+    || roles.accountManager(a)
+    || roles.account(a)
+    || (!isPurchase && roles.sales(a))),
+  canDelete: (a) => roles.admin(a) || hasClaim(a, 'frm_Payments:Delete'),
 };
 
 const recovery = {
@@ -329,19 +353,22 @@ const customerCare = {
 const reports = {
   canViewExecutiveCockpit: (a) => roles.admin(a)
     || hasClaim(a, 'frm_ExecutiveCockpit:View'),
-  canViewFinancialStatements: (a) => roles.admin(a)
-    || roles.accountManager(a)
-    || roles.account(a)
-    || hasAnyClaim(
-      a,
-      'frm_BalanceSheet:View',
-      'frm_IncomeStatement:View',
-      'frm_CashFlowStatement:View',
-    ),
+  // بوابات القوائم المالية بحرفيات بلازور الحقيقية لكل قائمة على حدة
+  // (IncomeStatement.razor:1118-1120 / CashFlowStatement.razor:901-903 /
+  // BalanceSheet.razor:697-700) — الأسماء المخترعة السابقة
+  // (frm_BalanceSheet/frm_IncomeStatement/frm_CashFlowStatement) لا توجد في
+  // كتالوج بلازور ولا يمكن منحها أصلًا، فأُزيلت بوابتها الموحدة.
+  canViewIncomeStatement: (a) => roles.admin(a)
+    || hasAnyClaim(a, 'frmIncomeStatement:View', 'frmCashBoxDashboard:View'),
+  canViewCashFlow: (a) => roles.admin(a)
+    || hasAnyClaim(a, 'frm_CashFlowNew:View', 'frmCashBoxDashboard:View'),
+  canViewBalanceSheet: (a) => roles.admin(a)
+    || hasAnyClaim(a, 'frmIncomeStatement:View', 'rpt_IncomeStatement:View', 'frmCashBoxDashboard:View'),
   canViewSalesAnalytics: (a) => roles.admin(a)
     || roles.generalManager(a)
     || roles.accountManager(a)
     || roles.salesManager(a)
+    || hasClaim(a, 'rpt_SalesAnalytics:View')
     || hasClaim(a, 'frm_SalesAnalytics:View'),
   canExportExecutiveCockpit: (a) => reports.canViewExecutiveCockpit(a),
 };
@@ -355,7 +382,7 @@ const cashbox = {
   canView: (a) => roles.admin(a)
     || roles.accountManager(a)
     || roles.account(a)
-    || hasAnyClaim(a, 'frmCashBox:View', 'frmCashBoxDashboard:View', 'frmCashBoxTransactions:View'),
+    || hasAnyClaim(a, 'frmCashBox:View', 'frmCashBoxDashboard:View', 'frmCashBoxTransactions:View', 'frm_CashBoxTransaction:View', 'frm_TotalInOutNetCashBox:View', 'frmCashBoxSummary:View'),
   // إنشاء حركة خزينة أو تحويل بين الصناديق = عملية يدوية على الخزينة (CashBoxService F-09).
   canCreateTransaction: (a) => roles.admin(a) || hasClaim(a, 'frm_CashBoxManual:Add'),
   canAddBox: (a) => roles.admin(a) || hasClaim(a, 'frmCashBox:Add'),
@@ -410,9 +437,10 @@ const expenses = {
   canAdd: (a) => roles.admin(a) || hasClaim(a, 'frm_Expenses:Add'),
   canEdit: (a) => roles.admin(a) || hasClaim(a, 'frm_Expenses:Edit'),
   canDelete: (a) => roles.admin(a) || hasClaim(a, 'frm_ExpensesList:Delete'),
+  // إنشاء مجموعة في خدمة بلازور مشروط بـ frm_ExpensesGroup:Add فقط
+  // (ExpenseService.cs:970) — لا بديل frm_Expenses:Add.
   canAddGroup: (a) => roles.admin(a)
-    || hasClaim(a, 'frm_ExpensesGroup:Add')
-    || hasClaim(a, 'frm_Expenses:Add'),
+    || hasClaim(a, 'frm_ExpensesGroup:Add'),
 };
 
 const personalAccounts = {
@@ -535,6 +563,7 @@ module.exports = {
   roles,
   generalTasks,
   invoices,
+  payments,
   recovery,
   complaints,
   notifications,

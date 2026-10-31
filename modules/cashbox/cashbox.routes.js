@@ -16,6 +16,7 @@ const canView = requirePolicy(cashboxPolicy.canView, 'غير مصرح لك بع�
 const canCreateTransaction = requirePolicy(cashboxPolicy.canCreateTransaction, 'غير مصرح لك بتنفيذ هذا الإجراء على الخزينة');
 const canAddBox = requirePolicy(cashboxPolicy.canAddBox, 'غير مصرح لك بإنشاء خزينة');
 const canEditBox = requirePolicy(cashboxPolicy.canEditBox, 'غير مصرح لك بتعديل الخزينة');
+const canDeleteBox = requirePolicy(cashboxPolicy.canDeleteBox, 'غير مصرح لك بحذف الخزينة');
 
 // مراجعة الخزينة — قاعدة بلازور (CashBoxReview.razor): Admin أو AccountManager
 // أو دور الحسابات أو حامل Claim frmCashBoxReview:View. تُسجَّل قبل /:id.
@@ -39,6 +40,10 @@ router.get('/summary', canView, cashboxController.getSummary);
 // جلب حركات الخزينة
 // GET /api/cashbox/transactions?cashboxId=xxx&startDate=xxx&endDate=xxx&transactionType=xxx
 router.get('/transactions', canView, cashboxController.getTransactions);
+
+// حركة مفردة بالمعرف (فتح حركة من إشعار/رابط)
+// GET /api/cashbox/transactions/:id
+router.get('/transactions/:id', canView, cashboxController.getTransactionById);
 
 // إضافة حركة خزينة
 // POST /api/cashbox/transactions
@@ -97,6 +102,10 @@ router.post('/', canAddBox, cashboxController.create);
 // تعديل خزينة
 // PUT /api/cashbox/:id
 router.put('/:id', canEditBox, cashboxController.update);
+
+// حذف خزينة (ممنوع عند وجود حركات — يرفضه الاستعلام برسالة بلازور)
+// DELETE /api/cashbox/:id
+router.delete('/:id', canDeleteBox, cashboxController.remove);
 
 // تصدير الراوتر
 module.exports = router;

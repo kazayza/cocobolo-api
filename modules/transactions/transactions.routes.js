@@ -2,7 +2,25 @@ const express = require('express');
 const router = express.Router();
 const transactionsController = require('./transactions.controller');
 const { authenticate, requirePolicy } = require('../../core/auth.middleware');
-const { invoices: invoicePolicy } = require('../../shared/authorization.policy');
+const { invoices: invoicePolicy, payments: paymentsPolicy } = require('../../shared/authorization.policy');
+const paymentsQueries = require('../payments/payments.queries');
+const { errorResponse } = require('../../shared/response.helper');
+
+// بوابة إضافة دفعة: payments.canCreate تُحسم بنوع الفاتورة الهدف
+// (بيع/شراء) — تُحمَّل من قاعدة البيانات قبل أي كتابة.
+async function paymentsCreateGate(req, res, next) {
+  try {
+    const invoice = await paymentsQueries.getTransactionType(parseInt(req.params.id, 10));
+    if (!invoice) return errorResponse(res, 'الفاتورة غير موجودة.', 404);
+    if (!paymentsPolicy.canCreate(req.auth, paymentsQueries.isPurchaseType(invoice.TransactionType))) {
+      return errorResponse(res, 'غير مصرح لك بتنفيذ هذا الإجراء على المدفوعات.', 403);
+    }
+    return next();
+  } catch (err) {
+    console.error('paymentsCreateGate:', err);
+    return errorResponse(res, 'فشل التحقق من صلاحية الدفع', 500, err.message);
+  }
+}
 
 // كل بيانات الفواتير مالية/مخزنية؛ لا يوجد Route مجهول هنا.
 router.use(authenticate);
@@ -59,10 +77,11 @@ router.get('/:id', transactionsController.getById);
 // إنشاء فاتورة جديدة
 router.post('/', transactionsController.create);
 
-// إضافة دفعة لفاتورة
+// إضافة دفعة لفاتورة — بوابة المدفوعات (PaymentService.CanMutatePayment)
+// لا بوابة تعديل الفواتير: تُحسم بنوع الفاتورة داخل paymentsCreateGate.
 router.post(
   '/:id/payments',
-  requirePolicy(invoicePolicy.canLimitedEdit),
+  paymentsCreateGate,
   transactionsController.addPayment,
 );
 

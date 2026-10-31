@@ -1,6 +1,38 @@
 const { sql, connectDB } = require('../../core/database');
 
 const policy = require('../../shared/authorization.policy');
+// التفقيط بخوارزمية بلازور نفسها — مصدرها الوحيد وحدة المدفوعات
+// (PaymentService.ConvertNumberToArabicWords) كما يستخدمها
+// AdditionalChargeService.GetChargeReceiptAsync.
+const { convertNumberToArabicWords } = require('../payments/payments.queries');
+
+// أسماء الأنواع/الحالات العربية — ChargeTypes.All / ChargeStatuses.All
+const CHARGE_TYPE_AR = {
+  Inspection: 'رسوم معاينة', Shipping: 'رسوم شحن', Installation: 'رسوم تركيب',
+  Advance: 'دفعة مقدمة', Modification: 'رسوم تعديل', Other: 'رسوم أخرى',
+};
+const CHARGE_STATUS_AR = {
+  Paid: 'مدفوعة', Applied: 'مطبقة', NonRefundable: 'غير مستردة',
+  PendingApproval: 'بانتظار الاعتماد', Approved: 'معتمدة — غير محصّلة', Rejected: 'مرفوضة',
+};
+
+// ResolveAdvanceReceiptCategory / ResolveReceiptTitle في بلازور
+function resolveReceiptCategory(charge) {
+  const description = String(charge.ChargeDescription || '');
+  if (charge.ChargeType === 'Inspection' || description.includes('معاينة')) return 'رسوم معاينة';
+  if (charge.ChargeType === 'Advance') return 'دفعة مقدمة';
+  if (description.includes('عربون')) return 'عربون';
+  if (description.includes('دفعة') || description.includes('مقدمة')) return 'دفعة مقدمة';
+  return 'رسوم إضافية';
+}
+function resolveReceiptTitle(charge) {
+  const description = String(charge.ChargeDescription || '');
+  if (charge.ChargeType === 'Inspection' || description.includes('معاينة')) return 'إيصال استلام رسوم معاينة';
+  if (charge.ChargeType === 'Advance') return 'إيصال استلام دفعة مقدمة';
+  if (description.includes('عربون')) return 'إيصال استلام عربون';
+  if (description.includes('دفعة') || description.includes('مقدمة')) return 'إيصال استلام دفعة مقدمة';
+  return 'إيصال استلام رسوم إضافية';
+}
 
 // الأنواع والحالات — DTOS/InvoiceDto.cs ChargeTypes:644 / ChargeStatuses:671
 const TYPES = new Set(['Inspection', 'Shipping', 'Installation', 'Advance', 'Other', 'Modification']);
@@ -199,9 +231,16 @@ async function getReceipt(value) {
     : charge.ChargeType === 'Advance' || /دفعة|عربون|مقدمة/.test(description)
       ? 'ADV'
       : 'CHR';
+  const category = CHARGE_TYPE_AR[charge.ChargeType] || resolveReceiptCategory(charge);
   return {
     ...charge,
     ReceiptNumber: `${prefix}-${year}-${String(charge.ChargeID).padStart(6, '0')}`,
+    ReceiptTitle: resolveReceiptTitle(charge),
+    ReceiptCategoryLabel: category,
+    ChargeTypeName: category,
+    ReceiptTypeAr: 'سند قبض',
+    StatusName: CHARGE_STATUS_AR[charge.Status] || charge.Status || '—',
+    AmountInWords: convertNumberToArabicWords(charge.ChargeAmount || 0),
     CompanyName: company.CompanyName || 'COCOBOLO',
     CompanyPhone: [company.Phone1, company.Phone2].filter(Boolean).join(' - '),
     CompanyAddress: company.Address,

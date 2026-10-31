@@ -367,8 +367,37 @@ async function checkPhoneExists(phone, phone2 = null, excludeId = null) {
   return result.recordset.length > 0 ? result.recordset[0] : null;
 }
 
+// دفعات العميل المقدمة — GetCustomerAdvancesAsync (InvoiceService.cs:
+// 2685): كل رسوم العميل في AdditionalCharges، وعند unappliedOnly
+// تُستبعد المرتبطة بفاتورة (TransactionID NOT NULL) — وهي بالضبط
+// مجموعة الاختيار التي يقبلها مسار إنشاء الفاتورة عند التطبيق
+// (transactions.createTransaction: PartyID + TransactionID IS NULL)،
+// فيكون المتبقي لكل صف هو مبلغه الكامل.
+async function getClientAdvances(partyId, { unappliedOnly = false } = {}) {
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('partyId', sql.Int, partyId)
+    .query(`
+      SELECT
+        c.ChargeID, c.ChargeID AS ChargeId, c.PartyID AS PartyId,
+        c.ChargeType, c.ChargeDescription, c.ChargeAmount,
+        c.ChargeAmount AS RemainingAmount,
+        c.Notes, c.CreatedBy, c.CreatedAt,
+        CASE WHEN c.TransactionID IS NULL THEN CAST(0 AS bit) ELSE CAST(1 AS bit) END AS IsApplied,
+        c.TransactionID AS AppliedToTransactionId,
+        linked.ReferenceNumber AS AppliedToReferenceNumber
+      FROM AdditionalCharges c
+      LEFT JOIN Transactions linked ON c.TransactionID = linked.TransactionID
+      WHERE c.PartyID = @partyId
+        ${unappliedOnly ? 'AND c.TransactionID IS NULL' : ''}
+      ORDER BY c.CreatedAt DESC
+    `);
+  return result.recordset;
+}
+
 // تصدير الدوال
 module.exports = {
+  getClientAdvances,
   getAllClients,
   getClientsList,
   searchClients,

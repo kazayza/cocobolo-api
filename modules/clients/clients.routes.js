@@ -33,6 +33,9 @@ router.get('/contact-sources', clientsController.getContactSources);
 router.get('/', clientsController.getAll);
 router.post('/', clientsController.create);
 
+// دفعات العميل المقدمة (قبل /:id حتى لا يبتلعها)
+router.get('/:id/advances', clientsController.getAdvances);
+
 // الـ Routes اللي فيها :id
 router.get('/:id', (req, res) => {
   console.log('getById route hit with id:', req.params.id);

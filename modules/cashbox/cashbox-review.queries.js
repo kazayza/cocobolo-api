@@ -327,6 +327,25 @@ async function stampReview(cashboxId, fromRaw, toRaw, note, auth) {
           (@cashboxId, @fromDate, @toDate, @username, @displayName,
            @note, @txCount, @totalIn, @totalOut, @lastTxCreatedAt)
       `);
+    // سجل تدقيق الختم — نفس نمط Audit_Log في بقية الوحدات
+    await pool.request()
+      .input('table', sql.NVarChar(128), 'CashBoxReviews')
+      .input('action', sql.NVarChar(100), 'Insert')
+      .input('key', sql.NVarChar(200), String(parsedId))
+      .input('username', sql.NVarChar(100), auth.username)
+      .input('oldData', sql.NVarChar(sql.MAX), null)
+      .input('newData', sql.NVarChar(sql.MAX), JSON.stringify({
+        CashBoxId: parsedId, PeriodFrom: from, PeriodTo: to,
+        TxCount: live.TxCount, TotalIn: live.TotalIn, TotalOut: live.TotalOut,
+      }))
+      .query(`
+        INSERT INTO [dbo].[Audit_Log]
+          (TableName, ActionType, PrimaryKeyValue, OldData, NewData,
+           ActionDate, LoginName, AppName, AccessUserName)
+        VALUES
+          (@table, @action, @key, @oldData, @newData,
+           GETDATE(), @username, N'COCOBOLO Flutter', @username)
+      `);
     return { message: 'تم حفظ ختم المراجعة.' };
   } catch (error) {
     if (isMissingTableError(error)) {

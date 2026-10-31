@@ -64,9 +64,10 @@ async function getSummary(req, res) {
 // جلب حركات الخزينة
 async function getTransactions(req, res) {
   try {
-    const { cashboxId, startDate, endDate, transactionType, referenceType, search, page, limit } = req.query;
+    const { cashboxId, startDate, endDate, transactionType, referenceType, search, page, limit, amountFrom, amountTo, sort } = req.query;
     const result = await cashboxQueries.getCashboxTransactions(
-      cashboxId, startDate, endDate, transactionType, referenceType, search, page, limit
+      cashboxId, startDate, endDate, transactionType, referenceType, search, page, limit,
+      amountFrom ?? null, amountTo ?? null, sort ?? null,
     );
     return res.json(result);
   } catch (err) {
@@ -75,16 +76,35 @@ async function getTransactions(req, res) {
   }
 }
 
-// إنشاء خزينة
+// حركة مفردة بالمعرف — GET /api/cashbox/transactions/:id
+async function getTransactionById(req, res) {
+  try {
+    const parsed = Number(req.params.id);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      return errorResponse(res, 'معرّف الحركة غير صالح', 400, 'INVALID_TRANSACTION_ID');
+    }
+    const tx = await cashboxQueries.getTransactionById(parsed);
+    if (!tx) return notFoundResponse(res, 'الحركة غير موجودة');
+    return res.json(tx);
+  } catch (err) {
+    console.error('خطأ في جلب الحركة:', err);
+    return errorResponse(res, 'فشل تحميل الحركة', 500, err.message);
+  }
+}
+
+// إنشاء خزينة — هوية المنشئ من التوكن فقط (Item 34)
 async function create(req, res) {
   try {
-    const { cashBoxName, createdBy } = req.body;
+    const { cashBoxName } = req.body;
 
     if (!cashBoxName) {
       return errorResponse(res, 'اسم الخزينة مطلوب', 400);
     }
 
-    const cashBoxId = await cashboxQueries.createCashbox(req.body);
+    const cashBoxId = await cashboxQueries.createCashbox({
+      ...req.body,
+      createdBy: req.auth.username,
+    });
 
     return res.json({
       success: true,
@@ -107,7 +127,11 @@ async function update(req, res) {
       return errorResponse(res, 'اسم الخزينة مطلوب', 400);
     }
 
-    await cashboxQueries.updateCashbox(id, req.body);
+    await cashboxQueries.updateCashbox(id, {
+      ...req.body,
+      createdBy: req.auth.username,
+      lastUpdatedBy: req.auth.username,
+    });
 
     return res.json({
       success: true,
@@ -119,16 +143,30 @@ async function update(req, res) {
   }
 }
 
-// إضافة حركة
+// حذف خزينة — DELETE /api/cashbox/:id (بوابة canDeleteBox في المسارات)
+async function remove(req, res) {
+  try {
+    await cashboxQueries.deleteCashbox(req.params.id, req.auth.username);
+    return res.json({ success: true, message: 'تم حذف الخزينة بنجاح' });
+  } catch (err) {
+    console.error('خطأ في حذف الخزينة:', err);
+    return errorResponse(res, err.message || 'فشل حذف الخزينة', err.statusCode || 500, err.message);
+  }
+}
+
+// إضافة حركة — هوية المنشئ من التوكن فقط (Item 34)
 async function createTransaction(req, res) {
   try {
-    const { cashBoxId, transactionType, amount, createdBy } = req.body;
+    const { cashBoxId, transactionType, amount } = req.body;
 
     if (!cashBoxId || !transactionType || !amount) {
       return errorResponse(res, 'البيانات غير مكتملة', 400);
     }
 
-    const transactionId = await cashboxQueries.createTransaction(req.body);
+    const transactionId = await cashboxQueries.createTransaction({
+      ...req.body,
+      createdBy: req.auth.username,
+    });
 
     return res.json({
       success: true,
@@ -144,7 +182,7 @@ async function createTransaction(req, res) {
 // تحويل بين خزينتين
 async function transfer(req, res) {
   try {
-    const { cashBoxIdFrom, cashBoxIdTo, cashBoxFromName, cashBoxToName, amount, notes, createdBy } = req.body;
+    const { cashBoxIdFrom, cashBoxIdTo, amount, } = req.body;
 
     if (!cashBoxIdFrom || !cashBoxIdTo || !amount) {
       return errorResponse(res, 'البيانات غير مكتملة', 400);
@@ -158,7 +196,10 @@ async function transfer(req, res) {
       return errorResponse(res, 'المبلغ يجب أن يكون أكبر من صفر', 400);
     }
 
-    const result = await cashboxQueries.createTransfer(req.body);
+    const result = await cashboxQueries.createTransfer({
+      ...req.body,
+      createdBy: req.auth.username,
+    });
 
     return res.json({
       success: true,
@@ -263,7 +304,7 @@ async function createManual(req, res) {
   try {
     const result = await cashboxQueries.createManualOperation({
       ...req.body,
-      createdBy: req.auth?.username || req.body.createdBy,
+      createdBy: req.auth.username,
     });
     return res.json({ success: true, ...result });
   } catch (err) {
@@ -323,6 +364,8 @@ module.exports = {
   getTransactions,
   create,
   update,
+  remove,
+  getTransactionById,
   createTransaction,
   transfer,
    getDashboardStats,

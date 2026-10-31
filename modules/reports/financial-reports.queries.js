@@ -4,13 +4,19 @@
 //    CashFlowService.cs (التدفقات النقدية)
 //    FinancialDashboardService.cs (اللوحة المالية)
 //  كل تعريف موثّق بسطر بلازور المقابل في تعليق بجانبه.
-//  ⚠️ انحراف موثّق: لوحة بلازور المالية تستبعد فواتير «المنشئين المحميين»
-//     (FinancialDashboardService.GetProtectedCreatorsAsync :27) بناءً على
-//     جلسة بلازور — لا مقابل لها في جلسة الـ API، لذا يحسب الـ API على كل
-//     الفواتير، وهو مطابق حرفيًا لقائمة الدخل نفسها في بلازور
-//     (FinancialReportsService.cs:22-24: القوائم المالية تشمل كل الفواتير).
+//  «المنشئون المحميون» (بند 4): لوحة بلازور المالية تستبعد فواتير البيع التي
+//     أنشأها مستخدمو دور AccountManager (SalesInvoiceAccess.cs:
+//     GetProtectedCreatorUsernamesAsync — مصدر محدد: Users.Role='AccountManager')
+//     ما لم يكن المشاهد نفسه Admin/AccountManager/Account
+//     (FinancialDashboardService.cs:27-30). يُطبَّق الاستبعاد في أقسام اللوحة
+//     المالية فقط وبنفس نطاق بلازور الدقيق: نسبة التحصيل وإجمالي المستحقات
+//     داخل النسب، وإيراد وتكلفة الترند الموحّد، وأعلى المنتجات. بلازور نفسه
+//     لا يستبعد في «أعلى العملاء» ولا في ملخص الذمم — محفوظ كما هو.
+//     قائمة الدخل/الميزانية/التدفقات تشمل كل الفواتير دائمًا
+//     (FinancialReportsService.cs:22-24).
 // ════════════════════════════════════════════════════════════════════
 const { sql, connectDB } = require('../../core/database');
+const { invoices: invoicePolicy } = require('../../shared/authorization.policy');
 const { addDays, addMonths, money, intId } = require('../../shared/reporting.utils');
 
 // حالات الرواتب المعترف بها — PayrollDto.cs:353-358 (أسماء قاعدة البيانات العربية)
@@ -90,6 +96,24 @@ function creatorScope(column, scoped) {
   return ` AND (${column} IS NOT NULL AND EXISTS (SELECT 1 FROM Users u INNER JOIN Employees e ON e.EmployeeID = u.employeeID WHERE u.Username = ${column} AND e.BranchID = @branchId))`;
 }
 const NOT_CANCELLED = `(InvoiceStatus IS NULL OR InvoiceStatus <> 'Cancelled')`;
+
+// ─── المنشئون المحميون — SalesInvoiceAccess.cs:20-25,35-40 ───
+// القائمة المحددة المصدر: أسماء مستخدمي دور AccountManager من جدول Users.
+// المشاهد المخوّل (Admin/AccountManager/Account — نفس دالة بلازور
+// CanViewAccountManagerInvoices) يحصل على قائمة فارغة فلا يُستبعد شيء.
+async function getProtectedCreators(pool, auth) {
+  if (invoicePolicy.canSeeProtectedAccountManagerInvoices(auth || {})) return [];
+  const rows = await request(pool, [], `
+    SELECT Username FROM Users WHERE Role = 'AccountManager'`);
+  return rows.map((r) => String(r.Username || '')).filter(Boolean);
+}
+// مقطع SQL لاستبعاد فواتير بيع المنشئين المحميين لجدول بيع بالاسم المستعار
+// المعطى (ExcludeProtectedSales: البيع فقط — كل استعلامات اللوحة هنا بيع).
+function protectedSql(alias, creators) {
+  if (!creators.length) return '';
+  const list = creators.map((u) => `N'${u.replaceAll("'", "''")}'`).join(',');
+  return ` AND (${alias}.CreatedBy IS NULL OR ${alias}.CreatedBy NOT IN (${list}))`;
+}
 
 // ─── الرواتب بالتناسب حسب أيام التداخل — FinancialReportsService.cs:448,548, SumPayrollProRated ───
 function proRatePayroll(rows, from, to) {
@@ -486,7 +510,7 @@ async function getBalanceSheet(pool, range) {
   const scoped = Boolean(branchId);
   const dto = { AsOfDate: dstr(new Date()), BranchId: branchId, BranchName: '' };
   if (branchId) {
-    const rows = await request(pool, baseParams(range), 'SELECT BranchNameAr FROM Branches WHERE BranchId = @branchId');
+    const rows = await request(pool, baseParams(range), 'SELECT BranchNameAr FROM Branches WHERE BranchID = @branchId');
     dto.BranchName = rows[0]?.BranchNameAr || '';
   }
   // النقدية: OpeningBalance + قبض − صرف (أنواع عربية فقط — :1211)
@@ -512,7 +536,7 @@ async function getBalanceSheet(pool, range) {
         ELSE ISNULL(p.PurchasePrice, ISNULL(p.PurchasePriceCClass, ISNULL(p.PurchasePriceElite, 0))) END), 0) AS Total,
       COUNT(DISTINCT sl.ProductID) AS Cnt
     FROM StockLevels sl
-    INNER JOIN Warehouses w ON w.WarehouseID = sl.WarehouseID AND ISNULL(w.IsActive, 1) = 1
+    INNER JOIN Warehouses w ON w.WarehouseID = sl.WarehouseID AND w.IsActive = 1
     INNER JOIN Products p ON p.ProductID = sl.ProductID
     WHERE sl.Quantity > 0 ${scoped ? 'AND w.BranchID = @branchId' : ''}
   `);
@@ -753,13 +777,16 @@ function scoreColor(score, max) {
   if (pct >= 80) return '#10b981'; if (pct >= 60) return '#84cc16'; if (pct >= 40) return '#f59e0b'; if (pct >= 20) return '#fb923c';
   return '#ef4444';
 }
-async function getFinancialDashboard(pool, range) {
+async function getFinancialDashboard(pool, range, auth) {
   const { from, to } = range;
   const income = await getIncomeStatement(pool, range, { includeComparison: true, includeMonthlyTrend: false });
   const cf = await getCashFlow(pool, range);
+  // استبعاد المنشئين المحميين — أقسام اللوحة فقط (FinancialDashboardService.cs:27-30)
+  const protectedCreators = await getProtectedCreators(pool, auth);
   const dto = {
     FromDate: dstr(from), ToDate: dstr(to), PeriodLabel: income.PeriodLabel, BranchId: range.branchId,
-    ProtectedCreatorsDeviation: 'اللوحة في بلازور تستبعد فواتير المنشئين المحميين بجلسة بلازور؛ الـ API يحسب على كل الفواتير كقائمة الدخل نفسها (FinancialReportsService.cs:22-24).',
+    HiddenProtectedSales: protectedCreators.length > 0,
+    ProtectedCreatorsDeviation: 'مُطبَّق: اللوحة تستبعد فواتير بيع منشئي دور AccountManager (Users) في النسب والترند الموحّد وأعلى المنتجات فقط — مرآة SalesInvoiceAccess/FinancialDashboardService.cs:27-30؛ قائمة الدخل نفسها تشمل كل الفواتير (FinancialReportsService.cs:22-24).',
   };
   dto.IncomeSummary = {
     Revenue: income.NetRevenue, Cogs: income.CostOfGoodsSold, GrossProfit: income.GrossProfit,
@@ -786,14 +813,15 @@ async function getFinancialDashboard(pool, range) {
     { Title: 'صافي التدفق', Subtitle: 'في الفترة', Value: cf.NetCashFlow, Format: 'money', Icon: cf.NetCashFlow >= 0 ? 'TrendingUp' : 'TrendingDown', Color: cf.NetCashFlow >= 0 ? '#10b981' : '#ef4444', ChangePercentage: null, ChangeLabel: '', TrendIcon: '', Url: '/reports/cash-flow' },
     { Title: 'هامش الربح الإجمالي', Subtitle: `تكلفة: ${Math.round(income.CostOfGoodsSold)} ج`, Value: income.GrossProfitMargin, Format: 'percent', Icon: 'PieChart', Color: income.GrossProfitMargin >= 30 ? '#10b981' : '#f59e0b', ChangePercentage: null, ChangeLabel: '', TrendIcon: '', Url: '/reports/income-statement' },
   ];
-  // النسب — BuildRatiosAsync:268 (التحصيل على كل الفواتير: انحراف المنشئين المحميين الموثّق أعلاه)
+  // النسب — BuildRatiosAsync:268 (التحصيل وإجمالي المستحقات مع استبعاد
+  // المنشئين المحميين كما في بلازور :294-330)
   const scoped = Boolean(range.branchId);
   const ratioRows = await request(pool, baseParams(range), `
     SELECT ISNULL(SUM(t.GrandTotal), 0) AS Invoiced, ISNULL(SUM(t.PaidAmount), 0) AS Collected,
-           (SELECT ISNULL(SUM(x.GrandTotal - x.PaidAmount), 0) FROM Transactions x WHERE x.TransactionType = 'Sale' AND ${NOT_CANCELLED.replaceAll('InvoiceStatus', 'x.InvoiceStatus')} AND x.GrandTotal > x.PaidAmount) AS Receivables
+           (SELECT ISNULL(SUM(x.GrandTotal - x.PaidAmount), 0) FROM Transactions x WHERE x.TransactionType = 'Sale' AND ${NOT_CANCELLED.replaceAll('InvoiceStatus', 'x.InvoiceStatus')} AND x.GrandTotal > x.PaidAmount ${protectedSql('x', protectedCreators)}) AS Receivables
     FROM Transactions t
     WHERE t.TransactionType = 'Sale' AND ${NOT_CANCELLED.replaceAll('InvoiceStatus', 't.InvoiceStatus')}
-      AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) ${txScope('t', scoped)}
+      AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) ${txScope('t', scoped)} ${protectedSql('t', protectedCreators)}
   `);
   const rr = ratioRows[0] || {};
   const quick = cf.LiquidityAnalysis.AverageMonthlyOutflow > 0
@@ -860,7 +888,7 @@ async function getFinancialDashboard(pool, range) {
     const revRows = await request(pool, baseParams(mRange), `
       SELECT ISNULL(SUM(ISNULL(t.NetTotalAmount, t.GrandTotal)), 0) AS Revenue FROM Transactions t
       WHERE t.TransactionType = 'Sale' AND ${NOT_CANCELLED.replaceAll('InvoiceStatus', 't.InvoiceStatus')}
-        AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) ${txScope('t', scoped)}
+        AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) ${txScope('t', scoped)} ${protectedSql('t', protectedCreators)}
     `);
     const cogsRows = await request(pool, baseParams(mRange), `
       SELECT ISNULL(SUM(d.Quantity * ISNULL(p.PurchasePrice, 0)), 0) AS Cogs
@@ -868,7 +896,7 @@ async function getFinancialDashboard(pool, range) {
       INNER JOIN TransactionDetails d ON d.TransactionID = t.TransactionID
       INNER JOIN Products p ON p.ProductID = d.ProductID
       WHERE t.TransactionType = 'Sale' AND ${NOT_CANCELLED.replaceAll('InvoiceStatus', 't.InvoiceStatus')}
-        AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) ${txScope('t', scoped)}
+        AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) ${txScope('t', scoped)} ${protectedSql('t', protectedCreators)}
     `);
     const exp = await expenseSum(pool, mRange, cursor, mTo);
     const cIn = await cashSum(pool, mRange, `t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) AND (t.TransactionType = N'قبض' OR t.TransactionType = 'In')`);
@@ -894,7 +922,7 @@ async function getFinancialDashboard(pool, range) {
     INNER JOIN TransactionDetails d ON d.TransactionID = t.TransactionID
     INNER JOIN Products p ON p.ProductID = d.ProductID
     WHERE t.TransactionType = 'Sale' AND ${NOT_CANCELLED.replaceAll('InvoiceStatus', 't.InvoiceStatus')}
-      AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) ${txScope('t', scoped)}
+      AND t.TransactionDate >= @fromDate AND t.TransactionDate < DATEADD(DAY, 1, @toDate) ${txScope('t', scoped)} ${protectedSql('t', protectedCreators)}
     GROUP BY p.ProductID, p.ProductName ORDER BY Revenue DESC
   `);
   dto.TopProducts = topProducts.map((r) => {
@@ -905,6 +933,8 @@ async function getFinancialDashboard(pool, range) {
       ProfitMargin: revenue === 0 ? 0 : round1(((revenue - cogs) / revenue) * 100), OrdersCount: Number(r.OrdersCount || 0),
     };
   });
+  // أعلى العملاء: بلازور لا يطبّق استبعاد المنشئين المحميين هنا
+  // (GetTopCustomersAsync — بلا ExcludeProtectedSales) — محفوظ كما هو.
   const topCustomers = await request(pool, baseParams(range), `
     SELECT TOP 10 pa.PartyID AS PartyId, pa.PartyName, pa.Phone, COUNT(*) AS InvoicesCount,
       ISNULL(SUM(t.GrandTotal), 0) AS TotalRevenue, ISNULL(SUM(t.PaidAmount), 0) AS TotalPaid
@@ -924,7 +954,8 @@ async function getFinancialDashboard(pool, range) {
   dto.TopExpenseCategories = income.ExpensesByGroup.slice(0, 8).map((g) => ({
     GroupName: g.GroupName, Amount: g.Amount, Percentage: g.Percentage, Color: g.Color || '#94a3b8',
   }));
-  // الذمم — BuildReceivablesSummaryAsync (مستحقات الموردين تستبعد PartyId=11 الافتراضي وتشمل المرآة ضمن المشتريات)
+  // الذمم — BuildReceivablesSummaryAsync (مستحقات الموردين تستبعد PartyId=11 الافتراضي وتشمل المرآة ضمن المشتريات؛
+  // بلازور لا يستبعد المنشئين المحميين في هذا الملخص — الاستبعاد فقط في إجمالي المستحقات داخل النسب أعلاه)
   const recvSumRows = await request(pool, baseParams(range), `
     SELECT ISNULL(SUM(t.GrandTotal - t.PaidAmount), 0) AS Total, COUNT(DISTINCT t.PartyID) AS Debtors,
       (SELECT COUNT(*) FROM Transactions o WHERE o.TransactionType = 'Sale' AND ${NOT_CANCELLED.replaceAll('InvoiceStatus', 'o.InvoiceStatus')} AND o.GrandTotal > o.PaidAmount AND o.DueDate IS NOT NULL AND o.DueDate < CAST(GETDATE() AS DATE) ${txScope('o', scoped)}) AS Overdue,
@@ -978,5 +1009,5 @@ async function withPool(fn) {
 module.exports = {
   parseRange, getIncomeStatement, getBalanceSheet, getCashFlow, getFinancialDashboard, withPool,
   // تُعاد استخدامها من لوحة القيادة التنفيذية (نفس تعريفات قائمة الدخل)
-  _internal: { txScope, creatorScope, NOT_CANCELLED, request, baseParams, payrollRows, proRatePayroll, computeCogs },
+  _internal: { txScope, creatorScope, NOT_CANCELLED, request, baseParams, payrollRows, proRatePayroll, computeCogs, getProtectedCreators, protectedSql },
 };

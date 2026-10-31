@@ -1,5 +1,37 @@
 const { sql, connectDB } = require('../../core/database');
 
+// سجل تدقيق الكتابات — نفس نمط Audit_Log في وحدة الحضور، وبأسماء
+// جداول/إجراءات بلازور (CashBoxService.cs:192,215,777): CashBoxes
+// Insert/Update/Delete وCashboxTransactions Manual.
+async function insertCashboxAudit(makeRequest, tableName, action, id, username, oldData, newData) {
+  await makeRequest()
+    .input('table', sql.NVarChar(128), tableName)
+    .input('action', sql.NVarChar(100), action)
+    .input('key', sql.NVarChar(200), String(id))
+    .input('username', sql.NVarChar(100), username || null)
+    .input('oldData', sql.NVarChar(sql.MAX), oldData == null ? null : JSON.stringify(oldData))
+    .input('newData', sql.NVarChar(sql.MAX), newData == null ? null : JSON.stringify(newData))
+    .query(`
+      INSERT INTO [dbo].[Audit_Log]
+        (TableName, ActionType, PrimaryKeyValue, OldData, NewData,
+         ActionDate, LoginName, AppName, AccessUserName)
+      VALUES
+        (@table, @action, @key, @oldData, @newData,
+         GETDATE(), @username, N'COCOBOLO Flutter', @username)
+    `);
+}
+
+// تطبيع عربي — مرآة حرفية لـ StringExtensions.NormalizeArabic في بلازور
+// (Services/StringExtensions.cs:8): أ/إ/آ ← ا، ة ← ه، ى ← ي، ئ/ؤ ← ء.
+function normalizeArabic(input) {
+  if (input == null) return '';
+  return String(input)
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/[ئؤ]/g, 'ء');
+}
+
 // جلب كل الخزائن
 async function getAllCashboxes() {
   const pool = await connectDB();
@@ -7,16 +39,23 @@ async function getAllCashboxes() {
     .query(`
       SELECT 
         c.CashBoxID, c.CashBoxName, c.Description,
-        c.BranchID, c.OpeningBalance, c.OpeningDate,
+        c.BranchID, b.BranchNameAr AS BranchName, c.OpeningBalance, c.OpeningDate,
         c.CashBoxKind, c.Icon, c.Color, c.IsActive, c.IsDefault,
         c.CreatedBy, c.CreatedAt,
+        ISNULL((SELECT SUM(Amount) FROM CashboxTransactions
+                WHERE CashBoxID = c.CashBoxID AND TransactionType = N'قبض'), 0) AS TotalIn,
+        ISNULL((SELECT SUM(Amount) FROM CashboxTransactions
+                WHERE CashBoxID = c.CashBoxID AND TransactionType = N'صرف'), 0) AS TotalOut,
+        (SELECT COUNT(*) FROM CashboxTransactions
+         WHERE CashBoxID = c.CashBoxID) AS TransactionsCount,
         ISNULL(c.OpeningBalance, 0) + ISNULL((
           SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount
                           WHEN TransactionType = N'صرف' THEN -Amount ELSE 0 END)
           FROM CashboxTransactions WHERE CashBoxID = c.CashBoxID
         ), 0) AS CurrentBalance
       FROM CashBoxes c
-      ORDER BY c.IsDefault DESC, c.CashBoxName
+      LEFT JOIN Branches b ON b.BranchID = c.BranchID
+      ORDER BY ISNULL(b.BranchNameAr, ''), c.IsDefault DESC, c.IsActive DESC, c.CashBoxName
     `);
   return result.recordset;
 }
@@ -29,17 +68,24 @@ async function getActiveCashboxes() {
     .query(`
       SELECT 
         c.CashBoxID, c.CashBoxName, c.Description,
-        c.BranchID, c.OpeningBalance, c.OpeningDate,
+        c.BranchID, b.BranchNameAr AS BranchName, c.OpeningBalance, c.OpeningDate,
         c.CashBoxKind, c.Icon, c.Color, c.IsActive, c.IsDefault,
         c.CreatedBy, c.CreatedAt,
+        ISNULL((SELECT SUM(Amount) FROM CashboxTransactions
+                WHERE CashBoxID = c.CashBoxID AND TransactionType = N'قبض'), 0) AS TotalIn,
+        ISNULL((SELECT SUM(Amount) FROM CashboxTransactions
+                WHERE CashBoxID = c.CashBoxID AND TransactionType = N'صرف'), 0) AS TotalOut,
+        (SELECT COUNT(*) FROM CashboxTransactions
+         WHERE CashBoxID = c.CashBoxID) AS TransactionsCount,
         ISNULL(c.OpeningBalance, 0) + ISNULL((
           SELECT SUM(CASE WHEN TransactionType = N'قبض' THEN Amount
                           WHEN TransactionType = N'صرف' THEN -Amount ELSE 0 END)
           FROM CashboxTransactions WHERE CashBoxID = c.CashBoxID
         ), 0) AS CurrentBalance
       FROM CashBoxes c
+      LEFT JOIN Branches b ON b.BranchID = c.BranchID
       WHERE c.IsActive = 1
-      ORDER BY c.IsDefault DESC, c.CashBoxName
+      ORDER BY ISNULL(b.BranchNameAr, ''), c.IsDefault DESC, c.IsActive DESC, c.CashBoxName
     `);
   return result.recordset;
 }
@@ -101,10 +147,18 @@ const CASHBOX_REF_COLORS = {
 };
 
 // إثراء الحركات بمعلومات المصدر (مطابق لمنطق بلازور EnrichTransactionsSourceInfoAsync)
+async function queryWithIds(pool, idValues, buildSql) {
+  const req = pool.request();
+  const names = [...new Set(idValues.map((v) => Number(v)).filter((v) => Number.isInteger(v)))].map((v, i) => {
+    const name = `eid${i}`;
+    req.input(name, sql.Int, v);
+    return `@${name}`;
+  });
+  return req.query(buildSql(names.length ? names.join(',') : '0'));
+}
+
 async function enrichCashboxTransactions(items) {
   if (!items.length) return items;
-
-  const ids = (arr) => (arr.length ? arr.join(',') : '0');
 
   // الفواتير (مبيعات/مشتريات)
   const invoiceIds = items
@@ -114,10 +168,9 @@ async function enrichCashboxTransactions(items) {
   if (invoiceIds.length) {
     const pool = await connectDB();
     try {
-      const res = await pool.request().query(
+      const res = await queryWithIds(pool, invoiceIds, (list) =>
         `SELECT TransactionID, ReferenceNumber, PartyID
-         FROM Transactions WHERE TransactionID IN (${ids(invoiceIds)})`
-      );
+         FROM Transactions WHERE TransactionID IN (${list})`);
       for (const r of res.recordset) invoices.set(r.TransactionID, r);
     } catch (e) { console.error('⚠️ enrich invoices:', e.message); }
   }
@@ -128,9 +181,8 @@ async function enrichCashboxTransactions(items) {
   if (partyIds.length) {
     const pool = await connectDB();
     try {
-      const res = await pool.request().query(
-        `SELECT PartyID, PartyName FROM Parties WHERE PartyID IN (${ids(partyIds)})`
-      );
+      const res = await queryWithIds(pool, partyIds, (list) =>
+        `SELECT PartyID, PartyName FROM Parties WHERE PartyID IN (${list})`);
       for (const r of res.recordset) parties.set(r.PartyID, r.PartyName);
     } catch (e) { console.error('⚠️ enrich parties:', e.message); }
   }
@@ -143,10 +195,9 @@ async function enrichCashboxTransactions(items) {
   if (expenseIds.length) {
     const pool = await connectDB();
     try {
-      const res = await pool.request().query(
-        `SELECT ExpenseID, ExpenseName, Torecipient
-         FROM Expenses WHERE ExpenseID IN (${ids(expenseIds)})`
-      );
+      const res = await queryWithIds(pool, expenseIds, (list) =>
+        `SELECT ExpenseID, ExpenseName, Torecipient, AdvanceParentExpenseId
+         FROM Expenses WHERE ExpenseID IN (${list})`);
       for (const r of res.recordset) expenses.set(r.ExpenseID, r);
     } catch (e) { console.error('⚠️ enrich expenses:', e.message); }
   }
@@ -159,12 +210,11 @@ async function enrichCashboxTransactions(items) {
   if (payrollIds.length) {
     const pool = await connectDB();
     try {
-      const res = await pool.request().query(
+      const res = await queryWithIds(pool, payrollIds, (list) =>
         `SELECT p.PayrollID, p.Notes, e.FullName
          FROM Payroll p
          INNER JOIN Employees e ON p.EmployeeID = e.EmployeeID
-         WHERE p.PayrollID IN (${ids(payrollIds)})`
-      );
+         WHERE p.PayrollID IN (${list})`);
       for (const r of res.recordset) payrolls.set(r.PayrollID, r);
     } catch (e) { console.error('⚠️ enrich payrolls:', e.message); }
   }
@@ -177,10 +227,9 @@ async function enrichCashboxTransactions(items) {
   if (accountIds.length) {
     const pool = await connectDB();
     try {
-      const res = await pool.request().query(
+      const res = await queryWithIds(pool, accountIds, (list) =>
         `SELECT PersonalAccountId, AccountName
-         FROM PersonalAccounts WHERE PersonalAccountId IN (${ids(accountIds)})`
-      );
+         FROM PersonalAccounts WHERE PersonalAccountId IN (${list})`);
       for (const r of res.recordset) accounts.set(r.PersonalAccountId, r.AccountName);
     } catch (e) { console.error('⚠️ enrich personal accounts:', e.message); }
   }
@@ -193,9 +242,8 @@ async function enrichCashboxTransactions(items) {
   if (transferIds.length) {
     const pool = await connectDB();
     try {
-      const res = await pool.request().query(
-        `SELECT CashBoxID, CashBoxName FROM CashBoxes WHERE CashBoxID IN (${ids(transferIds)})`
-      );
+      const res = await queryWithIds(pool, transferIds, (list) =>
+        `SELECT CashBoxID, CashBoxName FROM CashBoxes WHERE CashBoxID IN (${list})`);
       for (const r of res.recordset) transferBoxes.set(r.CashBoxID, r.CashBoxName);
     } catch (e) { console.error('⚠️ enrich transfers:', e.message); }
   }
@@ -232,7 +280,8 @@ async function enrichCashboxTransactions(items) {
         const exp = expenses.get(t.ReferenceID);
         if (exp) {
           t.SourceTitle = `مصروف: ${exp.ExpenseName}`;
-          t.SourceUrl = '/expenses';
+          // بلازور: المصروف المقدم يفتح أصل المصروف (AdvanceParentExpenseId)
+          t.SourceUrl = `/expenses/${exp.AdvanceParentExpenseId ?? t.ReferenceID}/edit`;
           t.PartyName = exp.Torecipient || null;
         }
         break;
@@ -263,7 +312,10 @@ async function enrichCashboxTransactions(items) {
           t.SourceTitle = t.ReferenceType === 'Payroll'
             ? `راتب ${pay.FullName}`
             : `دفعة منفصلة ${pay.FullName}`;
-          t.SourceUrl = '/hr/payroll';
+          // بلازور: الدفعة المنفصلة [OFFPAYROLL] تفتح شاشة المكافآت المنفصلة
+          t.SourceUrl = pay.Notes && String(pay.Notes).includes('[OFFPAYROLL]')
+            ? '/hr/payroll/bonuses'
+            : '/hr/payroll';
           t.PartyName = pay.FullName;
         }
         break;
@@ -274,12 +326,15 @@ async function enrichCashboxTransactions(items) {
         break;
       case 'OpeningBalance':
         t.SourceTitle = 'رصيد افتتاحي';
+        t.SourceUrl = '/cashbox/manage';
         break;
       case 'ManualReceipt':
         t.SourceTitle = 'سند قبض يدوي';
+        t.SourceUrl = '/cashbox/transactions';
         break;
       case 'ManualPayment':
         t.SourceTitle = 'سند صرف يدوي';
+        t.SourceUrl = '/cashbox/transactions';
         break;
       default:
         break;
@@ -290,7 +345,7 @@ async function enrichCashboxTransactions(items) {
 }
 
 // جلب حركات الخزينة (مع بحث + ترقيم صفحات + إحصائيات + إثراء)
-async function getCashboxTransactions(cashboxId = null, startDate = null, endDate = null, transactionType = null, referenceType = null, search = null, page = 1, limit = 25) {
+async function getCashboxTransactions(cashboxId = null, startDate = null, endDate = null, transactionType = null, referenceType = null, search = null, page = 1, limit = 25, amountFrom = null, amountTo = null, sort = null) {
   const pool = await connectDB();
 
   const request = pool.request();
@@ -318,11 +373,25 @@ async function getCashboxTransactions(cashboxId = null, startDate = null, endDat
 
   if (referenceType && referenceType !== 'All') {
     where += ' AND ct.ReferenceType = @referenceType';
-    request.input('referenceType', sql.NVarChar(50), referenceType);
+    request.input('referenceType', sql.NVarChar(20), referenceType);
+  }
+
+  // فلترا المبلغ — CashBoxDto.cs:93-94 (AmountFrom/AmountTo)
+  const amtFrom = amountFrom === null || amountFrom === '' ? NaN : Number(amountFrom);
+  if (Number.isFinite(amtFrom)) {
+    where += ' AND ct.Amount >= @amountFrom';
+    request.input('amountFrom', sql.Decimal(18, 2), amtFrom);
+  }
+  const amtTo = amountTo === null || amountTo === '' ? NaN : Number(amountTo);
+  if (Number.isFinite(amtTo)) {
+    where += ' AND ct.Amount <= @amountTo';
+    request.input('amountTo', sql.Decimal(18, 2), amtTo);
   }
 
   if (search && search.trim()) {
-    const s = `%${search.trim()}%`;
+    // البحث يُطبَّع عربيًا قبل الوصول للاستعلام كما في بلازور
+    // (CashBoxTransactions.razor:759 — SearchText.NormalizeArabic())
+    const s = `%${normalizeArabic(search.trim())}%`;
     where += ' AND (ct.Notes LIKE @search OR ct.CreatedBy LIKE @search)';
     request.input('search', sql.NVarChar(200), s);
   }
@@ -365,7 +434,7 @@ async function getCashboxTransactions(cashboxId = null, startDate = null, endDat
     FROM CashboxTransactions ct
     INNER JOIN CashBoxes c ON ct.CashBoxID = c.CashBoxID
     ${where}
-    ORDER BY ct.TransactionDate DESC, ct.CashboxTransactionID DESC
+    ORDER BY ct.TransactionDate ${sort === 'asc' ? 'ASC' : 'DESC'}, ct.CashboxTransactionID ${sort === 'asc' ? 'ASC' : 'DESC'}
     OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY
   `);
 
@@ -379,6 +448,31 @@ async function getCashboxTransactions(cashboxId = null, startDate = null, endDat
     totalPages: Math.ceil(total / pageSize),
     stats,
   };
+}
+
+// حركة مفردة بالمعرف مع إثراء مصدرها — مرآة GetTransactionByIdAsync
+// (CashBoxService.cs:547-578)
+async function getTransactionById(id) {
+  const parsed = Number(id);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  const pool = await connectDB();
+  const result = await pool.request()
+    .input('id', sql.Int, parsed)
+    .query(`
+      SELECT
+        ct.CashboxTransactionID, ct.CashBoxID, ct.PaymentID,
+        ct.ReferenceID, ct.ReferenceType, ct.TransactionType,
+        ct.Amount, ct.TransactionDate, ct.Notes,
+        ct.CreatedBy, ct.CreatedAt,
+        c.CashBoxName, c.Color AS CashBoxColor
+      FROM CashboxTransactions ct
+      INNER JOIN CashBoxes c ON ct.CashBoxID = c.CashBoxID
+      WHERE ct.CashboxTransactionID = @id
+    `);
+  const row = result.recordset[0];
+  if (!row) return null;
+  const [enriched] = await enrichCashboxTransactions([row]);
+  return enriched;
 }
 
 // ملخص الخزينة بمعالجة فترة — مرآة CashBoxService.GetSummaryAsync:958
@@ -481,8 +575,8 @@ function cashboxFields(data, current = null) {
   return {
     cashBoxName: String(data.cashBoxName ?? data.CashBoxName ?? current?.CashBoxName ?? '').trim(),
     description: data.description ?? data.Description ?? current?.Description ?? null,
-    // ⚠️ انحراف موثّق (Item 15): BranchID يُحفظ ويُتحقق منه عند إرساله،
-    // لكنه ليس إلزاميًا خادميًا هنا خلافًا لبلازور («الفرع مطلوب»).
+    // الفرع إلزامي كما في بلازور (SaveCashBoxAsync: «الفرع مطلوب») —
+    // يُرفض غيابه في createCashbox، ويُتحقق من وجوده ونشاطه دائمًا.
     branchId: data.branchId ?? data.BranchID ?? data.BranchId ?? current?.BranchID ?? null,
     cashBoxKind: safeKind,
     icon: data.icon ?? data.Icon ?? current?.Icon ?? CASHBOX_KINDS[safeKind].icon,
@@ -516,6 +610,9 @@ async function createCashbox(data) {
   if (!fields.cashBoxName) {
     throw Object.assign(new Error('اسم الخزينة مطلوب'), { statusCode: 400 });
   }
+  if (fields.branchId == null || fields.branchId === '') {
+    throw Object.assign(new Error('الفرع مطلوب'), { statusCode: 400 });
+  }
   const pool = await connectDB();
   const transaction = new sql.Transaction(pool);
   await transaction.begin();
@@ -529,8 +626,8 @@ async function createCashbox(data) {
       .input('description', sql.NVarChar(255), fields.description)
       .input('branchId', sql.Int, branchId)
       .input('cashBoxKind', sql.NVarChar(50), fields.cashBoxKind)
-      .input('icon', sql.NVarChar(100), fields.icon)
-      .input('color', sql.NVarChar(50), fields.color)
+      .input('icon', sql.NVarChar(50), fields.icon)
+      .input('color', sql.NVarChar(20), fields.color)
       .input('openingBalance', sql.Decimal(18, 2), fields.openingBalance)
       .input('openingDate', sql.DateTime, fields.openingDate ? new Date(fields.openingDate) : new Date())
       .input('isActive', sql.Bit, fields.isActive ? 1 : 0)
@@ -547,8 +644,11 @@ async function createCashbox(data) {
           @openingBalance, @openingDate, @isActive, @isDefault, @createdBy, GETDATE()
         )
       `);
+    const newId = result.recordset[0].CashBoxID;
+    await insertCashboxAudit(() => transaction.request(), 'CashBoxes', 'Insert',
+      newId, data.createdBy || data.username || null, null, { ...fields, branchId, CashBoxID: newId });
     await transaction.commit();
-    return result.recordset[0].CashBoxID;
+    return newId;
   } catch (err) {
     try { await transaction.rollback(); } catch (_) {}
     throw err;
@@ -575,7 +675,8 @@ async function updateCashbox(id, data) {
       throw Object.assign(new Error('اسم الخزينة مطلوب'), { statusCode: 400 });
     }
     const branchId = await assertBranchActive(transaction, fields.branchId);
-    if (branchId != null && current.BranchID != null && Number(current.BranchID) !== branchId) {
+    const currentBranchId = current.BranchID == null ? null : Number(current.BranchID);
+    if (branchId !== currentBranchId) {
       const movements = await transaction.request()
         .input('id', sql.Int, parsedId)
         .query(`SELECT TOP 1 1 AS Has FROM CashboxTransactions WHERE CashBoxID = @id`);
@@ -594,8 +695,8 @@ async function updateCashbox(id, data) {
       .input('description', sql.NVarChar(255), fields.description)
       .input('branchId', sql.Int, branchId)
       .input('cashBoxKind', sql.NVarChar(50), fields.cashBoxKind)
-      .input('icon', sql.NVarChar(100), fields.icon)
-      .input('color', sql.NVarChar(50), fields.color)
+      .input('icon', sql.NVarChar(50), fields.icon)
+      .input('color', sql.NVarChar(20), fields.color)
       .input('openingBalance', sql.Decimal(18, 2), fields.openingBalance)
       .input('openingDate', sql.DateTime, fields.openingDate ? new Date(fields.openingDate) : null)
       .input('isActive', sql.Bit, fields.isActive ? 1 : 0)
@@ -611,6 +712,44 @@ async function updateCashbox(id, data) {
           LastUpdatedBy = @lastUpdatedBy, LastUpdatedAt = GETDATE()
         WHERE CashBoxID = @id
       `);
+    await insertCashboxAudit(() => transaction.request(), 'CashBoxes', 'Update',
+      parsedId, data.lastUpdatedBy || data.createdBy || data.username || null,
+      current, { ...fields, branchId, CashBoxID: parsedId });
+    await transaction.commit();
+    return true;
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) {}
+    throw err;
+  }
+}
+
+// حذف خزينة — مرآة DeleteCashBoxAsync (CashBoxService.cs:202-218):
+// ممنوع عند وجود أي حركة («عطّلها بدلاً من ذلك»)، مع سجل تدقيق.
+async function deleteCashbox(id, username) {
+  const parsedId = Number(id);
+  if (!Number.isInteger(parsedId) || parsedId <= 0) {
+    throw Object.assign(new Error('معرّف الخزينة غير صالح'), { statusCode: 400 });
+  }
+  const pool = await connectDB();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
+  try {
+    const currentResult = await transaction.request()
+      .input('id', sql.Int, parsedId)
+      .query(`SELECT * FROM CashBoxes WITH (UPDLOCK, HOLDLOCK) WHERE CashBoxID = @id`);
+    const current = currentResult.recordset[0];
+    if (!current) throw Object.assign(new Error('الخزينة غير موجودة'), { statusCode: 404 });
+    const movements = await transaction.request()
+      .input('id', sql.Int, parsedId)
+      .query(`SELECT COUNT(*) AS C FROM CashboxTransactions WHERE CashBoxID = @id`);
+    if (Number(movements.recordset[0]?.C || 0) > 0) {
+      throw Object.assign(new Error('لا يمكن حذف خزينة بها حركات. عطّلها بدلاً من ذلك.'), { statusCode: 400 });
+    }
+    await transaction.request()
+      .input('id', sql.Int, parsedId)
+      .query(`DELETE FROM CashBoxes WHERE CashBoxID = @id`);
+    await insertCashboxAudit(() => transaction.request(), 'CashBoxes', 'Delete',
+      parsedId, username || null, current, null);
     await transaction.commit();
     return true;
   } catch (err) {
@@ -643,7 +782,7 @@ async function insertManualTransaction(transaction, { cashBoxId, transactionType
   const result = await transaction.request()
     .input('cashBoxId', sql.Int, cashBoxId)
     .input('referenceId', sql.Int, referenceId ?? null)
-    .input('referenceType', sql.NVarChar(50), referenceType)
+    .input('referenceType', sql.NVarChar(20), referenceType)
     .input('transactionType', sql.NVarChar(20), transactionType)
     .input('amount', sql.Decimal(18, 2), amount)
     .input('transactionDate', sql.DateTime, date)
@@ -790,6 +929,10 @@ async function createManualOperation(data) {
       default:
         throw Object.assign(new Error('نوع العملية غير صحيح'), { statusCode: 400 });
     }
+    // تدقيق العملية اليدوية (بما فيها التحويل) — CashBoxService.cs:777
+    await insertCashboxAudit(() => transaction.request(), 'CashboxTransactions', 'Manual',
+      id ?? cashBoxId, createdBy, null,
+      { operationType, cashBoxId, toCashBoxId: data.toCashBoxId ?? null, personalAccountId: data.personalAccountId ?? null, amount, transactionId: id, transferOutId, transferInId });
     await transaction.commit();
     return {
       id,
@@ -805,42 +948,85 @@ async function createManualOperation(data) {
   }
 }
 
-// إضافة حركة خزينة — مسار الإرث: بلا operationType تُشتق العملية اليدوية
-// القياسية من اتجاه الحركة، وتُطبَّع أنواع المرجع 'Manual'/الغائبة إلى
-// ManualReceipt/ManualPayment، ويُحترم التاريخ المختار.
+// إضافة حركة خزينة — مسار الإرث مُصلَّب (Item 21): لا إنشاء «خام» في
+// بلازور؛ كل كتابة تمر بفحوص اليدوي. هنا: مبلغ > 0، نوع حركة قبض/صرف
+// فقط، نوع مرجع من المجموعة المعروفة فقط، فحص كفاية رصيد للصرف،
+// وكل ذلك داخل معاملة واحدة مع سجل تدقيق.
+const KNOWN_REFERENCE_TYPES = new Set([
+  ...Object.keys(CASHBOX_REF_LABELS),
+  'AdvanceExpense', 'Charge', 'Invoice',
+  'SaleInvoiceEdit', 'SaleInvoiceCancel',
+  'PurchaseInvoiceEdit', 'PurchaseInvoiceCancel',
+  'LoanCancel', 'WarehouseTransferIn', 'WarehouseTransferOut',
+]);
+
 async function createTransaction(data) {
   if (data.operationType) {
     return createManualOperation(data);
   }
+  const cashBoxId = Number(data.cashBoxId);
+  if (!Number.isInteger(cashBoxId) || cashBoxId <= 0) {
+    throw Object.assign(new Error('الخزينة مطلوبة'), { statusCode: 400 });
+  }
+  const amount = Number(data.amount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw Object.assign(new Error('المبلغ يجب أن يكون أكبر من صفر'), { statusCode: 400 });
+  }
+  if (data.transactionType !== 'قبض' && data.transactionType !== 'صرف') {
+    throw Object.assign(new Error('نوع الحركة غير صحيح'), { statusCode: 400 });
+  }
   const derivedType = data.transactionType === 'صرف' ? 'ManualPayment' : 'ManualReceipt';
   const referenceType = !data.referenceType || data.referenceType === 'Manual'
     ? derivedType
-    : data.referenceType;
+    : String(data.referenceType);
+  if (!KNOWN_REFERENCE_TYPES.has(referenceType)) {
+    throw Object.assign(new Error('نوع المرجع غير معروف'), { statusCode: 400 });
+  }
+  const date = data.transactionDate ? new Date(data.transactionDate) : new Date();
+  if (Number.isNaN(date.getTime())) {
+    throw Object.assign(new Error('تاريخ الحركة غير صحيح'), { statusCode: 400 });
+  }
+  const createdBy = data.createdBy || data.username || null;
   const pool = await connectDB();
-  const result = await pool.request()
-    .input('cashBoxId', sql.Int, data.cashBoxId)
-    .input('paymentId', sql.Int, data.paymentId || null)
-    .input('referenceId', sql.Int, data.referenceId || null)
-    .input('referenceType', sql.NVarChar(50), referenceType)
-    .input('transactionType', sql.NVarChar(20), data.transactionType)
-    .input('amount', sql.Decimal(18, 2), data.amount)
-    .input('transactionDate', sql.DateTime, data.transactionDate ? new Date(data.transactionDate) : new Date())
-    .input('notes', sql.NVarChar(sql.MAX), data.notes || null)
-    .input('createdBy', sql.NVarChar(50), data.createdBy || data.username || null)
-    .query(`
-      INSERT INTO CashboxTransactions (
-        CashBoxID, PaymentID, ReferenceID, ReferenceType,
-        TransactionType, Amount, TransactionDate, Notes,
-        CreatedBy, CreatedAt
-      )
-      OUTPUT INSERTED.CashboxTransactionID
-      VALUES (
-        @cashBoxId, @paymentId, @referenceId, @referenceType,
-        @transactionType, @amount, @transactionDate, @notes,
-        @createdBy, GETDATE()
-      )
-    `);
-  return result.recordset[0].CashboxTransactionID;
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
+  try {
+    if (data.transactionType === 'صرف') {
+      await assertSufficientBalance(transaction, cashBoxId, amount);
+    }
+    const result = await transaction.request()
+      .input('cashBoxId', sql.Int, cashBoxId)
+      .input('paymentId', sql.Int, data.paymentId || null)
+      .input('referenceId', sql.Int, data.referenceId || null)
+      .input('referenceType', sql.NVarChar(20), referenceType)
+      .input('transactionType', sql.NVarChar(20), data.transactionType)
+      .input('amount', sql.Decimal(18, 2), amount)
+      .input('transactionDate', sql.DateTime, date)
+      .input('notes', sql.NVarChar(sql.MAX), data.notes || null)
+      .input('createdBy', sql.NVarChar(50), createdBy)
+      .query(`
+        INSERT INTO CashboxTransactions (
+          CashBoxID, PaymentID, ReferenceID, ReferenceType,
+          TransactionType, Amount, TransactionDate, Notes,
+          CreatedBy, CreatedAt
+        )
+        OUTPUT INSERTED.CashboxTransactionID
+        VALUES (
+          @cashBoxId, @paymentId, @referenceId, @referenceType,
+          @transactionType, @amount, @transactionDate, @notes,
+          @createdBy, GETDATE()
+        )
+      `);
+    const newId = result.recordset[0].CashboxTransactionID;
+    await insertCashboxAudit(() => transaction.request(), 'CashboxTransactions', 'Insert',
+      newId, createdBy, null,
+      { cashBoxId, referenceType, transactionType: data.transactionType, amount });
+    await transaction.commit();
+    return newId;
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) {}
+    throw err;
+  }
 }
 
 // تحويل بين خزينتين — يفوّض لعملية Transfer اليدوية (زوج TransferOut/TransferIn)
@@ -877,7 +1063,8 @@ async function getDashboardStats(period = 'month') {
       dateCondition = "AND TransactionDate >= DATEADD(DAY, -7, GETDATE())";
       break;
     case 'month':
-      dateCondition = "AND TransactionDate >= DATEADD(MONTH, -1, GETDATE())";
+      // الشهر = الشهر التقويمي من أوله (بلازور CashBoxService.cs:826)
+      dateCondition = "AND TransactionDate >= DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)";
       break;
     case 'year':
       dateCondition = "AND TransactionDate >= DATEADD(YEAR, -1, GETDATE())";
@@ -888,11 +1075,12 @@ async function getDashboardStats(period = 'month') {
 
   const result = await pool.request().query(`
     SELECT 
-      -- إجمالي الرصيد الحالي (كل الخزائن)
-      (SELECT ISNULL(SUM(ISNULL(OpeningBalance, 0)), 0) FROM CashBoxes)
-        + (SELECT ISNULL(SUM(CASE WHEN TransactionType = N'قبض' THEN Amount
-                                   WHEN TransactionType = N'صرف' THEN -Amount ELSE 0 END), 0)
-           FROM CashboxTransactions) AS TotalBalance,
+      -- إجمالي الرصيد الحالي (الخزن النشطة فقط — بلازور)
+      (SELECT ISNULL(SUM(ISNULL(OpeningBalance, 0)), 0) FROM CashBoxes WHERE IsActive = 1)
+        + (SELECT ISNULL(SUM(CASE WHEN t.TransactionType = N'قبض' THEN t.Amount
+                                   WHEN t.TransactionType = N'صرف' THEN -t.Amount ELSE 0 END), 0)
+           FROM CashboxTransactions t
+           INNER JOIN CashBoxes cb ON cb.CashBoxID = t.CashBoxID AND cb.IsActive = 1) AS TotalBalance,
       
       -- إجمالي القبض للفترة
       (SELECT ISNULL(SUM(Amount), 0) 
@@ -941,10 +1129,10 @@ async function getChartData(days = 7) {
         FORMAT(d.Date, 'MM/dd') AS Label,
         d.Date,
         ISNULL((SELECT SUM(Amount) FROM CashboxTransactions 
-                WHERE TransactionType = N'قبض' 
+                WHERE TransactionType IN (N'قبض', 'In') 
                 AND CAST(TransactionDate AS DATE) = d.Date), 0) AS TotalIn,
         ISNULL((SELECT SUM(Amount) FROM CashboxTransactions 
-                WHERE TransactionType = N'صرف' 
+                WHERE TransactionType IN (N'صرف', 'Out') 
                 AND CAST(TransactionDate AS DATE) = d.Date), 0) AS TotalOut
       FROM DateRange d
       ORDER BY d.Date
@@ -1070,8 +1258,11 @@ async function getFullDashboard() {
   // 1. الإحصائيات الرئيسية
   const statsRes = await pool.request().query(`
     SELECT
-      ISNULL((SELECT SUM(ISNULL(OpeningBalance, 0)) FROM CashBoxes), 0)
-        + ISNULL(SUM(CASE WHEN TransactionType = N'قبض' THEN Amount WHEN TransactionType = N'صرف' THEN -Amount ELSE 0 END), 0) AS TotalBalance,
+      -- الإجمالي = مجموع أرصدة الخزن النشطة فقط (CashBoxService.cs:829-831)
+      ISNULL((SELECT SUM(ISNULL(OpeningBalance, 0)) FROM CashBoxes WHERE IsActive = 1), 0)
+        + ISNULL((SELECT SUM(CASE WHEN t.TransactionType = N'قبض' THEN t.Amount WHEN t.TransactionType = N'صرف' THEN -t.Amount ELSE 0 END)
+                  FROM CashboxTransactions t
+                  INNER JOIN CashBoxes cb ON cb.CashBoxID = t.CashBoxID AND cb.IsActive = 1), 0) AS TotalBalance,
       ISNULL(SUM(CASE WHEN TransactionType = N'قبض' AND CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) THEN Amount ELSE 0 END), 0) AS TodayIn,
       ISNULL(SUM(CASE WHEN TransactionType = N'صرف' AND CAST(TransactionDate AS DATE) = CAST(GETDATE() AS DATE) THEN Amount ELSE 0 END), 0) AS TodayOut,
       ISNULL(SUM(CASE WHEN TransactionType = N'قبض' AND YEAR(TransactionDate) = YEAR(GETDATE()) AND MONTH(TransactionDate) = MONTH(GETDATE()) THEN Amount ELSE 0 END), 0) AS MonthIn,
@@ -1117,41 +1308,69 @@ async function getFullDashboard() {
     ORDER BY CAST(TransactionDate AS DATE)
   `);
 
-  // 5. توزيع الأنواع (ReferenceType)
+  // 5. توزيع الأنواع — آخر 30 يومًا وباستبعاد المرجع الخالي (بلازور)
   const breakdownRes = await pool.request().query(`
     SELECT
-      ISNULL(ReferenceType, N'أخرى') AS ReferenceType,
+      ReferenceType,
       COUNT(*) AS Count,
       ISNULL(SUM(Amount), 0) AS Total
     FROM CashboxTransactions
+    WHERE TransactionDate >= DATEADD(DAY, -29, CAST(GETDATE() AS DATE))
+      AND ReferenceType IS NOT NULL
     GROUP BY ReferenceType
     ORDER BY SUM(Amount) DESC
   `);
 
-  // 6. آخر الحركات
+  // 6. آخر الحركات — بترتيب المعرف التنازلي ومع نوع المرجع (بلازور)
   const recentRes = await pool.request().query(`
     SELECT TOP 10
       ct.CashboxTransactionID, ct.CashBoxID, ct.TransactionDate,
       ct.TransactionType, ct.Amount, ct.Notes, ct.CreatedBy,
+      ct.ReferenceType,
       c.CashBoxName
     FROM CashboxTransactions ct
     INNER JOIN CashBoxes c ON ct.CashBoxID = c.CashBoxID
-    ORDER BY ct.TransactionDate DESC
+    ORDER BY ct.CashboxTransactionID DESC
   `);
 
-  // 7. دائنون/مدينون (الحسابات الشخصية لو موجودة)
+  // 7. الذمم — مرآة CashBoxService.cs:900-953: لكل حساب شخصي
+  // الرصيد = (الافتتاحي بإشارة OpeningType: Credit ‏+ وDebit ‏−)
+  //         + (حركات Loan: قبض − صرف).
+  // لا ابتلاع صامت هنا: أي فشل يُسقط اللوحة كلها كسائر أجزائها.
+  const accRes = await pool.request().query(`
+    SELECT
+      pa.PersonalAccountId, pa.AccountName, pa.AccountType,
+      ISNULL(pa.OpeningBalance, 0) AS OpeningBalance, pa.OpeningType,
+      ISNULL(SUM(CASE WHEN t.TransactionType = N'قبض' THEN t.Amount ELSE 0 END), 0) AS LoansIn,
+      ISNULL(SUM(CASE WHEN t.TransactionType = N'صرف' THEN t.Amount ELSE 0 END), 0) AS LoansOut
+    FROM PersonalAccounts pa
+    LEFT JOIN CashboxTransactions t
+      ON t.ReferenceType = 'Loan' AND t.ReferenceID = pa.PersonalAccountId
+    GROUP BY pa.PersonalAccountId, pa.AccountName, pa.AccountType,
+             pa.OpeningBalance, pa.OpeningType
+  `);
   let creditors = 0, debtors = 0;
-  try {
-    const accRes = await pool.request().query(`
-      SELECT ISNULL(SUM(CASE WHEN Balance > 0 THEN Balance ELSE 0 END), 0) AS Creditors,
-             ISNULL(SUM(CASE WHEN Balance < 0 THEN ABS(Balance) ELSE 0 END), 0) AS Debtors
-      FROM PersonalAccounts
-    `);
-    creditors = accRes.recordset[0]?.Creditors || 0;
-    debtors = accRes.recordset[0]?.Debtors || 0;
-  } catch (e) {
-    // جدول الحسابات الشخصية مش موجود — نتجاهل
+  const accountSummaries = [];
+  for (const acc of accRes.recordset) {
+    const opening = Number(acc.OpeningBalance || 0);
+    const signedOpening = acc.OpeningType === 'Credit' ? opening
+      : acc.OpeningType === 'Debit' ? -opening : 0;
+    const balance = Math.round(
+      (signedOpening + Number(acc.LoansIn || 0) - Number(acc.LoansOut || 0)) * 100) / 100;
+    if (balance > 0) creditors += balance;
+    else if (balance < 0) debtors += Math.abs(balance);
+    if (balance !== 0) {
+      accountSummaries.push({
+        PersonalAccountId: acc.PersonalAccountId,
+        AccountName: acc.AccountName,
+        AccountType: acc.AccountType,
+        CurrentBalance: balance,
+      });
+    }
   }
+  const topPersonalAccounts = accountSummaries
+    .sort((a, b) => Math.abs(b.CurrentBalance) - Math.abs(a.CurrentBalance))
+    .slice(0, 5);
 
   return {
     TotalBalance: stats.TotalBalance ?? 0,
@@ -1167,8 +1386,9 @@ async function getFullDashboard() {
     Last30Days: last30Res.recordset,
     TypeBreakdown: breakdownRes.recordset,
     RecentTransactions: recentRes.recordset,
-    TotalCreditors: creditors,
-    TotalDebtors: debtors,
+    TotalCreditors: Math.round(creditors * 100) / 100,
+    TotalDebtors: Math.round(debtors * 100) / 100,
+    TopPersonalAccounts: topPersonalAccounts,
   };
 }
 
@@ -1184,6 +1404,9 @@ module.exports = {
   getCashboxSummary,
   createCashbox,
   updateCashbox,
+  deleteCashbox,
+  getTransactionById,
+  normalizeArabic,
   createTransaction,
   createManualOperation,
   createTransfer,

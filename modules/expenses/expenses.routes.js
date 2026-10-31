@@ -2,7 +2,8 @@ const express = require('express');
 const router = express.Router();
 const expensesController = require('./expenses.controller');
 const { authenticate, requirePolicy } = require('../../core/auth.middleware');
-const { expenses: expensesPolicy } = require('../../shared/authorization.policy');
+const policy = require('../../shared/authorization.policy');
+const { expenses: expensesPolicy } = policy;
 
 // ===================================
 // 💰 Expenses Routes
@@ -16,49 +17,42 @@ const canAdd = requirePolicy(expensesPolicy.canAdd, 'غير مصرح لك بإض
 const canEdit = requirePolicy(expensesPolicy.canEdit, 'غير مصرح لك بتعديل مصروف');
 const canDelete = requirePolicy(expensesPolicy.canDelete, 'غير مصرح لك بحذف مصروف');
 const canAddGroup = requirePolicy(expensesPolicy.canAddGroup, 'غير مصرح لك بإضافة مجموعة مصروفات');
+// ملاحظة: ملف السياسات المشترك لا يعرّف بعد canEditGroup/canDeleteGroup —
+// تُبنى هنا محليًا بنفس نمط cashbox.routes (roles/hasClaim من السياسات)
+// إلى أن تُضاف مركزيًا: frm_ExpensesGroup:Edit/Delete (ExpenseService.cs:970).
+const canEditGroup = requirePolicy(
+  (a) => policy.roles.admin(a) || policy.hasClaim(a, 'frm_ExpensesGroup:Edit'),
+  'غير مصرح لك بتعديل مجموعة مصروفات');
+const canDeleteGroup = requirePolicy(
+  (a) => policy.roles.admin(a) || policy.hasClaim(a, 'frm_ExpensesGroup:Delete'),
+  'غير مصرح لك بحذف مجموعة مصروفات');
 
-// جلب مجموعات المصروفات
-// GET /api/expenses/groups
+// ── مجموعات المصروفات ──────────────────────────────
 router.get('/groups', canView, expensesController.getGroups);
-
-// إنشاء مجموعة مصروفات
-// POST /api/expenses/groups
 router.post('/groups', canAddGroup, expensesController.createGroup);
+router.get('/groups/by-parent', canView, expensesController.getGroupsByParent);
+router.put('/groups/:id', canEditGroup, expensesController.updateGroup);
+router.delete('/groups/:id', canDeleteGroup, expensesController.deleteGroup);
 
-// جلب الخزائن
-// GET /api/expenses/cashboxes
+// ── الخزائن (نشطة + فرع + رصيد موحّد) ───────────────
 router.get('/cashboxes', canView, expensesController.getCashboxes);
 
-// داشبورد المصروفات الكامل
-// GET /api/expenses/dashboard
+// ── اقتراحات الأسماء ────────────────────────────────
+router.get('/name-suggestions', canView, expensesController.getNameSuggestions);
+
+// ── الداشبورد والتقارير والتصدير والطباعة ──────────
 router.get('/dashboard', canView, expensesController.getDashboard);
-
-// ملخص المصروفات
-// GET /api/expenses/summary
 router.get('/summary', canView, expensesController.getSummary);
+router.get('/monthly-summary', canView, expensesController.getMonthlySummary);
+router.get('/export/detailed', canView, expensesController.exportDetailed);
+router.get('/export/monthly', canView, expensesController.exportMonthly);
+router.get('/print-data', canView, expensesController.getPrintData);
 
-// جلب كل المصروفات
-// GET /api/expenses?search=xxx&groupId=xxx&startDate=xxx&endDate=xxx
+// ── المصروفات ───────────────────────────────────────
 router.get('/', canView, expensesController.getAll);
-
-// إضافة مصروف جديد
-// POST /api/expenses
 router.post('/', canAdd, expensesController.create);
-
-// تعديل مصروف
-// PUT /api/expenses/:id
 router.put('/:id', canEdit, expensesController.update);
-
-// حذف مصروف
-// DELETE /api/expenses/:id
 router.delete('/:id', canDelete, expensesController.remove);
-
-// جلب مجموعات المصروفات حسب المجموعة الأم
-// GET /api/expenses/groups/by-parent?parentGroupName=xxx
-router.get('/groups/by-parent', canView, expensesController.getGroupsByParent);
-
-// جلب مصروف بالـ ID
 router.get('/:id', canView, expensesController.getById);
 
-// تصدير الراوتر
 module.exports = router;

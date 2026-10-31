@@ -1,4 +1,5 @@
 const reportsQueries = require('./reports.queries');
+const salesAnalyticsQueries = require('./sales-analytics.queries');
 const { errorResponse } = require('../../shared/response.helper');
 
 async function getDashboard(req, res) {
@@ -33,4 +34,35 @@ async function getDashboard(req, res) {
   }
 }
 
-module.exports = { getDashboard };
+// تحليلات المبيعات (بند 23) — مرآة SalesAnalyticsService.cs
+async function getSalesAnalytics(req, res) {
+  try {
+    const filter = salesAnalyticsQueries.parseFilter(req.query);
+    const data = await salesAnalyticsQueries.withPool(
+      (pool) => salesAnalyticsQueries.getSalesAnalytics(pool, filter, req.auth),
+    );
+    return res.json({ success: true, data, timestamp: new Date().toISOString() });
+  } catch (err) {
+    console.error('❌ Sales Analytics Error:', err);
+    return errorResponse(
+      res,
+      err.statusCode === 400 ? err.message : 'فشل تحميل تحليلات المبيعات',
+      err.statusCode || 500,
+      err.code || err.message,
+    );
+  }
+}
+
+async function getSalesAnalyticsFilters(req, res) {
+  try {
+    const data = await salesAnalyticsQueries.withPool(
+      (pool) => salesAnalyticsQueries.getFilterData(pool),
+    );
+    return res.json({ success: true, data, timestamp: new Date().toISOString() });
+  } catch (err) {
+    console.error('❌ Sales Analytics Filters Error:', err);
+    return errorResponse(res, 'فشل تحميل بيانات الفلاتر', 500, err.message);
+  }
+}
+
+module.exports = { getDashboard, getSalesAnalytics, getSalesAnalyticsFilters };

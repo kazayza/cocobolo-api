@@ -58,10 +58,40 @@ function buildFilters(request, filters, tableAlias = 'o') {
   return where;
 }
 
+
+// ===================================================
+// 🔧 Helper: استبعاد الفواتير الملغاة من مجاميع الإيراد الفعلي (بند 21)
+// ===================================================
+const TX_NOT_CANCELLED = "(t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled')";
+
+// ===================================================
+// 🔧 Helper: مجموعة مصروفات التسويق — قاعدة بلازور
+// (MarketingDashboardService.cs:761-769): المجموعة التي يحتوي اسمها
+// «اعلان» + كل فروعها؛ وعند غياب أي تطابق اسمي: المجموعة 29 فقط.
+// ===================================================
+async function getMarketingGroupIds(pool) {
+  const result = await pool.request().query(
+    'SELECT ExpenseGroupID, ExpenseGroupName, ParentGroupID FROM ExpenseGroups',
+  );
+  const groups = result.recordset || [];
+  const root = groups.find((g) => String(g.ExpenseGroupName || '').includes('اعلان'));
+  if (!root || !root.ExpenseGroupID) return [29];
+  const ids = new Set();
+  const collect = (id) => {
+    if (ids.has(id)) return;
+    ids.add(id);
+    for (const g of groups) if (g.ParentGroupID === id) collect(g.ExpenseGroupID);
+  };
+  collect(root.ExpenseGroupID);
+  return [...ids];
+}
+
 // ===================================================
 // 1. KPIs الرئيسية مع المقارنة
 // ===================================================
 async function getKPIs(pool, dates, filters) {
+  const marketingGroupIds = await getMarketingGroupIds(pool);
+  const marketingInList = marketingGroupIds.join(',');
   const request = pool.request();
   request.input('cStart', sql.Date, dates.cStart);
   request.input('cEnd', sql.Date, dates.cEnd);
@@ -127,7 +157,7 @@ async function getKPIs(pool, dates, filters) {
     INNER JOIN SalesOpportunities o ON o.TransactionID = t.TransactionID
     WHERE o.IsActive = 1 AND o.StageID = 3
     AND CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd
-    AND t.TransactionType = 'Sale'
+    AND t.TransactionType = 'Sale' AND ${TX_NOT_CANCELLED}
     ${allFilters};
 
     -- الفترة الحالية: المحصل
@@ -137,7 +167,7 @@ async function getKPIs(pool, dates, filters) {
     INNER JOIN SalesOpportunities o ON o.TransactionID = t.TransactionID
     WHERE o.IsActive = 1 AND o.StageID = 3
     AND CAST(o.CreatedAt AS DATE) BETWEEN @cStart AND @cEnd
-    AND t.TransactionType = 'Sale'
+    AND t.TransactionType = 'Sale' AND ${TX_NOT_CANCELLED}
     ${allFilters};
 
     -- الفترة السابقة: الفرص
@@ -164,18 +194,18 @@ async function getKPIs(pool, dates, filters) {
     INNER JOIN SalesOpportunities o ON o.TransactionID = t.TransactionID
     WHERE o.IsActive = 1 AND o.StageID = 3
     AND CAST(o.CreatedAt AS DATE) BETWEEN @pStart AND @pEnd
-    AND t.TransactionType = 'Sale'
+    AND t.TransactionType = 'Sale' AND ${TX_NOT_CANCELLED}
     ${allFilters};
 
     -- مصاريف التسويق
     SELECT @currentMarketingCost = ISNULL(SUM(ex.Amount), 0) 
     FROM Expenses ex 
-    WHERE ex.ExpenseGroupID = 9 
+    WHERE ex.ExpenseGroupID IN (${marketingInList}) 
     AND CAST(ex.ExpenseDate AS DATE) BETWEEN @cStart AND @cEnd;
 
     SELECT @prevMarketingCost = ISNULL(SUM(ex.Amount), 0) 
     FROM Expenses ex 
-    WHERE ex.ExpenseGroupID = 9 
+    WHERE ex.ExpenseGroupID IN (${marketingInList}) 
     AND CAST(ex.ExpenseDate AS DATE) BETWEEN @pStart AND @pEnd;
 
     -- المهام
@@ -261,7 +291,7 @@ async function getFunnel(pool, dates, filters) {
       ss.StageOrder,
       COUNT(o.OpportunityID) AS count,
       ISNULL(SUM(o.ExpectedValue), 0) AS totalValue,
-      ISNULL(SUM(t.GrandTotal), 0) AS actualValue
+      ISNULL(SUM(CASE WHEN (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled') THEN t.GrandTotal END), 0) AS actualValue
     FROM SalesStages ss
     LEFT JOIN SalesOpportunities o 
       ON ss.StageID = o.StageID 
@@ -298,7 +328,7 @@ async function getSources(pool, dates, filters) {
       COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS won,
       COUNT(CASE WHEN o.StageID IN (4,5) THEN 1 END) AS lost,
       ISNULL(SUM(CASE WHEN o.StageID = 3 THEN o.ExpectedValue ELSE 0 END), 0) AS expectedRevenue,
-      ISNULL(SUM(CASE WHEN o.StageID = 3 THEN t.GrandTotal ELSE 0 END), 0) AS actualRevenue,
+      ISNULL(SUM(CASE WHEN o.StageID = 3 AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled') THEN t.GrandTotal ELSE 0 END), 0) AS actualRevenue,
       CASE 
         WHEN COUNT(o.OpportunityID) = 0 THEN 0
         ELSE ROUND(CAST(COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS FLOAT) 
@@ -341,7 +371,7 @@ async function getAdTypes(pool, dates, filters) {
       COUNT(o.OpportunityID) AS total,
       COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS won,
       COUNT(CASE WHEN o.StageID IN (4,5) THEN 1 END) AS lost,
-      ISNULL(SUM(CASE WHEN o.StageID = 3 THEN t.GrandTotal ELSE 0 END), 0) AS actualRevenue,
+      ISNULL(SUM(CASE WHEN o.StageID = 3 AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled') THEN t.GrandTotal ELSE 0 END), 0) AS actualRevenue,
       CASE 
         WHEN COUNT(o.OpportunityID) = 0 THEN 0
         ELSE ROUND(CAST(COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS FLOAT) 
@@ -382,7 +412,7 @@ async function getCategories(pool, dates, filters) {
       COUNT(o.OpportunityID) AS total,
       COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS won,
       COUNT(CASE WHEN o.StageID IN (4,5) THEN 1 END) AS lost,
-      ISNULL(SUM(CASE WHEN o.StageID = 3 THEN t.GrandTotal ELSE 0 END), 0) AS actualRevenue,
+      ISNULL(SUM(CASE WHEN o.StageID = 3 AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled') THEN t.GrandTotal ELSE 0 END), 0) AS actualRevenue,
       CASE 
         WHEN COUNT(o.OpportunityID) = 0 THEN 0
         ELSE ROUND(CAST(COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS FLOAT) 
@@ -441,7 +471,7 @@ async function getLeaderboard(pool, dates, filters) {
       COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS wonDeals,
       COUNT(CASE WHEN o.StageID IN (4,5) THEN 1 END) AS lostDeals,
       ISNULL(SUM(CASE WHEN o.StageID = 3 THEN o.ExpectedValue ELSE 0 END), 0) AS expectedRevenue,
-      ISNULL(SUM(CASE WHEN o.StageID = 3 THEN t.GrandTotal ELSE 0 END), 0) AS actualRevenue,
+      ISNULL(SUM(CASE WHEN o.StageID = 3 AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled') THEN t.GrandTotal ELSE 0 END), 0) AS actualRevenue,
       CASE 
         WHEN COUNT(CASE WHEN o.StageID IN (3,4,5) THEN 1 END) = 0 THEN 0
         ELSE ROUND(CAST(COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS FLOAT) / 
@@ -548,7 +578,7 @@ async function getTrend(pool, dates, filters) {
         COUNT(*) AS totalOpportunities,
         COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS wonDeals,
         COUNT(CASE WHEN o.StageID IN (4,5) THEN 1 END) AS lostDeals,
-        ISNULL(SUM(CASE WHEN o.StageID = 3 THEN t.GrandTotal ELSE 0 END), 0) AS revenue
+        ISNULL(SUM(CASE WHEN o.StageID = 3 AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled') THEN t.GrandTotal ELSE 0 END), 0) AS revenue
       FROM SalesOpportunities o
       LEFT JOIN Transactions t ON o.TransactionID = t.TransactionID
       WHERE o.IsActive = 1 
@@ -565,7 +595,7 @@ async function getTrend(pool, dates, filters) {
         COUNT(*) AS totalOpportunities,
         COUNT(CASE WHEN o.StageID = 3 THEN 1 END) AS wonDeals,
         COUNT(CASE WHEN o.StageID IN (4,5) THEN 1 END) AS lostDeals,
-        ISNULL(SUM(CASE WHEN o.StageID = 3 THEN t.GrandTotal ELSE 0 END), 0) AS revenue
+        ISNULL(SUM(CASE WHEN o.StageID = 3 AND (t.InvoiceStatus IS NULL OR t.InvoiceStatus <> 'Cancelled') THEN t.GrandTotal ELSE 0 END), 0) AS revenue
       FROM SalesOpportunities o
       LEFT JOIN Transactions t ON o.TransactionID = t.TransactionID
       WHERE o.IsActive = 1 
@@ -917,4 +947,5 @@ async function getDashboardData(filters = {}) {
 
 module.exports = {
   getDashboardData,
+  _test: { getMarketingGroupIds, getKPIs, TX_NOT_CANCELLED },
 };

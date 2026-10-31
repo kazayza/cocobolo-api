@@ -269,20 +269,39 @@ async function getAdditionalCharges(transactionId) {
   return result.recordset;
 }
 
-// جلب المدفوعات
+// جلب المدفوعات — GetPaymentHistoryAsync (PaymentService.cs:594):
+// يستبعد Advance، ويضم اسم الخزينة لكل دفعة ونسبتها من إجمالي الفاتورة.
 async function getPayments(transactionId) {
   const pool = await connectDB();
   const result = await pool.request()
     .input('transactionId', sql.Int, transactionId)
     .query(`
       SELECT
-        PaymentID, PaymentDate, Amount,
-        PaymentMethod, Notes, CreatedBy, CreatedAt
-      FROM Payments
-      WHERE TransactionID = @transactionId
-      ORDER BY PaymentDate DESC
+        p.PaymentID, p.PaymentDate, p.Amount,
+        p.PaymentMethod, p.Notes, p.CreatedBy, p.CreatedAt,
+        t.GrandTotal,
+        cash.CashBoxID, cash.CashBoxName
+      FROM Payments p
+      INNER JOIN Transactions t ON p.TransactionID = t.TransactionID
+      OUTER APPLY (
+        SELECT TOP 1 ct.CashBoxID, cb.CashBoxName
+        FROM CashboxTransactions ct
+        LEFT JOIN CashBoxes cb ON ct.CashBoxID = cb.CashBoxID
+        WHERE ct.PaymentID = p.PaymentID
+        ORDER BY ct.CashboxTransactionID
+      ) cash
+      WHERE p.TransactionID = @transactionId
+        AND p.PaymentMethod <> 'Advance'
+      ORDER BY p.PaymentDate DESC
     `);
-  return result.recordset;
+  return result.recordset.map((row) => {
+    const { GrandTotal, ...rest } = row;
+    return {
+      ...rest,
+      Percentage: num(GrandTotal) === 0 ? 0
+        : Math.round((num(row.Amount) / num(GrandTotal)) * 1000) / 10,
+    };
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -631,12 +650,24 @@ async function createTransaction(data) {
   }
 }
 
-// إضافة دفعة — AddPaymentAsync (InvoiceService.cs:2276): حد بالمتبقي،
-// رفض على الملغاة، وسند قبض بالخزينة في نفس المعاملة.
+// إضافة دفعة — AddPaymentAsync (InvoiceService.cs:2276) + اتجاه
+// CreatePaymentAsync (PaymentService.cs:663): حد بالمتبقي، رفض على
+// الملغاة، وحركة خزينة في نفس المعاملة. الخزينة إلزامية قبل أي كتابة،
+// وطريقة الدفع من المجموعة القابلة للاختيار فقط (PaymentMethods.
+// Selectable — Advance نظامية ولا تُقبل يدويًا). الاتجاه من نوع
+// الفاتورة كما في بلازور: البيع «قبض»/SaleInvoice، وما عداه (شراء
+// ومرتجعات) «صرف»/PurchaseInvoice.
+const SELECTABLE_PAYMENT_METHODS = new Set(['Cash', 'Bank', 'Visa', 'InstaPay', 'Credit', 'Other']);
+
 async function addPayment(data) {
   const amount = money(data.amount);
   if (!(amount > 0)) throw badRequest('المبلغ يجب أن يكون أكبر من صفر.');
   if (!data.cashBoxId) throw badRequest('يرجى اختيار الخزينة.');
+  const paymentMethod = data.paymentMethod == null || data.paymentMethod === ''
+    ? 'Cash' : String(data.paymentMethod);
+  if (!SELECTABLE_PAYMENT_METHODS.has(paymentMethod)) {
+    throw badRequest('طريقة الدفع غير صالحة.');
+  }
 
   const pool = await connectDB();
   const transaction = new sql.Transaction(pool);
@@ -646,7 +677,7 @@ async function addPayment(data) {
 
     const cur = await transaction.request()
       .input('id', sql.Int, data.transactionId)
-      .query(`SELECT TransactionID, ReferenceNumber, GrandTotal, PaidAmount, InvoiceStatus
+      .query(`SELECT TransactionID, ReferenceNumber, TransactionType, GrandTotal, PaidAmount, InvoiceStatus
               FROM Transactions WITH (UPDLOCK, HOLDLOCK) WHERE TransactionID = @id`);
     const invoice = cur.recordset[0];
     if (!invoice) throw notFoundError('الفاتورة غير موجودة.');
@@ -659,7 +690,7 @@ async function addPayment(data) {
       .input('transactionId', sql.Int, data.transactionId)
       .input('paymentDate', sql.DateTime, data.paymentDate || new Date())
       .input('amount', sql.Decimal(18, 2), amount)
-      .input('paymentMethod', sql.NVarChar(50), data.paymentMethod || 'Cash')
+      .input('paymentMethod', sql.NVarChar(50), paymentMethod)
       .input('notes', sql.NVarChar(sql.MAX), data.notes || null)
       .input('createdBy', sql.NVarChar(50), data.createdBy)
       .query(`
@@ -669,17 +700,18 @@ async function addPayment(data) {
       `);
     const paymentId = payRes.recordset[0].PaymentID;
 
+    const isSale = invoice.TransactionType === 'Sale';
     await transaction.request()
       .input('cashBoxId', sql.Int, data.cashBoxId)
       .input('paymentId', sql.Int, paymentId)
       .input('transactionId', sql.Int, data.transactionId)
       .input('amount', sql.Decimal(18, 2), amount)
-      .input('notes', sql.NVarChar(500), `تحصيل فاتورة ${invoice.ReferenceNumber || ''}`)
+      .input('notes', sql.NVarChar(500), `${isSale ? 'تحصيل' : 'سداد'} فاتورة ${invoice.ReferenceNumber || ''}`)
       .input('createdBy', sql.NVarChar(50), data.createdBy)
       .query(`
         INSERT INTO CashboxTransactions
           (CashBoxID, PaymentID, ReferenceID, ReferenceType, TransactionType, Amount, TransactionDate, Notes, CreatedBy, CreatedAt)
-        VALUES (@cashBoxId, @paymentId, @transactionId, 'SaleInvoice', N'قبض', @amount, GETDATE(), @notes, @createdBy, GETDATE())
+        VALUES (@cashBoxId, @paymentId, @transactionId, '${isSale ? 'SaleInvoice' : 'PurchaseInvoice'}', N'${isSale ? 'قبض' : 'صرف'}', @amount, GETDATE(), @notes, @createdBy, GETDATE())
       `);
 
     const newPaid = money(num(invoice.PaidAmount) + amount);

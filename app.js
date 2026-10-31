@@ -337,6 +337,9 @@ app.use('/api/factory-purchases', require('./modules/factory-purchases/factory-p
 app.use('/api/purchase-receipts', require('./modules/purchase-receipts/purchase-receipts.routes'));
 app.use('/api/additional-charges', require('./modules/additional-charges/additional-charges.routes'));
 
+// Payments Module (المقبوضات والمدفوعات المستقلة)
+app.use('/api/payments', require('./modules/payments/payments.routes'));
+
 // Customer Care feedback queues, callbacks, and history
 app.use('/api/customer-care', require('./modules/customer-care/customer-care.routes'));
 

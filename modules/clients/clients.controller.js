@@ -231,8 +231,25 @@ async function getContactSources(req, res) {
   }
 }
 
+// دفعات العميل المقدمة — GET /api/clients/:id/advances?unappliedOnly=true
+// الشكل: قائمة عارية في جذر الاستجابة كما يقرأها نموذج الفاتورة في
+// التطبيق (decoded is List) بمفاتيح ChargeID/ChargeAmount/ChargeDescription.
+async function getAdvances(req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return errorResponse(res, 'معرف العميل غير صالح', 400);
+    const unappliedOnly = req.query.unappliedOnly === 'true' || req.query.unappliedOnly === true;
+    const advances = await clientsQueries.getClientAdvances(id, { unappliedOnly });
+    return res.json(advances);
+  } catch (err) {
+    console.error('خطأ في جلب الدفعات المقدمة:', err);
+    return errorResponse(res, 'فشل تحميل الدفعات المقدمة', 500, err.message);
+  }
+}
+
 // تصدير الدوال
 module.exports = {
+  getAdvances,
   getAll,
   getList,
   search,
